@@ -42,21 +42,12 @@ jobs:
           bash -n guest/setup-arch-bridge.sh
           bash -n scripts/provision_archlinux_arm64.sh
           bash scripts/provision_archlinux_arm64.sh --dry-run
-      - name: Inspect upstream headers for Milestone 5.1 & 5.2
-        run: |
-          bash scripts/sync_upstream.sh >/dev/null
-          for f in host/hvsparse.h host/winvm.h devices/fb_metal.h devices/xhci.h host/audio_mac.h host/net_slirp.h; do
-            echo "=== $f ==="
-            cat ".upstream/WindowsiOS/$f" 2>/dev/null || true
-          done
-          echo "=== core/mmu.c A1 / ASID ==="
-          grep -n -C 4 "A1\|asid" .upstream/WindowsiOS/core/mmu.c | head -n 30 || true
-          echo "=== core/sysreg.c ID_AA64 ==="
-          grep -n -C 2 "ID_AA64" .upstream/WindowsiOS/core/sysreg.c | head -n 35 || true
 
   ios-build:
     name: iOS Unsigned IPA Build (macOS)
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode 26 toolchain if installed
@@ -84,9 +75,44 @@ jobs:
           mkdir -p build/ipa/Payload
           cp -R build/DerivedData/Build/Products/Release-iphoneos/HengeLinux.app build/ipa/Payload/
           (cd build/ipa && zip -qr ../HengeLinux-unsigned.ipa Payload)
+          shasum -a 256 build/HengeLinux-unsigned.ipa > build/HengeLinux-unsigned.ipa.sha256
           ls -lh build/HengeLinux-unsigned.ipa
       - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: HengeLinux-unsigned-ipa
-          path: build/HengeLinux-unsigned.ipa
+          path: |
+            build/HengeLinux-unsigned.ipa
+            build/HengeLinux-unsigned.ipa.sha256
+      - name: Publish rolling latest-ipa GitHub Pre-Release on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          NOTES="Automated unsigned iOS build from \`main\` (\`${SHORT_SHA}\`) built on ${BUILD_DATE}.
+
+          ### Sideloading on iPhone / iPad (iOS 26.0+)
+          1. Download \`HengeLinux-unsigned.ipa\` directly on your iOS device.
+          2. Import and sign with **SideStore** or **AltStore** (no local Mac required).
+          3. Copy \`archlinux.hvsparse\`, \`code.fd\`, and \`vars.fd\` into **Files -> On My iPhone -> HengeLinux -> Machines/ArchLinux/**."
+          if gh release view latest-ipa >/dev/null 2>&1; then
+            gh release upload latest-ipa \
+              build/HengeLinux-unsigned.ipa \
+              build/HengeLinux-unsigned.ipa.sha256 \
+              --clobber
+            gh release edit latest-ipa \
+              --title "HengeLinux Unsigned IPA (Latest main — ${SHORT_SHA})" \
+              --notes "$NOTES" \
+              --target main \
+              --prerelease
+          else
+            gh release create latest-ipa \
+              build/HengeLinux-unsigned.ipa \
+              build/HengeLinux-unsigned.ipa.sha256 \
+              --title "HengeLinux Unsigned IPA (Latest main — ${SHORT_SHA})" \
+              --notes "$NOTES" \
+              --target main \
+              --prerelease
+          fi

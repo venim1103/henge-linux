@@ -4,10 +4,21 @@
 
 `henge-linux` adapts the direct ARM64-to-ARM64 dynamic binary translation architecture of [`ammaarreshi/WindowsiOS`](https://github.com/ammaarreshi/WindowsiOS) and [`Leviidev/Henge`](https://github.com/Leviidev/Henge) (`HengeVM`) to boot mainline `aarch64` Arch Linux on modern iPhones and iPads, combining full kernel (`EL1`) fidelity with 16 KiB page-granule alignment, TXM dual-mapped JIT, and ledger-exempt guest RAM.
 
-> **Documentation:**
+> **Documentation & Builds:**
+> - **Latest Unsigned `.ipa` (Direct Download):** [`HengeLinux-unsigned.ipa`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa) · [All Releases](https://github.com/venim1103/henge-linux/releases) · [GitHub Actions CI](https://github.com/venim1103/henge-linux/actions)
 > - [`PLAN.md`](PLAN.md) — Detailed engineering implementation plan, module architecture, technical invariants, and Phase 1–5 roadmap.
 > - [`HANDOVER.md`](HANDOVER.md) — Current repository status, file inventory, CI build guide, and next-session handover checklist.
 > - [`docs/RESEARCH.md`](docs/RESEARCH.md) — Complete technical review of `WindowsiOS`/`HengeVM` and all 6 Linux-on-iOS execution architectures.
+
+---
+
+## Quick Sideload (No Mac Required)
+
+Every green push to `main` automatically packages and publishes an unsigned iOS 26.0+ `arm64` bundle (`HengeLinux.app` + embedded `HengeLinuxJITExtension.appex`):
+
+1. **Download `.ipa` on iPhone / iPad:** Grab [`HengeLinux-unsigned.ipa`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa) from the [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) (or from the `HengeLinux-unsigned-ipa` artifact on any [GitHub Actions run](https://github.com/venim1103/henge-linux/actions)).
+2. **Sign & Install:** Open the `.ipa` in **SideStore** or **AltStore** to sign with your Apple ID and install on-device.
+3. **Load Guest Files via iOS Files App:** Place `archlinux.hvsparse`, `code.fd`, and `vars.fd` (and optional `pairing.plist`) into **Files -> On My iPhone -> HengeLinux -> Machines/ArchLinux/** (`UIFileSharingEnabled` is pre-configured).
 
 ---
 

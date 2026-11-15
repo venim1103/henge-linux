@@ -75,8 +75,8 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
   - Runs a binary pack/unpack round-trip check (`cmp build/raw.bin build/unpacked.bin`).
   - Runs `python3 -m py_compile`, `bash -n`, and `bash scripts/provision_archlinux_arm64.sh --dry-run`.
 - **Job 2 (`iOS Unsigned IPA Build (macOS)` on `macos-latest`):**
-  - Installs `xcodegen`, builds `make test-core hvsparse ios-lib` (`build/ios/libhengelinux.a`), generates `ios/HengeLinux.xcodeproj`, runs `xcodebuild -sdk iphoneos CODE_SIGNING_ALLOWED=NO build`, packages `build/HengeLinux-unsigned.ipa`, and uploads it as a GitHub Actions artifact (`HengeLinux-unsigned-ipa`).
-  - **Sideloading from Linux or Intel Mac:** Download `HengeLinux-unsigned-ipa` from the latest green GitHub Actions run on your iPhone and sign/install it with **SideStore** or **AltStore**—no local Mac required.
+  - Selects Xcode 26 (`Xcode_26.6.app`), installs `xcodegen`, builds `make test-core hvsparse ios-lib` (`build/ios/libhengelinux.a`), generates `ios/HengeLinux.xcodeproj`, runs `xcodebuild -sdk iphoneos CODE_SIGNING_ALLOWED=NO build`, packages `build/HengeLinux-unsigned.ipa` + `.sha256`, uploads the Actions artifact (`HengeLinux-unsigned-ipa`), and updates the rolling **`latest-ipa` GitHub Pre-Release** (`https://github.com/venim1103/henge-linux/releases/tag/latest-ipa`).
+  - **Sideloading from Linux, Windows, or Intel Mac:** Download [`HengeLinux-unsigned.ipa`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa) directly on your iPhone/iPad and sign/install it with **SideStore** or **AltStore**—no local Mac required.
 
 ### Resolved SDK / Toolchain Issues (Do Not Reintroduce)
 1. **iPhoneOS SDK `<mach/mach_vm.h>`:** Public `iPhoneOS.sdk` headers fail compilation with `#error mach_vm.h unsupported.` Always use `<mach/mach.h>` instead.
@@ -87,21 +87,23 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 
 ## 4. Verified Upstream `WindowsiOS` Layout & Next Steps (Phase 5 Bring-Up)
 
-We inspected `ammaarreshi/WindowsiOS` in CI (`#43729534994`–`#43730716348`) and confirmed its exact module layout and patch coordinates:
+We inspected `ammaarreshi/WindowsiOS` in CI (`#43729534994`–`#43770680469`) and confirmed its exact module layout, Linux `arm64` MMU/ID-register compatibility, and patch coordinates:
 - **Core DBT & MMU (`core/`):** `classify.c`, `operands.c`, `translate.c`, `dispatch.c`, `mmu.c` (compiled with `-mgeneral-regs-only`), `memop.c`, `exception.c`, `sysreg.c`, `machine.c`.
+  - *Verified in `core/mmu.c:169-187`:* `current_asid()` and `hv_mmu_ukey()` already inspect `TCR_EL1.A1` (bit 22) and `TCR_EL1.AS` (bit 36) dynamically, so Linux `A1=0` (`TTBR0_EL1`) ASIDs and `ASID=0` KPTI transitions work without modification.
+  - *Verified in `core/sysreg.c:18-25`:* `ID_AA64ISAR1` (`0x0000001100211001ull`) and `ID_AA64PFR0` (`0x1100000001110011ull`) already mask out PAuth (`APA`/`API`/`GPA`), SVE, and MTE, preventing `APIAKeyLo_EL1` MSR trap storms on Linux context switches.
 - **Host Primitives (`host/`):** `jit_region.c`, `enter.S`, `disk.c`, `winvm.c`, `net_slirp.c`, `share.c`, `audio_mac.c`, `hvsparse.c`.
 - **Virtual Devices (`devices/`):** `fb_metal.m`, `nvme.c`, `pcie.c`, `gicv3.c`, `xhci.c`, `hda.c`, `virtio_net.c`, `acpi.c`, `fdt.c`, `fw_cfg.c`, `pflash.c`, `pl011.c`, `pl031.c`, `pl061.c`, `timer.c`, `virtio.c`, `virtio_blk.c`, `virtio_input.c`, `virtio_snd.c`, `winvirt.c`.
 
 When continuing in a new chat window, start immediately with **Milestone 5.1 & 5.2**:
 
 1. **Link Upstream `WindowsiOS` Engine & Apply Patches (`scripts/sync_upstream.sh` + `patches/*.patch` + `Makefile`):**
-   - Compare `tools/hvsparse.c` header layout against `.upstream/WindowsiOS/host/hvsparse.h` to ensure 100% binary compatibility with `devices/nvme.c`.
-   - Extend `Makefile` (`ios-lib`) to compile upstream `core/*.c` (`-mgeneral-regs-only` on `mmu.c`), `host/*.c`/`enter.S`, and `devices/*.{c,m}` alongside `host/henge_*.c` into `build/ios/libhengelinux.a` (which `ios/project.yml` now links via `-lhengelinux`).
+   - Inspect `.upstream/WindowsiOS/host/{hvsparse.h,winvm.h}` and `devices/{fb_metal.h,xhci.h}` + `scripts/build_ios_deps.sh` to align `tools/hvsparse.c` header layout with `devices/nvme.c` and resolve iOS static dependency paths (`libffi`, `glib`, `libslirp`).
+   - Extend `Makefile` (`ios-lib`) to compile upstream `core/*.c` (`-mgeneral-regs-only` on `mmu.c`), `host/*.c`/`enter.S`, and `devices/*.{c,m}` alongside `host/henge_*.c` into `build/ios/libhengelinux.a` (which `ios/project.yml` links via `-lhengelinux`).
    - Apply patches in `scripts/sync_upstream.sh`:
      - `host/share.c:959`: format Unix socket path via `henge_format_unix_socket_path()` so deep iOS sandbox paths bind inside `<container>/tmp/` (`<104` bytes).
      - `devices/fb_metal.m:166` & `host/audio_mac.c:35,109`: wrap `[curLayer nextDrawable]` / commit and audio callbacks with `hengelinux_render_lock()` and `hengelinux_is_render_paused()`.
      - `host/jit_region.c:15,34`: validate JIT ranges with `henge_txm_is_valid_jit_range()`.
-     - Linux `arm64` kernel audit (`core/mmu.c` & `core/sysreg.c`): verify `TCR_EL1.A1=0` ASIDs in `HvTlbStash`, mask PAC/SVE/MTE bits in `core/sysreg.c` ID registers to avoid `APIAKeyLo_EL1` MSR trap storms, and keep `HV_TLB_PAGE_BITS=12` default during UEFI EDK2 4 KiB DXE boot.
+     - Keep `HV_TLB_PAGE_BITS=12` default during UEFI EDK2 4 KiB DXE boot until `core/mmu.c` sub-page protection under `HV_TLB_PAGE_BITS=14` is verified.
 2. **Wire SwiftUI Frontend to `HengeVM` Runtime (`ios/Sources/HengeVMBridge.{h,mm}`):**
    - Connect `SessionView.swift`'s `MTKView` / `CAMetalLayer` to `fb_metal.m`, forward touch/keyboard events to `devices/xhci.c`, route `10.0.2.4/.henge/open-url` notifications to `HengeLinuxApp.safariURL` (`SafariSheetView`), and compensate `CNTVCT_EL0` across background suspend so Linux's 20s softlockup detector does not fire on resume.
    - Load guest disk `Documents/Machines/ArchLinux/archlinux.hvsparse` and UEFI firmware `code.fd` / `vars.fd` with `effectiveRamMiB` allocated via `henge_alloc_ledger_exempt_ram()`.
