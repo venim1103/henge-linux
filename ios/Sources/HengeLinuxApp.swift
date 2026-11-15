@@ -54,7 +54,7 @@ struct HengeLinuxApp: App {
                         posture: $posture,
                         onStopSession: {
                             isRunning = false
-                            jitClient.reset()
+                            jitClient.prepareForReboot()
                         }
                     )
                 } else {
@@ -64,12 +64,6 @@ struct HengeLinuxApp: App {
             .sheet(item: $safariURL) { item in
                 SafariSheetView(url: item.url)
                     .ignoresSafeArea()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-                lifecycle.pauseRendering()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-                lifecycle.resumeRendering()
             }
         }
     }
@@ -121,14 +115,17 @@ struct HengeLinuxApp: App {
 
                 Section {
                     Button {
-                        jitClient.prepareSession()
-                        isRunning = true
+                        Task {
+                            await jitClient.prepareSession()
+                            isRunning = true
+                        }
                     } label: {
-                        Label("Boot Arch Linux (\(selectedProfile.ramMiB) MiB)", systemImage: "play.fill")
+                        Label("Boot Arch Linux (\(effectiveRamMiB) MiB)", systemImage: "play.fill")
                             .frame(maxWidth: .infinity)
                             .font(.headline)
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(jitClient.state == .requestingExtension)
                 }
             }
             .navigationTitle("henge-linux")
@@ -148,8 +145,18 @@ struct HengeLinuxApp: App {
         }
     }
 
+    private var deviceCapMiB: UInt32 {
+        let physicalMiB = UInt64(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024)
+        let sixtyPercent = UInt32((physicalMiB * 60) / 100)
+        return min(max(sixtyPercent, 2048), 8192)
+    }
+
     private var alignedBytes: UInt64 {
-        henge_align_guest_ram_bytes(UInt32(selectedProfile.ramMiB), 8192)
+        henge_align_guest_ram_bytes(UInt32(selectedProfile.ramMiB), deviceCapMiB)
+    }
+
+    private var effectiveRamMiB: UInt32 {
+        UInt32(alignedBytes / (1024 * 1024))
     }
 }
 

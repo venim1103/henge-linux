@@ -34,10 +34,14 @@ final class SelfDebugJITClient: ObservableObject {
         FileManager.default.fileExists(atPath: pairingFileURL.path)
     }
 
-    func prepareSession() {
+    func prepareSession() async {
+        if case .blessed = state {
+            return
+        }
+
         state = .requestingExtension
 
-        if henge_txm_is_debugger_attached() {
+        if henge_txm_is_ptraced() || henge_txm_is_cs_debugged() {
             state = .blessed(poolMiB: Self.defaultJitPoolMiB, ledgerExempt: true)
             return
         }
@@ -49,6 +53,15 @@ final class SelfDebugJITClient: ObservableObject {
                 reason: "Place pairing.plist in Documents or attach StikDebug / LLDB for TXM JIT."
             )
         }
+    }
+
+    /// Flush translated block cache on VM stop without releasing the process-lifetime
+    /// TXM dual-mapped RX/RW pool so subsequent guest reboots require zero debugger attach.
+    func prepareForReboot() {
+        if case .blessed = state {
+            return
+        }
+        state = .idle
     }
 
     func reset() {
