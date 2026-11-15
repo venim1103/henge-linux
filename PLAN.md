@@ -1,0 +1,130 @@
+# `henge-linux` Engineering Implementation Plan
+
+**Repository:** `venim1103/henge-linux`
+**License:** GNU General Public License v3.0 or later (`GPL-3.0-or-later`)
+**Target Platforms:** Non-jailbroken iOS 26.0 – iOS 27+ (`arm64`, single-screen iPhones/iPads and foldable iPhone Duo) without `Hypervisor.framework`
+**Target Guest:** Mainline `aarch64` Arch Linux (Archboot AArch64 / Collabora-Valve Holo Core AArch64)
+
+---
+
+## 1. Project Goals & Non-Goals
+
+### Primary Goals
+1. **Full-System ARM64 (`aarch64`) Kernel (`EL1`) Virtualization on Stock iOS:** Adapt the direct ARM64-to-ARM64 dynamic binary translation engine and Stage-1 software MMU of [`ammaarreshi/WindowsiOS`](https://github.com/ammaarreshi/WindowsiOS) and [`Leviidev/Henge`](https://github.com/Leviidev/Henge) (`HengeVM`) to boot mainline `aarch64` Arch Linux on non-jailbroken iOS 26/27 devices.
+2. **16 KiB & 4 KiB Page-Granule Alignment:** Support standard 4 KiB Arch Linux kernels (`HV_TLB_PAGE_BITS=12`) out of the box while offering a compile-time `HV_TLB_PAGE_BITS=14` fast path for dedicated 16 KiB kernels (`CONFIG_ARM64_16K_PAGES=y`) that align 1:1 with Darwin's 16 KiB host page size.
+3. **Zero-Driver-Injection Virtual Motherboard:** Boot Arch Linux on UEFI (EDK2 `ArmVirtQemu`) + ACPI 6.3 + PCIe GPEX using inbox Linux drivers for NVMe 1.4 (`hvsparse`), UEFI GOP (`simpledrm`/`efifb` -> Metal), VirtIO-Net (`libslirp`), USB 3.0 xHCI keyboard/touch, and Intel ICH6 duplex HD Audio (`CoreAudio`).
+4. **TXM JIT & Jetsam Bypass Without Jailbreak:** Allocate a 384 MiB dual-mapped RX/RW JIT code cache below `0x7000000000` using the `brk #0xf00d` + byte-0 `0x69` page-blessing handshake, and map guest RAM with `LEDGER_NO_FOOTPRINT` scaled to device physical RAM (`2.5 GiB` on 8 GB iPhone 16 Pro; `4.5 GiB` on 12 GB+ iPhone Duo / Pro; `6.0 GiB` on 16 GB iPad Pro).
+5. **Zero-Ceremony In-App Self-Debugging & Native iOS Bridge:** Eliminate tethered Mac/LLDB launch requirements via an embedded helper `NSExtension` (`com.apple.ar.viewer` pattern from `Playport`) and bridge guest `xdg-open` / dual-stack loopback OAuth callbacks (`127.0.0.1` / `[::1]`) and WebDAV file sharing through `http://10.0.2.4/.henge/`.
+6. **Hardware-Accelerated 3D Wayland Desktop:** Upgrade the 2D UEFI GOP presenter to `virtio-gpu-gl-pci` backed by `virglrenderer` -> `ANGLE` -> `Metal` for hardware-accelerated `Hyprland`, `Wayfire`, and `Sway` compositing.
+
+### Non-Goals
+- Running `x86_64` guest kernels directly via full-system emulation (userspace `x86_64` binaries inside `aarch64` Arch Linux can optionally use `FEX-Emu` or `blink` later).
+- Depending on macOS-only `ParavirtualizedGraphics.framework` (`Henge`'s `pvg_lite.c`), which has no mainline Linux kernel driver.
+- Incorporating `Apache-2.0` code from UTM's UI/CocoaSpice layer into any `GPL-2.0-only` target (the repo uses `GPL-3.0-or-later` to preserve broad compatibility).
+
+---
+
+## 2. System Architecture & Module Map
+
+```text
+henge-linux/
+├── host/                           # C11 & ARM64 assembly host substrate (compiled into libhengelinux.a & iOS app)
+│   ├── henge_platform.{h,c}        # Darwin <104B sun_path formatter, TCR_EL1 TG0/TG1 decoder, 16KiB RAM aligner, render pause gate
+│   ├── henge_txm_jit.{h,c}         # TXM [4GiB, 64GiB) VA validator, 0x69 page blessing, LEDGER_NO_FOOTPRINT allocator
+│   ├── henge_brk.S                 # ARM64 brk #0xf00d traps (x16=1 prepare region, x16=0 detach debugger)
+│   └── henge_virtio_gpu.{h,c}      # VirtIO-GPU PCI (0x1af4:0x1050) backend selector (2D GOP vs 3D VirGL/ANGLE)
+├── tools/
+│   └── hvsparse.c                  # Zero-skipping 64 KiB block sparse disk container packer/unpacker
+├── ios/                            # XcodeGen iOS 26.0+ SwiftUI app + embedded JIT helper extension
+│   ├── project.yml                 # Generates HengeLinux.xcodeproj (HengeLinux app + HengeLinuxJITExtension)
+│   ├── HengeLinux.entitlements     # com.apple.developer.kernel.increased-memory-limit
+│   ├── Sources/
+│   │   ├── HengeLinuxApp.swift     # Launcher, hardware RAM presets, SafariSheetView, lifecycle observers
+│   │   ├── SessionView.swift       # Metal framebuffer host, clamshell input deck, compact modifier strip
+│   │   ├── HingeSensorView.swift   # Runtime UIHingeInteraction detector + single-screen clamshell preview toggle
+│   │   ├── MetalLifecycleGuard.swift # Thread-safe willResignActive/didBecomeActive CAMetalLayer pause gate
+│   │   ├── SelfDebugJITClient.swift  # Pairing record check, JIT activation state machine, GPU backend picker
+│   │   └── HengeLinux-Bridging-Header.h
+│   └── JITExtension/
+│       └── JITExtensionHandler.swift # com.apple.ar.viewer NSExtension request handler for in-app TXM blessing
+├── guest/                          # Scripts deployed inside the Arch Linux aarch64 guest
+│   ├── henge-xdg-open              # Dual-stack (127.0.0.1 / [::1] <-> 10.0.2.15) OAuth relay + SafariSheet bridge
+│   └── setup-arch-bridge.sh        # Installs xdg-open handler, systemd-networkd VirtIO DHCP, and /mnt/ios-share
+├── scripts/
+│   ├── sync_upstream.sh            # Clones/updates ammaarreshi/WindowsiOS into .upstream/WindowsiOS
+│   ├── build_ios_deps.sh           # Cross-compiles iOS static deps with /opt/homebrew vs /usr/local detection
+│   └── provision_archlinux_arm64.sh # Boots Archboot AArch64 ISO in QEMU with EDK2 + NVMe and packs hvsparse
+├── tests/
+│   └── test_core.c                 # Deterministic unit tests for sun_path, MMU granules, RAM, TXM JIT, VirtIO-GPU
+├── docs/
+│   └── RESEARCH.md                 # Deep technical review of WindowsiOS and 6 Linux-on-iOS architectures
+└── .github/workflows/ci.yml        # Linux unit tests + macOS XcodeGen + unsigned .ipa build & artifact upload
+```
+
+---
+
+## 3. Technical Invariants & Hard Platform Constraints
+
+Every code change in `henge-linux` must preserve these verified platform invariants:
+
+1. **TXM Low Virtual Address Ceiling (`< 0x7000000000`):**
+   - iOS 26/27 Trusted Execution Monitor hangs or rejects JIT pools mapped above `0x7000000000`, and StikJIT's 9-digit hex page addressing truncates at `64 GiB` (`0x1000000000`).
+   - All RX/RW dual-mapped JIT pools must land inside `[0x0100000000, 0x1000000000)` (`[4 GiB, 64 GiB)`) and pass `henge_txm_is_valid_jit_range()`.
+2. **TXM Byte-0 `0x69` Blessing Marker:**
+   - Every 16 KiB (`16,384`-byte) page in the RX JIT region must carry `0x69` at byte offset `0` during the `x16=1; brk #0xf00d` (`0xa0013ed4`) debugger handshake before `mach_vm_remap` creates the RW alias and `x16=0; brk #0xf00d` detaches.
+3. **iOS App-Switcher Metal Drawable Guard (`willResignActive`):**
+   - iOS reclaims `CAMetalLayer` drawables immediately upon `UIApplication.willResignActiveNotification` *before* `didEnterBackground`. Submitting even a single Metal frame after `willResignActive` causes a fatal `gpus_ReturnNotPermittedKillClient` termination on resume.
+   - `MetalLifecycleGuard` sets `hengelinux_set_render_paused(true)` synchronously on `willResignActive` and refuses `nextDrawable()` until `didBecomeActive`.
+4. **Darwin `AF_UNIX` `sun_path` 104-Byte Limit:**
+   - Deep iOS sandbox paths (`/var/mobile/Containers/Data/Application/<UUID>/Documents/...`) routinely exceed Darwin's 104-byte `sockaddr_un.sun_path` buffer. All internal `libslirp` <-> WebDAV/control sockets must be formatted via `henge_format_unix_socket_path()`, which hashes long container paths into `/tmp/hl-<64bit-hex>-<name>`.
+5. **iPhoneOS SDK Header Restrictions:**
+   - Apple's public `iPhoneOS.sdk` rejects `#include <mach/mach_vm.h>` with `#error mach_vm.h unsupported.` Use `<mach/mach.h>` instead.
+6. **Guest RAM Budgeting by Device Class:**
+   - `LEDGER_NO_FOOTPRINT` bypasses the ~3 GB per-process Mach ledger kill, but physical RAM exhaustion still triggers system-wide Jetsam kills. Default presets enforce `2,560 MiB` (2.5 GiB) on 8 GB devices (iPhone 16 Pro), `4,608 MiB` (4.5 GiB) on 12 GB devices (iPhone Duo / Pro), and `6,144 MiB` (6.0 GiB) on 16 GB iPad Pros.
+
+---
+
+## 4. Phased Implementation Roadmap
+
+### Phase 1: Architecture Research & Licensing Baseline — **COMPLETED**
+- [x] Deep technical review of `ammaarreshi/WindowsiOS`, `Leviidev/Henge`, `Leviidev/Husk`, `mxhm11cr/LinuxRunner`, `tctiSH`, `Playport`, `Madeira`, and Wasm/Waypipe approaches (`docs/RESEARCH.md`).
+- [x] Selected `GPL-3.0-or-later` (`LICENSE`) to allow clean upstream `GPL-2.0-or-later` upgrades plus `MPL-2.0` (`StikJIT`), `MIT` (`idevice`), and `GPL-3.0` (`LinuxRunner`) integration.
+
+### Phase 2: Cross-Platform Build System, Platform Guards & Adaptive iOS Shell — **COMPLETED**
+- [x] Host-portable `Makefile` auto-detecting `/opt/homebrew` (Apple Silicon) and `/usr/local` (Intel `x86_64` MacBook), supporting `HV_TLB_PAGE_BITS=12` and `HV_TLB_PAGE_BITS=14`.
+- [x] `host/henge_platform.{h,c}` + `tests/test_core.c` covering Darwin `<104`-byte `sun_path` formatting, `TCR_EL1` `TG0`/`TG1` decoding, 16 KiB RAM alignment, and thread-safe render pause state.
+- [x] Adaptive iOS `26.0+` SwiftUI app (`HengeLinuxApp.swift`, `SessionView.swift`, `HingeSensorView.swift`, `MetalLifecycleGuard.swift`) supporting both foldable `UIHingeInteraction` devices and single-screen iPhones (iPhone 16 Pro) with a split-deck preview toggle and compact modifier bar.
+
+### Phase 3: `hvsparse` Storage Container, Archboot Provisioning & Guest Bridge — **COMPLETED**
+- [x] Zero-skipping 64 KiB block `tools/hvsparse.c` (`pack` and `unpack`) verified by byte-exact round-trip tests in CI.
+- [x] `scripts/provision_archlinux_arm64.sh` automating EDK2 firmware setup, Archboot AArch64 ISO resolution, QEMU `virt` + NVMe installation, and `.hvsparse` packing.
+- [x] `guest/henge-xdg-open` and `guest/setup-arch-bridge.sh` bridging IPv4/IPv6 loopback OAuth listeners (`127.0.0.1` / `[::1]` <-> `10.0.2.15`) to `http://10.0.2.4/.henge/expose-port`, `/open-url` (`SFSafariViewController`), and `/oauth-done`.
+
+### Phase 4: TXM Self-Debug `NSExtension` & VirtIO-GPU Backend Configuration — **COMPLETED (Scaffold & C/ASM Primitives)**
+- [x] `host/henge_txm_jit.{h,c}` and `host/henge_brk.S` implementing low-VA bounds checking, `0x69` page-blessing marker helpers, `brk #0xf00d` assembly traps, and `LEDGER_NO_FOOTPRINT` RAM allocation.
+- [x] `ios/JITExtension/JITExtensionHandler.swift` (`com.apple.ar.viewer` extension target in `ios/project.yml`) and `ios/Sources/SelfDebugJITClient.swift`.
+- [x] `host/henge_virtio_gpu.{h,c}` defining `2D UEFI GOP` and `3D VirtIO-GPU VirGL (ANGLE Metal)` configuration descriptors.
+
+### Phase 5: Upstream Engine Integration, Live VM Runtime & 3D VirGL Bring-Up — **NEXT**
+1. **Milestone 5.1 — Upstream `HengeVM` / `WindowsiOS` Engine Linkage:**
+   - Extend `scripts/sync_upstream.sh` and `Makefile` (`ios-lib`) to compile synced upstream `core/` (`translate.c`, `memop.c`, `mmu.c`, `sysreg.c`, `cpu.c`, `jit.c`) and `devices/` (`pcie.c`, `nvme.c`, `xhci.c`, `hda.c`, `virtio_net.c`, `fb_metal.m`, `audio_mac.c`, `share.c`) into `build/ios/libhengelinux.a`.
+   - Apply targeted patches for Arch Linux: (a) enforce `henge_format_unix_socket_path()` in `host/share.c` so deep iOS sandbox paths never truncate at 104 bytes; (b) wire `hengelinux_is_render_paused()` into `devices/fb_metal.m` and `host/audio_mac.c` so `willResignActive` immediately halts Metal drawable acquisition and CoreAudio callbacks; (c) route `winios_jit.c` through `henge_txm_is_valid_jit_range()`.
+2. **Milestone 5.2 — Live VM Runner Bridge (`HengeVMBridge.{h,mm}`):**
+   - Create an Objective-C++/C bridge class connecting `HengeLinuxApp.swift` and `SessionView.swift` (`MTKView` / `CAMetalLayer`, touch/keyboard HID events, and `SafariSheetView` callbacks from `10.0.2.4/.henge/open-url`) to the `HengeVM` vCPU threads and `hvsparse` block device (`Documents/Machines/ArchLinux/archlinux.hvsparse`).
+3. **Milestone 5.3 — End-to-End Arch Linux Boot & 16 KiB Kernel Validation:**
+   - Provision a bootable `archlinux.hvsparse` image with `scripts/provision_archlinux_arm64.sh`, run `guest/setup-arch-bridge.sh` inside the guest, and verify boot-to-shell/desktop on physical hardware (iPhone 16 Pro at `2,560 MiB` RAM and iPhone Duo at `4,608 MiB` RAM).
+   - Compare `HV_TLB_PAGE_BITS=12` (stock 4 KiB Archboot kernel) vs. `HV_TLB_PAGE_BITS=14` (custom `CONFIG_ARM64_16K_PAGES=y` Arch kernel).
+4. **Milestone 5.4 — Embedded `StikJIT` XPC Handshake, 3D VirGL & Background Suspend:**
+   - Link `StikJIT.xcframework` (`MPL-2.0`) and `idevice` (`MIT`) into `HengeLinuxJITExtension` (`JITExtensionHandler.swift`) to execute live `brk #0xf00d` blessing over `10.7.0.1` (`LocalDevVPN`) using `Documents/pairing.plist` (or iOS 27 on-device pairing).
+   - Implement PCIe `virtio-gpu-gl-pci` (`0x1af4:0x1050`) backed by `virglrenderer` + `ANGLE (Metal)` for hardware-accelerated Wayland compositors (`Hyprland`, `Wayfire`, `Sway`), plus `tctiSH`-style background state serialization.
+
+---
+
+## 5. Build & Verification Matrix
+
+| Environment | Commands | Output Artifacts |
+| :--- | :--- | :--- |
+| **Linux PC (Ubuntu / Arch)** | `make HV_TLB_PAGE_BITS=12 test-core hvsparse`<br>`make HV_TLB_PAGE_BITS=14 test-core hvsparse`<br>`bash scripts/provision_archlinux_arm64.sh` | `build/test_core`, `build/hvsparse`, `work/archlinux.hvsparse` |
+| **Intel (`x86_64`) MacBook** *(macOS 26 / Xcode 26)* | `make test-core hvsparse ios-lib`<br>`xcodegen generate --spec ios/project.yml`<br>`xcodebuild -project ios/HengeLinux.xcodeproj -scheme HengeLinux -configuration Release -sdk iphoneos CODE_SIGNING_ALLOWED=NO build` | `build/ios/libhengelinux.a`, `HengeLinux.app` (sideload via SideStore / AltStore) |
+| **Apple Silicon Mac** *(M1–M5, Xcode 26/27)* | Same as Intel MacBook + `xcrun devicectl device install app --device <UDID> ...` | Signed `HengeLinux.app` installed directly over USB/Wi-Fi |
+| **GitHub Actions CI** *(No local Mac needed)* | Triggered automatically on push/PR to `main` (`.github/workflows/ci.yml`) | Download `HengeLinux-unsigned-ipa` artifact and sign on-device with SideStore/AltStore |
