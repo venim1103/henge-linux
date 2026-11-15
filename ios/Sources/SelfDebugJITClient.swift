@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import Foundation
+
+enum JitActivationState: Equatable {
+    case idle
+    case requestingExtension
+    case blessed(poolMiB: Int, ledgerExempt: Bool)
+    case fallbackUntethered(reason: String)
+}
+
+enum GpuDisplayBackend: String, CaseIterable, Identifiable {
+    case gop2D = "2D UEFI GOP (Metal)"
+    case virgl3D = "3D VirtIO-GPU VirGL (ANGLE Metal)"
+
+    var id: String { rawValue }
+}
+
+/// Manages in-app TXM JIT activation (`brk #0xf00d` + `0x69` page blessing)
+/// and pairing record discovery (`Documents/pairing.plist`).
+@MainActor
+final class SelfDebugJITClient: ObservableObject {
+    @Published private(set) var state: JitActivationState = .idle
+    @Published var gpuBackend: GpuDisplayBackend = .gop2D
+
+    static let defaultJitPoolMiB: Int = 384
+
+    var pairingFileURL: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return docs.appendingPathComponent("pairing.plist")
+    }
+
+    var hasPairingFile: Bool {
+        FileManager.default.fileExists(atPath: pairingFileURL.path)
+    }
+
+    func prepareSession() {
+        state = .requestingExtension
+
+        if henge_txm_is_debugger_attached() {
+            state = .blessed(poolMiB: Self.defaultJitPoolMiB, ledgerExempt: true)
+            return
+        }
+
+        if hasPairingFile {
+            state = .blessed(poolMiB: Self.defaultJitPoolMiB, ledgerExempt: true)
+        } else {
+            state = .fallbackUntethered(
+                reason: "Place pairing.plist in Documents or attach StikDebug / LLDB for TXM JIT."
+            )
+        }
+    }
+
+    func reset() {
+        state = .idle
+    }
+}

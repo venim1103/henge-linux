@@ -1,0 +1,64 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+#ifndef HENGE_TXM_JIT_H
+#define HENGE_TXM_JIT_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* TXM safe low virtual address window: [4 GiB, 64 GiB), strictly < 0x7000000000. */
+#define HENGE_TXM_MIN_VA       0x0100000000ULL
+#define HENGE_TXM_MAX_VA       0x1000000000ULL
+#define HENGE_TXM_HARD_CEILING 0x7000000000ULL
+
+/* Default dual-mapped RX/RW JIT code cache size (384 MiB). */
+#define HENGE_DEFAULT_JIT_POOL_BYTES (384ULL * 1024ULL * 1024ULL)
+
+/* Byte-0 page blessing magic inspected by iOS 26/27 TXM on 16 KiB boundaries. */
+#define HENGE_TXM_BLESSING_MAGIC 0x69U
+
+typedef struct {
+    uintptr_t rx_base;
+    uintptr_t rw_base;
+    size_t    size;
+    bool      blessed;
+    bool      dual_mapped;
+} HengeJitPool;
+
+/* Return true iff [base, base + size) lies within TXM's safe low-VA bounds. */
+bool henge_txm_is_valid_jit_range(uintptr_t base, size_t size);
+
+/*
+ * Stamp and verify byte-0 0x69 blessing markers on every 16 KiB page of a
+ * writable JIT staging buffer.
+ */
+int henge_txm_stamp_blessing_markers(uint8_t *rw_base, size_t size);
+bool henge_txm_verify_blessing_markers(const uint8_t *base, size_t size);
+
+/* Query whether the current process has active debugger / CS_DEBUGGED status. */
+bool henge_txm_is_debugger_attached(void);
+
+/*
+ * Low-level ARM64 breakpoint primitives matching StikDebug / universal.js:
+ *   x16 = 1; brk #0xf00d  -> prepare & bless RX JIT region of `size` bytes
+ *   x16 = 0; brk #0xf00d  -> detach debugserver cleanly
+ */
+uintptr_t henge_jit26_prepare_region(uintptr_t hint, size_t size);
+void henge_jit26_detach(void);
+
+/*
+ * Allocate and release guest physical RAM using Darwin LEDGER_NO_FOOTPRINT
+ * when CS_DEBUGGED is active, falling back to standard page-aligned mmap.
+ */
+void *henge_alloc_ledger_exempt_ram(size_t size, bool *out_ledger_exempt);
+void henge_free_ledger_exempt_ram(void *ptr, size_t size);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* HENGE_TXM_JIT_H */

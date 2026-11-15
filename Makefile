@@ -25,8 +25,11 @@ all: test-core hvsparse
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/test_core: tests/test_core.c host/henge_platform.c host/henge_platform.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS_COMMON) -pthread tests/test_core.c host/henge_platform.c -o $(BUILD_DIR)/test_core
+HOST_SRCS := host/henge_platform.c host/henge_txm_jit.c host/henge_virtio_gpu.c
+HOST_HDRS := host/henge_platform.h host/henge_txm_jit.h host/henge_virtio_gpu.h
+
+$(BUILD_DIR)/test_core: tests/test_core.c $(HOST_SRCS) $(HOST_HDRS) | $(BUILD_DIR)
+	$(CC) $(CFLAGS_COMMON) -pthread tests/test_core.c $(HOST_SRCS) -o $(BUILD_DIR)/test_core
 
 $(BUILD_DIR)/hvsparse: tools/hvsparse.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) tools/hvsparse.c -o $(BUILD_DIR)/hvsparse
@@ -43,7 +46,19 @@ ios-lib: | $(BUILD_DIR)
 		xcrun --sdk iphoneos clang -std=c11 -O2 -arch arm64 -mios-version-min=26.0 \
 			-isysroot "$$IOS_SDK" -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost \
 			-c host/henge_platform.c -o $(BUILD_DIR)/ios/henge_platform.o; \
-		ar rcs $(BUILD_DIR)/ios/libhengelinux.a $(BUILD_DIR)/ios/henge_platform.o; \
+		xcrun --sdk iphoneos clang -std=c11 -O2 -arch arm64 -mios-version-min=26.0 \
+			-isysroot "$$IOS_SDK" -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost \
+			-c host/henge_txm_jit.c -o $(BUILD_DIR)/ios/henge_txm_jit.o; \
+		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 \
+			-isysroot "$$IOS_SDK" -c host/henge_brk.S -o $(BUILD_DIR)/ios/henge_brk.o; \
+		xcrun --sdk iphoneos clang -std=c11 -O2 -arch arm64 -mios-version-min=26.0 \
+			-isysroot "$$IOS_SDK" -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost \
+			-c host/henge_virtio_gpu.c -o $(BUILD_DIR)/ios/henge_virtio_gpu.o; \
+		ar rcs $(BUILD_DIR)/ios/libhengelinux.a \
+			$(BUILD_DIR)/ios/henge_platform.o \
+			$(BUILD_DIR)/ios/henge_txm_jit.o \
+			$(BUILD_DIR)/ios/henge_brk.o \
+			$(BUILD_DIR)/ios/henge_virtio_gpu.o; \
 		echo "[ios-lib] Built $(BUILD_DIR)/ios/libhengelinux.a"; \
 	else \
 		echo "[ios-lib] Skipping iphoneos static archive on non-Darwin host"; \

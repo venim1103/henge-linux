@@ -12,7 +12,7 @@ settings:
     ONLY_ACTIVE_ARCH: YES
     SWIFT_VERSION: "6.0"
     CLANG_C_LANGUAGE_STANDARD: c11
-    SWIFT_OBJC_BRIDGING_HEADER: Sources/HengeLinux-Bridging-Header.h
+    GENERATE_INFOPLIST_FILE: YES
     GCC_PREPROCESSOR_DEFINITIONS:
       - "$(inherited)"
       - "HV_TLB_PAGE_BITS=12"
@@ -21,6 +21,18 @@ settings:
       - "$(SRCROOT)/../host"
 
 targets:
+  HengeLinuxJITExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: JITExtension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.hengelinux.app.jit-extension
+        INFOPLIST_KEY_CFBundleDisplayName: HengeLinux JIT Helper
+        INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier: com.apple.ar.viewer
+        INFOPLIST_KEY_NSExtension_NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).JITExtensionHandler"
+
   HengeLinux:
     type: application
     platform: iOS
@@ -28,11 +40,20 @@ targets:
       - path: Sources
       - path: ../host/henge_platform.c
       - path: ../host/henge_platform.h
+      - path: ../host/henge_txm_jit.c
+      - path: ../host/henge_txm_jit.h
+      - path: ../host/henge_brk.S
+      - path: ../host/henge_virtio_gpu.c
+      - path: ../host/henge_virtio_gpu.h
     entitlements:
       path: HengeLinux.entitlements
+    dependencies:
+      - target: HengeLinuxJITExtension
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.hengelinux.app
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/HengeLinux-Bridging-Header.h
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone:

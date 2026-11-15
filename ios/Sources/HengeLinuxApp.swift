@@ -38,6 +38,7 @@ struct MachineProfile: Identifiable, Hashable {
 @main
 struct HengeLinuxApp: App {
     @StateObject private var lifecycle = MetalLifecycleGuard()
+    @StateObject private var jitClient = SelfDebugJITClient()
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
     @State private var isRunning: Bool = false
     @State private var posture: DevicePosture = .singleScreen
@@ -51,7 +52,10 @@ struct HengeLinuxApp: App {
                         profile: selectedProfile,
                         lifecycle: lifecycle,
                         posture: $posture,
-                        onStopSession: { isRunning = false }
+                        onStopSession: {
+                            isRunning = false
+                            jitClient.reset()
+                        }
                     )
                 } else {
                     launcherView
@@ -97,6 +101,17 @@ struct HengeLinuxApp: App {
                     }
                 }
 
+                Section("Graphics & TXM Self-Debugger") {
+                    Picker("Display Adapter", selection: $jitClient.gpuBackend) {
+                        ForEach(GpuDisplayBackend.allCases) { backend in
+                            Text(backend.rawValue).tag(backend)
+                        }
+                    }
+                    LabeledContent("TXM JIT Pool", value: "\(SelfDebugJITClient.defaultJitPoolMiB) MiB (< 0x7000000000)")
+                    LabeledContent("Pairing File", value: jitClient.hasPairingFile ? "Documents/pairing.plist" : "Missing (Optional)")
+                    LabeledContent("JIT Status", value: jitStatusLabel)
+                }
+
                 Section("Guest Image (`Documents/Machines/ArchLinux`)") {
                     LabeledContent("Disk Container", value: "archlinux.hvsparse")
                     LabeledContent("UEFI Firmware", value: "code.fd / vars.fd")
@@ -106,6 +121,7 @@ struct HengeLinuxApp: App {
 
                 Section {
                     Button {
+                        jitClient.prepareSession()
                         isRunning = true
                     } label: {
                         Label("Boot Arch Linux (\(selectedProfile.ramMiB) MiB)", systemImage: "play.fill")
@@ -116,6 +132,19 @@ struct HengeLinuxApp: App {
                 }
             }
             .navigationTitle("henge-linux")
+        }
+    }
+
+    private var jitStatusLabel: String {
+        switch jitClient.state {
+        case .idle:
+            return "Ready"
+        case .requestingExtension:
+            return "Blessing Pages..."
+        case .blessed(let poolMiB, _):
+            return "Blessed (\(poolMiB) MiB)"
+        case .fallbackUntethered:
+            return "Untethered"
         }
     }
 

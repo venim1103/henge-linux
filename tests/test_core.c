@@ -1,8 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "henge_platform.h"
+#include "henge_txm_jit.h"
+#include "henge_virtio_gpu.h"
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void test_unix_socket_path_bounds(void) {
@@ -62,11 +65,44 @@ static void test_render_pause_lifecycle_gate(void) {
     assert(hengelinux_is_render_paused() == false);
 }
 
+static void test_txm_jit_bounds_and_blessing(void) {
+    /* Valid 384 MiB TXM range in [4 GiB, 64 GiB). */
+    assert(henge_txm_is_valid_jit_range(0x0180000000ULL, HENGE_DEFAULT_JIT_POOL_BYTES) == true);
+
+    /* Reject addresses below 4 GiB, >= 64 GiB, >= 0x7000000000, or unaligned to 16 KiB. */
+    assert(henge_txm_is_valid_jit_range(0x0080000000ULL, HENGE_DEFAULT_JIT_POOL_BYTES) == false);
+    assert(henge_txm_is_valid_jit_range(0x1000000000ULL, HENGE_DEFAULT_JIT_POOL_BYTES) == false);
+    assert(henge_txm_is_valid_jit_range(0x7000000000ULL, HENGE_DEFAULT_JIT_POOL_BYTES) == false);
+    assert(henge_txm_is_valid_jit_range(0x0180001000ULL, HENGE_DEFAULT_JIT_POOL_BYTES) == false);
+
+    /* Stamp and verify 0x69 byte-0 marker across 4 x 16 KiB pages. */
+    size_t test_pool_size = 4U * (size_t)HENGE_HOST_PAGE_SIZE;
+    uint8_t *buf = calloc(1U, test_pool_size);
+    assert(buf != NULL);
+    assert(henge_txm_verify_blessing_markers(buf, test_pool_size) == false);
+    assert(henge_txm_stamp_blessing_markers(buf, test_pool_size) == 0);
+    assert(henge_txm_verify_blessing_markers(buf, test_pool_size) == true);
+    free(buf);
+}
+
+static void test_virtio_gpu_backends(void) {
+    HengeVirtioGpuConfig cfg;
+    assert(henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_GOP_2D, 128U, &cfg) == 0);
+    assert(henge_virtio_gpu_supports_virgl(&cfg) == false);
+
+    assert(henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_VIRGL_3D, 512U, &cfg) == 0);
+    assert(cfg.pci_vendor_id == HENGE_VIRTIO_PCI_VENDOR_ID);
+    assert(cfg.pci_device_id == HENGE_VIRTIO_GPU_DEVICE_ID);
+    assert(henge_virtio_gpu_supports_virgl(&cfg) == true);
+}
+
 int main(void) {
     test_unix_socket_path_bounds();
     test_mmu_granule_decoding();
     test_guest_ram_alignment();
     test_render_pause_lifecycle_gate();
-    printf("[PASS] test_core: all platform, MMU granule, RAM alignment, and lifecycle checks passed.\n");
+    test_txm_jit_bounds_and_blessing();
+    test_virtio_gpu_backends();
+    printf("[PASS] test_core: all platform, MMU, RAM, lifecycle, TXM JIT, and VirtIO-GPU checks passed.\n");
     return 0;
 }
