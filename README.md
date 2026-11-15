@@ -14,11 +14,11 @@ Stock iOS 16.4+ restricts `com.apple.developer.kernel.hypervisor` on non-jailbro
 
 `henge-linux` targets a cleaner architecture for Linux on Apple Silicon iOS devices:
 
-- **Same-Architecture ARM64-to-ARM64 Block Translation (`core/translate.c`):** Executes unprivileged user-mode ARM64 instructions directly on host silicon while rewriting privileged system register/exception instructions inline—avoiding QEMU's cross-architecture IR lifting overhead.
-- **16 KiB + 4 KiB Stage-1 Software MMU (`core/mmu.c`):** Emulates VMSAv8-64 `EL1&0` translation with support for 4 KiB, 16 KiB, and 64 KiB granules, allowing a 16 KiB page-size Arch Linux kernel to match the Darwin host kernel 1:1.
-- **Standard UEFI + ACPI 6.3 + PCIe GPEX Virtual Motherboard (`devices/`):** Boots mainline `aarch64` Arch Linux (via [Archboot AArch64](https://archboot.com/) or [Holo Core AArch64](https://www.collabora.com/news-and-blog/news-and-events/building-an-arch-linux-aarch64-port-for-holo-core.html)) using inbox Linux drivers for NVMe 1.4 (`hvsparse`), VirtIO-Net (`libslirp`), USB 3.0 xHCI touch/keyboard, and Intel ICH6 duplex HD Audio (`CoreAudio`)—with zero external driver injection.
+- **Same-Architecture ARM64-to-ARM64 Block Translation (`core/translate.c`):** Executes unprivileged user-mode ARM64 instructions directly on host silicon with hot/cold block splitting, inline ARMv8.1 LSE atomics, PAC stripping, and host scratch register allocation (`x6`, `x7`, `x15` free; guest `x6`, `x7`, `x15`, `x18`, `x28` stored in `HvCpu`).
+- **Dual-Mode 16 KiB / 4 KiB Stage-1 Software MMU (`core/mmu.c`):** Emulates VMSAv8-64 `EL1&0` translation across 4 KiB, 16 KiB, and 64 KiB granules (`granule_bits()`), supporting both a `HV_TLB_PAGE_BITS=12` compatibility mode (for standard 4 KiB Archboot kernels) and a `HV_TLB_PAGE_BITS=14` fast-path mode (for 16 KiB `CONFIG_ARM64_16K_PAGES=y` kernels matching Darwin 1:1 with 4x TLB reach).
+- **Standard UEFI + ACPI 6.3 + PCIe GPEX Virtual Motherboard (`devices/` & `host/`):** Boots mainline `aarch64` Arch Linux (via [Archboot AArch64](https://archboot.com/) or [Holo Core AArch64](https://www.collabora.com/news-and-blog/news-and-events/building-an-arch-linux-aarch64-port-for-holo-core.html)) using inbox Linux drivers for NVMe 1.4 (`hvsparse`), UEFI GOP framebuffer (`simpledrm`/`efifb` → `fb_metal.m`), VirtIO-Net (`libslirp`), USB 3.0 xHCI touch/keyboard, and Intel ICH6 duplex HD Audio (`host/audio_mac.c`)—with zero external driver injection.
 - **iOS 26/27 TXM JIT & Jetsam Bypass (`winios_jit.c` / `LEDGER_NO_FOOTPRINT`):** Allocates a 384 MiB dual-mapped RX/RW JIT pool below `0x7000000000` via the `brk #0xf00d` / `0x69` page-blessing protocol and maps guest RAM with `LEDGER_NO_FOOTPRINT` so multi-process desktop workloads run without Jetsam kills.
-- **Native iOS Integration (`10.0.2.4/.henge/`):** Bridges guest `xdg-open` URLs to `SFSafariViewController` (`SafariSheet`) for Face ID, Passkeys, and OAuth callbacks, alongside WebDAV file sharing.
+- **Native iOS Integration (`host/share.c` → `10.0.2.4/.henge/`):** Bridges guest `henge-xdg-open` URLs and dual-stack (`127.0.0.1` / `[::1]`) OAuth loopback listeners to `SFSafariViewController` (`SafariSheet`) for Face ID and Passkeys, alongside internal `AF_UNIX`-backed WebDAV file sharing and clipboard sync.
 
 ---
 
@@ -44,10 +44,10 @@ Stock iOS 16.4+ restricts `com.apple.developer.kernel.hypervisor` on non-jailbro
 
 ## Roadmap
 
-1. **Phase 1 — Documentation & Architecture Baseline:** Complete technical specification and architectural trade-off analysis ([`docs/RESEARCH.md`](docs/RESEARCH.md)).
-2. **Phase 2 — Core Engine & Single/Dual-Screen iOS Shell:** Port `HengeVM` / `WindowsiOS` `core/` and `devices/` C/Obj-C/Swift targets, guarding `UIHingeInteraction` so both foldable iPhone Duo and single-screen iPhones (e.g., iPhone 16 Pro) build cleanly with configurable RAM budgets.
-3. **Phase 3 — Arch Linux AArch64 Guest & Native Bridge:** Provision a 16 KiB-page Arch Linux `hvsparse` image via Archboot AArch64 and wire `xdg-open` + local port forwarding to `http://10.0.2.4/.henge/`.
-4. **Phase 4 — In-App Self-Debugging & 3D Metal Acceleration:** Integrate embedded `StikJIT` (`MPL-2.0`) XPC self-blessing (eliminating external Mac/LLDB launch steps) and evaluate `virglrenderer` → `ANGLE` → `Metal` 3D GPU acceleration.
+1. **Phase 1 — Documentation & Architecture Baseline:** Complete technical specification, gap analysis, and architectural trade-off review ([`docs/RESEARCH.md`](docs/RESEARCH.md)).
+2. **Phase 2 — Core Engine, Host Layer & Single/Dual-Screen iOS Shell:** Port `HengeVM` / `WindowsiOS` `core/`, `devices/`, `host/`, `tests/`, and `ios/` targets—Verify instruction/block unit tests (`make test-core`), enforce `< 104`-byte `AF_UNIX` `sun_path` socket paths in `host/`, pause `CAMetalLayer` rendering on `willResignActive` (preventing iOS app-switcher Metal drawable kills), and guard `UIHingeInteraction` for both foldable iPhone Duo and single-screen iPhones (e.g., iPhone 16 Pro).
+3. **Phase 3 — Arch Linux AArch64 Guest & Dual-Stack Native Bridge:** Provision an Arch Linux `hvsparse` image via Archboot AArch64 (evaluating both 4 KiB default and 16 KiB `HV_TLB_PAGE_BITS=14` kernels), mount `http://10.0.2.4/` WebDAV, and ship `henge-xdg-open` with dual-stack (`127.0.0.1` / `[::1]` ↔ `10.0.2.15`) OAuth port-forwarding and auto-dismiss (`/.henge/oauth-done`).
+4. **Phase 4 — In-App Self-Debugging & VirtIO-GPU 3D Metal Acceleration:** Integrate embedded `StikJIT` (`MPL-2.0`) XPC self-blessing (`PlayportJIT.appex` pattern) and add `virtio-gpu-gl-pci` (`virglrenderer` → `ANGLE` → `Metal`) for 3D Wayland compositors (`Hyprland`, `Wayfire`, `Sway`) alongside `tctiSH`-style background state persistence (since `Henge`'s `pvg_lite.c` targets macOS-only `ParavirtualizedGraphics.framework`).
 
 ---
 

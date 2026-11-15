@@ -29,18 +29,22 @@ App Store emulators such as **UTM SE** fall back to QEMU's Tiny Code Generator T
 `WindowsiOS` (`GPL-2.0-or-later`) builds on **`Leviidev/Henge`** (`HengeVM`), an ARM64 dynamic binary translator created in November 2026 that boots unmodified macOS Sequoia through macOS 27.2 on an iPhone 17 Pro in ~15 seconds, alongside networking/JIT patterns from **`Leviidev/Husk`**, guest runtime concepts from **`mxhm11cr/LinuxRunner`**, and debugger scripts from **`StephenDev0/StikDebug`**.
 
 #### 1.1 Same-Architecture ARM64-to-ARM64 Block Translation (`core/translate.c`)
-Because both guest (Windows 11 ARM64 or Arch Linux AArch64) and host (Apple A14–A20 Pro / M1–M5) execute 64-bit ARM instructions, `HengeVM` avoids QEMU's multi-stage intermediate representation. Unprivileged user-mode computation instructions execute directly on host silicon, while privileged instructions (`MSR`/`MRS` system register accesses, exceptions, TLB operations) and guest memory accesses are rewritten inline against virtual CPU state (`core/cpu.h`, `core/sysreg.c`).
+Because both guest (Windows 11 ARM64 or Arch Linux AArch64) and host (Apple A14–A20 Pro / M1–M5) execute 64-bit ARM instructions, `HengeVM` avoids QEMU's multi-stage intermediate representation. Unprivileged user-mode computation instructions execute directly on host silicon, while privileged instructions (`MSR`/`MRS` system register accesses, exceptions, TLB operations) and guest memory accesses are rewritten inline against virtual CPU state (`core/cpu.h`, `core/sysreg.c`):
+- **Register Allocation & Darwin `x18` Preservation:** Guest registers `x6`, `x7`, `x15`, `x18`, and `x28` are stored in the per-vCPU context struct (`HvCpu`), freeing host `x6`, `x7`, and `x15` as fast scratch registers for inline TLB lookups and branch chaining while preserving Darwin's platform-reserved `x18`.
+- **Hot/Cold Block Splitting:** Each translated basic block is partitioned into a contiguous **hot path** (inline instructions and TLB fast path) and an out-of-line **cold path** (TLB misses, MMIO device traps, and unaligned slow paths), keeping rarely executed slow paths out of hot L1 instruction cache lines.
+- **Pointer Authentication (`PAC`) Stripping:** Because host Apple Silicon PAC keys cannot be written by guest `EL1`, guest pointer-authentication instructions are rewritten inline to a strip or no-op.
 
 Targeted enhancements added in `WindowsiOS` (`core/translate.c`, `core/memop.c`) for multi-process Chromium (`msedge.dll`) and Electron (`Antigravity.exe`) apply directly to Linux guests:
 - **Inline ARMv8.1 LSE Atomics:** Lowers 64-bit and 128-bit exclusive atomic operations into inline Apple Silicon `LDP` and `CASPAL` fast paths.
 - **Zero-Register Exclusive Monitor Fix (`rt == 31`):** Resolves a deadlock/corruption bug triggered when Clang-compiled Chromium and Electron binaries emit `ldxr xzr, [rn]` to arm exclusive monitors.
 - **Unaligned `FEAT_LRCPC2` Accesses (`LDAPUR`/`STLUR`):** `translate_mem_impl()` enforces an inline alignment mask (`host_align`): aligned RCpc accesses execute inline in a single instruction, while unaligned accesses branch out-of-line to software-fenced helpers.
 
-#### 1.2 Stage-1 Software MMU and TLB Stash (`core/mmu.c`)
+#### 1.2 Stage-1 Software MMU, `HV_TLB_PAGE_BITS`, and TLB Stash (`core/mmu.c`)
 Without `Hypervisor.framework`, `core/mmu.c` implements a complete **VMSAv8-64 Stage-1 software MMU** in user space for `EL1&0` across 48-bit virtual and physical address spaces:
 - Compiled with `-mgeneral-regs-only` so page-table walks never corrupt guest SIMD/NEON registers.
 - Maintains 4-way per-privilege software TLB tables (`[EL0, EL1, EL1+PAN]` packed in 128-byte cache lines), 2 MiB and 1 GiB large-page Bloom filters (`large_2m_bloom`, `large_big_bloom`), and a 16-table, 2-way set-associative **Indirect Jump Cache (`IJC`)** (`hv_ijc_resolve`) that maps virtual branch targets directly to executable host blocks while verifying physical page-generation counters (`page_gen`) to detect self-modifying code.
 - Includes an ASID-keyed `HvTlbStash` that preserves live user TLB entries across context switches when an OS transiently switches ASIDs.
+- **Compile-Time `HV_TLB_PAGE_BITS` vs. Runtime `granule_bits()`:** While `granule_bits(uint32_t tg, int ttbr1)` in `core/mmu.c` dynamically walks 4 KiB (`12`), 16 KiB (`14`), and 64 KiB (`16`) stage-1 guest page tables, the software TLB index (`(va >> HV_TLB_PAGE_BITS) & (HV_TLB_SIZE - 1)`) and self-modifying code tracker (`ram->code_pages[(pa - ram->pa) >> HV_TLB_PAGE_BITS]`) are sized by the compile-time constant `HV_TLB_PAGE_BITS`. Upstream `Henge` sets `HV_TLB_PAGE_BITS = 14` (16 KiB) for macOS, whereas `WindowsiOS` sets `HV_TLB_PAGE_BITS = 12` (4 KiB) for Windows NT. In `henge-linux`, keeping `HV_TLB_PAGE_BITS = 12` allows both 4 KiB and 16 KiB Linux kernels to boot unmodified (mapping a 16 KiB guest page across four 4 KiB TLB entries), while offering a build-time `HV_TLB_PAGE_BITS = 14` fast path for dedicated 16 KiB Arch Linux kernels (`CONFIG_ARM64_16K_PAGES=y`) that quadruples TLB reach and shrinks `code_pages` metadata by 4x.
 
 #### 1.3 iOS 26/27 TXM Bypass via `brk #0xf00d` and `0x69` Page Blessing (`winios_jit.c`, `winios_brk.S`)
 To obtain executable JIT memory under iOS 26/27 TXM without a jailbreak:
@@ -77,18 +81,25 @@ No guest-specific Windows lock-in exists inside `devices/`, and every emulated p
 | **Block Storage** | PCIe NVMe 1.4 (`0x1b36:0x0010`) backed by zero-skipping `hvsparse` container | Uses inbox `StorNVMe` driver | Uses inbox Linux NVMe driver (`/dev/nvme0n1`) with GPT, `ext4`, `btrfs`, `xfs`, or `bcachefs` |
 | **Input Devices** | USB 3.0 xHCI (`devices/xhci.c`) with Port 1 Boot Keyboard (`0627:0002`) & Port 2 Absolute Touch Tablet (`0627:0001`) | Uses `USBXHCI.SYS` (required custom `EDTLA` & `CC_STALL` recovery) | Uses standard Linux `xhci` and USB HID drivers for keyboard and absolute touch coordinates |
 | **Audio Subsystem** | PCIe Intel ICH6 HD Audio (`0x8086:0x2668`, `devices/hda.c`) with 6-node duplex codec → `CoreAudio` | Binds inbox `hdaudbus.sys` + `HdAudio.sys` (48 kHz S16LE Stereo Out + Mic In) | Binds standard Linux Intel HD Audio driver automatically for 48 kHz / 44.1 kHz 16-bit PCM playback and capture |
-| **Networking & Bridge** | VirtIO-Net (`0x1af4:0x1000`) over rootless `libslirp` NAT (`10.0.2.15`) + `http://10.0.2.4/.henge/` | Requires external WHQL Red Hat `NetKVM` driver injection via offline WinPE DISM | Uses inbox Linux VirtIO-Net driver (**zero driver injection needed**) + `xdg-open` wrapper to `10.0.2.4/.henge/` |
-| **Display Output** | `devices/fb_metal.m` BGRA8 UEFI framebuffer on 120 Hz `CAMetalLayer` (60 FPS dirty-frame check) | Uses 2D software framebuffer rendering | Renders UEFI GOP framebuffer at 60/120 Hz; upgradeable with `Henge` vGPU or `virglrenderer` → `ANGLE` → `Metal` |
+| **Networking & Bridge** | VirtIO-Net (`0x1af4:0x1000`) over rootless `libslirp` NAT (`10.0.2.15`) + `host/share.c` (`http://10.0.2.4/.henge/` over internal `AF_UNIX` socket) | Requires external WHQL Red Hat `NetKVM` driver injection via offline WinPE DISM | Uses inbox Linux VirtIO-Net driver (**zero driver injection needed**), `davfs2`/`rclone` WebDAV mount, and `henge-xdg-open` wrapper |
+| **Display Output** | `devices/fb_metal.m` BGRA8 UEFI framebuffer on 120 Hz `CAMetalLayer` (60 FPS dirty-frame check) | Uses 2D software framebuffer rendering | Binds Linux `simpledrm`/`efifb` at 60/120 Hz; 3D acceleration requires `virtio-gpu-gl-pci` (`virglrenderer` → `ANGLE` → `Metal`), as `Henge`'s `pvg_lite.c` is macOS-only |
 | **Memory Overhead** | 4,608 MiB (4.5 GB) `LEDGER_NO_FOOTPRINT` Guest RAM (or 2–3 GB on 8 GB iPhones) | **1.46 GB** idle *after* stripping 35+ services via offline WinPE hive surgery | Minimal base footprint (~673 MB live image), leaving >3.5 GB free RAM on 4.5 GB VMs |
 
-### 2.2 Native Safari Passkey/OAuth & Port-Forwarding Bridge (`10.0.2.4/.henge/`)
+### 2.2 Native Safari Passkey/OAuth, Dual-Stack Port Forwarding & WebDAV Bridge (`host/share.c` → `10.0.2.4/.henge/`)
 
-`WindowsiOS` exposes a host control endpoint at `http://10.0.2.4/.henge/` over `libslirp`:
+`WindowsiOS` and `Henge` route guest requests to `http://10.0.2.4/` through `libslirp` to an internal `AF_UNIX` socket in the app's sandbox container (`host/share.c`), ensuring no host TCP port is exposed to other iOS apps. Note that on iOS, deep app-container paths can exceed Darwin's 104-byte `sockaddr_un.sun_path` limit, requiring a shortened socket path inside the container.
+
+The `10.0.2.4` gateway provides both a root WebDAV server (mountable on Arch Linux via `davfs2`, `rclone`, or `gvfs`) and control endpoints under `/.henge/`:
 - `PUT http://10.0.2.4/.henge/expose-port` — forwards a host TCP port to the guest NIC (`10.0.2.15:<PORT>`).
 - `PUT http://10.0.2.4/.henge/open-url` — opens a URL inside an in-app `SFSafariViewController` (`SafariSheet`) with native Face ID, Passkeys, and Safari session state.
 - `PUT http://10.0.2.4/.henge/oauth-done` — automatically dismisses the Safari sheet once an OAuth callback hits the guest's local listener.
+- `/.henge/clipboard` — synchronizes the guest clipboard with `UIPasteboard`.
 
-On Arch Linux, a lightweight shell script registered as the default `xdg-open` browser handler (`curl -s -X PUT -d "$1" http://10.0.2.4/.henge/open-url`) provides native iOS Safari Passkey/OAuth authentication without writing custom C Win32 shims.
+Because Linux CLI tools and IDEs (`gh auth login`, `gcloud`, Code-OSS, Antigravity) typically bind OAuth redirect listeners strictly to loopback (`127.0.0.1:<PORT>` or IPv6 `[::1]:<PORT>`) rather than `10.0.2.15:<PORT>`, the Arch Linux `henge-xdg-open` helper must:
+1. Detect loopback OAuth callback ports in the URL or `/proc/net/tcp{,6}`,
+2. Spawn a lightweight dual-stack TCP relay bridging `10.0.2.15:<PORT>` to `127.0.0.1:<PORT>` and `[::1]:<PORT>`,
+3. Invoke `PUT http://10.0.2.4/.henge/expose-port` followed by `PUT http://10.0.2.4/.henge/open-url`, and
+4. Send `PUT http://10.0.2.4/.henge/oauth-done` once the loopback listener returns HTTP `200` or `302`.
 
 ### 2.3 Selecting an Arch Linux `aarch64` Distribution
 
@@ -126,11 +137,18 @@ Because official upstream Arch Linux (`archlinux.org`) compiles packages exclusi
 
 ---
 
-## 5. Unified `henge-linux` Implementation Blueprint
+## 5. Unified `henge-linux` Implementation Blueprint & Technical Risks
 
 To combine the strongest capabilities of these architectures under **`GPL-3.0-or-later`**:
 
-1. **Core Virtualization Engine (`core/` + `devices/`):** Port `HengeVM` / `WindowsiOS`'s direct ARM64-to-ARM64 block translator, 16 KiB + 4 KiB stage-1 software MMU, `LEDGER_NO_FOOTPRINT` memory allocator, UEFI + ACPI 6.3 + PCIe GPEX bus, NVMe 1.4 (`hvsparse`), Intel ICH6 duplex CoreAudio bridge, and VirtIO-Net (`libslirp` + `10.0.2.4/.henge/`).
-2. **Adaptive Single- & Dual-Screen SwiftUI Frontend (`ios/Sources/`):** Support both iPhone Duo (`UIHingeInteraction` clamshell + Open Studio) and standard iPhones/iPads (`SessionView` + configurable RAM presets).
-3. **In-App Self-Debugging Extension (`PlayportJIT.appex` Pattern):** Bundle `StikJIT` (`MPL-2.0`) and `idevice` (`MIT`) inside an embedded helper `NSExtension` (`com.apple.ar.viewer`) to self-bless the 384 MiB TXM JIT pool on launch without a tethered Mac or external app switch.
-4. **3D Metal Acceleration & Lifecycle Persistence:** Upgrade `devices/fb_metal.m` with `Henge`'s Metal command-replaying vGPU or `virglrenderer` → `ANGLE` → `Metal`, and integrate `tctiSH`-style background state suspension to protect against Jetsam kills when backgrounded.
+1. **Core Virtualization Engine & Host Layer (`core/`, `devices/`, `host/`, `tests/`):**
+   - Port `HengeVM` / `WindowsiOS`'s direct ARM64-to-ARM64 block translator (`core/translate.c`), Stage-1 software MMU (`core/mmu.c` with configurable `HV_TLB_PAGE_BITS=12` compatibility and `HV_TLB_PAGE_BITS=14` 16 KiB fast-path builds), `LEDGER_NO_FOOTPRINT` memory allocator, UEFI + ACPI 6.3 + PCIe GPEX bus, NVMe 1.4 (`hvsparse`), Intel ICH6 duplex CoreAudio bridge (`devices/hda.c` + `host/audio_mac.c`), and VirtIO-Net (`libslirp` + `host/share.c` with `< 104`-byte `AF_UNIX` `sun_path` handling).
+   - Preserve instruction-level and block-level unit tests in `tests/` (`make test-core`) to verify translator and MMU invariants before iOS deployment.
+2. **Adaptive Single- & Dual-Screen SwiftUI Frontend & Metal Lifecycle (`ios/Sources/`):**
+   - Support both foldable iPhone Duo (`UIHingeInteraction` clamshell + Open Studio) and standard single-screen iPhones/iPads (`SessionView` + configurable 2–6 GB RAM presets).
+   - **iOS App-Switcher Metal Drawable Guard:** When the user opens the iOS app switcher, iOS seizes the `CAMetalLayer` drawable upon `willResignActive` *before* the app enters the background; attempting to render even one more frame triggers a fatal `gpus_ReturnNotPermittedKillClient` abort on resume. The display presenter (`fb_metal.m`) and audio queues (`audio_mac.c`) must synchronously pause on `UIApplication.willResignActiveNotification` and resume on `didBecomeActiveNotification`.
+3. **In-App Self-Debugging Extension (`PlayportJIT.appex` Pattern):**
+   - Bundle `StikJIT` (`MPL-2.0`) and `idevice` (`MIT`) inside an embedded helper `NSExtension` (`com.apple.ar.viewer`) to self-bless the 384 MiB TXM JIT pool on launch in ~3.2 s without a tethered Mac or external app switch.
+4. **3D Metal Acceleration (`virtio-gpu-gl-pci` vs. `pvg_lite.c`) & Lifecycle Persistence:**
+   - **Important Driver Distinction:** Upstream `Leviidev/Henge` achieves Metal acceleration on macOS via `devices/pvg_lite.c` and `devices/pvg_metal.m`, which emulate Apple's proprietary `ParavirtualizedGraphics.framework` PCIe device—a device for which **no mainline Linux kernel driver exists**.
+   - Consequently, `henge-linux` uses `devices/fb_metal.m` (bound by Linux's inbox `simpledrm` / `efifb` UEFI GOP drivers) for initial bring-up, and targets **`virtio-gpu-gl-pci` backed by `virglrenderer` → `ANGLE` → `Metal`** (reusing the `GPL-3.0`-compatible `LinuxRunner` / QEMU VirGL stack) for Phase 4 hardware-accelerated Wayland compositing (`Hyprland`, `Wayfire`, `Sway`), alongside `tctiSH`-style background VM state suspension.
