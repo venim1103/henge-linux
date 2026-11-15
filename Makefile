@@ -39,21 +39,17 @@ hvsparse: $(BUILD_DIR)/hvsparse
 test-core: $(BUILD_DIR)/test_core
 	./$(BUILD_DIR)/test_core
 
-ios-lib: | $(BUILD_DIR)
+ios-lib: $(HOST_SRCS) $(HOST_HDRS) host/henge_brk.S | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		set -euo pipefail; \
 		IOS_SDK=$$(xcrun --sdk iphoneos --show-sdk-path); \
-		xcrun --sdk iphoneos clang -std=c11 -O2 -arch arm64 -mios-version-min=26.0 \
-			-isysroot "$$IOS_SDK" -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost \
-			-c host/henge_platform.c -o $(BUILD_DIR)/ios/henge_platform.o; \
-		xcrun --sdk iphoneos clang -std=c11 -O2 -arch arm64 -mios-version-min=26.0 \
-			-isysroot "$$IOS_SDK" -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost \
-			-c host/henge_txm_jit.c -o $(BUILD_DIR)/ios/henge_txm_jit.o; \
-		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 \
-			-isysroot "$$IOS_SDK" -c host/henge_brk.S -o $(BUILD_DIR)/ios/henge_brk.o; \
-		xcrun --sdk iphoneos clang -std=c11 -O2 -arch arm64 -mios-version-min=26.0 \
-			-isysroot "$$IOS_SDK" -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost \
-			-c host/henge_virtio_gpu.c -o $(BUILD_DIR)/ios/henge_virtio_gpu.o; \
+		IOS_CFLAGS="-std=c11 -O2 -Wall -Wextra -Werror -arch arm64 -mios-version-min=26.0 -isysroot $$IOS_SDK -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost"; \
+		xcrun --sdk iphoneos clang $$IOS_CFLAGS -c host/henge_platform.c -o $(BUILD_DIR)/ios/henge_platform.o; \
+		xcrun --sdk iphoneos clang $$IOS_CFLAGS -c host/henge_txm_jit.c -o $(BUILD_DIR)/ios/henge_txm_jit.o; \
+		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$$IOS_SDK" -c host/henge_brk.S -o $(BUILD_DIR)/ios/henge_brk.o; \
+		xcrun --sdk iphoneos clang $$IOS_CFLAGS -c host/henge_virtio_gpu.c -o $(BUILD_DIR)/ios/henge_virtio_gpu.o; \
+		rm -f $(BUILD_DIR)/ios/libhengelinux.a; \
 		ar rcs $(BUILD_DIR)/ios/libhengelinux.a \
 			$(BUILD_DIR)/ios/henge_platform.o \
 			$(BUILD_DIR)/ios/henge_txm_jit.o \

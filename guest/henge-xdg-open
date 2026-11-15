@@ -12,15 +12,36 @@ henge-xdg-open: Arch Linux guest URL opener and dual-stack OAuth callback relay.
    loopback callback returns HTTP 200 or 302.
 """
 
+import errno
+import os
 import re
 import socket
 import sys
 import threading
+import time
 import urllib.parse
 import urllib.request
 
 GATEWAY = "http://10.0.2.4/.henge"
 GUEST_NIC_IP = "10.0.2.15"
+OAUTH_DONE_PREFIXES = (
+    b"HTTP/1.0 200",
+    b"HTTP/1.1 200",
+    b"HTTP/1.0 201",
+    b"HTTP/1.1 201",
+    b"HTTP/1.0 204",
+    b"HTTP/1.1 204",
+    b"HTTP/1.0 301",
+    b"HTTP/1.1 301",
+    b"HTTP/1.0 302",
+    b"HTTP/1.1 302",
+    b"HTTP/1.0 303",
+    b"HTTP/1.1 303",
+    b"HTTP/1.0 307",
+    b"HTTP/1.1 307",
+    b"HTTP/1.0 308",
+    b"HTTP/1.1 308",
+)
 
 
 def gateway_put(endpoint: str, payload: str = "") -> None:
@@ -38,6 +59,9 @@ def gateway_put(endpoint: str, payload: str = "") -> None:
 
 def extract_loopback_port(target_url: str) -> int | None:
     parsed = urllib.parse.urlparse(target_url)
+    if parsed.hostname in ("localhost", "127.0.0.1", "::1") and parsed.port is not None:
+        return int(parsed.port)
+
     params = urllib.parse.parse_qs(parsed.query)
     for key in ("redirect_uri", "redirect_url", "callback", "state"):
         for val in params.get(key, []):
@@ -52,8 +76,8 @@ def extract_loopback_port(target_url: str) -> int | None:
 
 def connect_loopback(port: int) -> socket.socket:
     for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        sock = socket.socket(family, socket.SOCK_STREAM)
         try:
-            sock = socket.socket(family, socket.SOCK_STREAM)
             sock.settimeout(2.0)
             sock.connect((host, port))
             sock.settimeout(None)
@@ -63,14 +87,21 @@ def connect_loopback(port: int) -> socket.socket:
     raise ConnectionRefusedError(f"No loopback listener on port {port}")
 
 
-def relay_stream(src: socket.socket, dst: socket.socket, done_event: threading.Event) -> None:
+def relay_stream(
+    src: socket.socket,
+    dst: socket.socket,
+    done_event: threading.Event,
+    is_response: bool = False,
+) -> None:
+    first_chunk = True
     try:
         while True:
             chunk = src.recv(4096)
             if not chunk:
                 break
-            if b"HTTP/1." in chunk and (b" 200 " in chunk or b" 302 " in chunk):
+            if is_response and first_chunk and chunk.startswith(OAUTH_DONE_PREFIXES):
                 done_event.set()
+            first_chunk = False
             dst.sendall(chunk)
     except OSError:
         pass
@@ -81,6 +112,25 @@ def relay_stream(src: socket.socket, dst: socket.socket, done_event: threading.E
             pass
 
 
+def daemonize_background() -> None:
+    """Double-fork and detach stdio so CLI callers (gh, gcloud, xdg-open) return 0 immediately."""
+    pid = os.fork()
+    if pid > 0:
+        os._exit(0)
+    os.setsid()
+    pid2 = os.fork()
+    if pid2 > 0:
+        os._exit(0)
+
+    devnull = os.open(os.devnull, os.O_RDWR)
+    try:
+        for fd in (0, 1, 2):
+            os.dup2(devnull, fd)
+    finally:
+        if devnull > 2:
+            os.close(devnull)
+
+
 def run_oauth_bridge(port: int, url: str) -> None:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -88,12 +138,19 @@ def run_oauth_bridge(port: int, url: str) -> None:
     try:
         listener.bind((GUEST_NIC_IP, port))
         listener.listen(4)
-    except OSError:
+    except OSError as exc:
+        listener.close()
+        if exc.errno == errno.EADDRINUSE:
+            # Guest listener already bound 0.0.0.0/[::] on this port; expose via libslirp.
+            gateway_put("expose-port", str(port))
         gateway_put("open-url", url)
         return
 
     gateway_put("expose-port", str(port))
     gateway_put("open-url", url)
+
+    # Return control to parent CLI caller immediately while relaying callback in background.
+    daemonize_background()
 
     done_event = threading.Event()
     try:
@@ -107,8 +164,16 @@ def run_oauth_bridge(port: int, url: str) -> None:
             except OSError:
                 client.close()
                 continue
-            t1 = threading.Thread(target=relay_stream, args=(client, upstream, done_event), daemon=True)
-            t2 = threading.Thread(target=relay_stream, args=(upstream, client, done_event), daemon=True)
+            t1 = threading.Thread(
+                target=relay_stream,
+                args=(client, upstream, done_event, False),
+                daemon=True,
+            )
+            t2 = threading.Thread(
+                target=relay_stream,
+                args=(upstream, client, done_event, True),
+                daemon=True,
+            )
             t1.start()
             t2.start()
             t1.join(timeout=5.0)
@@ -118,6 +183,7 @@ def run_oauth_bridge(port: int, url: str) -> None:
     finally:
         listener.close()
         if done_event.is_set():
+            time.sleep(0.3)
             gateway_put("oauth-done", str(port))
 
 

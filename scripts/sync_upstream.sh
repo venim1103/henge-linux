@@ -12,12 +12,13 @@ DEST_DIR=".upstream/WindowsiOS"
 mkdir -p .upstream
 
 if [ ! -d "$DEST_DIR/.git" ]; then
-    echo "[sync] Cloning $UPSTREAM_URL ($UPSTREAM_REF) -> $DEST_DIR"
-    git clone --depth 1 --branch "$UPSTREAM_REF" "$UPSTREAM_URL" "$DEST_DIR"
-else
-    echo "[sync] Updating $DEST_DIR ($UPSTREAM_REF)"
-    git -C "$DEST_DIR" fetch --depth 1 origin "$UPSTREAM_REF"
-    git -C "$DEST_DIR" checkout -q FETCH_HEAD
+    echo "[sync] Initializing $DEST_DIR ($UPSTREAM_URL @ $UPSTREAM_REF)"
+    git init "$DEST_DIR" >/dev/null
+    git -C "$DEST_DIR" remote add origin "$UPSTREAM_URL"
 fi
 
-echo "[sync] Upstream engine ready at $DEST_DIR ($(git -C "$DEST_DIR" rev-parse --short HEAD))"
+echo "[sync] Fetching $UPSTREAM_URL ($UPSTREAM_REF)"
+git -C "$DEST_DIR" fetch --depth 1 origin "$UPSTREAM_REF"
+git -C "$DEST_DIR" checkout -q FETCH_HEAD
+
+echo "[sync] Upstream engine ready at $DEST_DIR ($(git -C "$DEST_DIR" rev-parse HEAD))"

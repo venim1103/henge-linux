@@ -11,18 +11,32 @@
 static void test_unix_socket_path_bounds(void) {
     char out[HENGE_DARWIN_SUN_PATH_MAX];
 
+    /* Root directory avoids double-slash prefix. */
+    int rc = henge_format_unix_socket_path("/", "henge.sock", out, sizeof(out));
+    assert(rc == 0);
+    assert(strcmp(out, "/henge.sock") == 0);
+
     /* Short path fits directly within Darwin's 104-byte sockaddr_un.sun_path. */
-    int rc = henge_format_unix_socket_path("/var/tmp/henge", "share.sock", out, sizeof(out));
+    rc = henge_format_unix_socket_path("/var/tmp/henge", "share.sock", out, sizeof(out));
     assert(rc == 0);
     assert(strcmp(out, "/var/tmp/henge/share.sock") == 0);
     assert(strlen(out) < HENGE_DARWIN_SUN_PATH_MAX);
 
-    /* Deep iOS sandbox path (>104 bytes) falls back cleanly to deterministic /tmp/hl-<hash>. */
+    /* Deep iOS sandbox path (>104 bytes) normalizes /private/var -> /var/<UUID>/tmp/. */
     const char *deep_ios_sandbox =
-        "/var/mobile/Containers/Data/Application/12345678-90AB-CDEF-1234-567890ABCDEF/Documents/Machines/ArchLinux";
+        "/private/var/mobile/Containers/Data/Application/12345678-90AB-CDEF-1234-567890ABCDEF/Documents/Machines/ArchLinux";
     assert(strlen(deep_ios_sandbox) >= HENGE_DARWIN_SUN_PATH_MAX);
 
     rc = henge_format_unix_socket_path(deep_ios_sandbox, "share.sock", out, sizeof(out));
+    assert(rc == 0);
+    assert(strlen(out) < HENGE_DARWIN_SUN_PATH_MAX);
+    assert(strcmp(out, "/var/mobile/Containers/Data/Application/12345678-90AB-CDEF-1234-567890ABCDEF/tmp/share.sock") == 0);
+
+    /* Non-iOS deep host path falls back to deterministic /tmp/hl-<hash>-<name>. */
+    const char *deep_host_path =
+        "/Users/developer/workspace/nested/extremely/long/directory/hierarchy/for/virtual/machines/ArchLinux";
+    assert(strlen(deep_host_path) >= HENGE_DARWIN_SUN_PATH_MAX);
+    rc = henge_format_unix_socket_path(deep_host_path, "share.sock", out, sizeof(out));
     assert(rc == 0);
     assert(strlen(out) < HENGE_DARWIN_SUN_PATH_MAX);
     assert(strncmp(out, "/tmp/hl-", 8) == 0);
@@ -59,6 +73,10 @@ static void test_guest_ram_alignment(void) {
 
 static void test_render_pause_lifecycle_gate(void) {
     assert(hengelinux_is_render_paused() == false);
+    hengelinux_render_lock();
+    assert(hengelinux_is_render_paused() == false);
+    hengelinux_render_unlock();
+
     hengelinux_set_render_paused(true);
     assert(hengelinux_is_render_paused() == true);
     hengelinux_set_render_paused(false);
@@ -83,6 +101,16 @@ static void test_txm_jit_bounds_and_blessing(void) {
     assert(henge_txm_stamp_blessing_markers(buf, test_pool_size) == 0);
     assert(henge_txm_verify_blessing_markers(buf, test_pool_size) == true);
     free(buf);
+
+    /* Verify page-aligned guest RAM allocator/deallocator round-trip. */
+    bool ledger_exempt = true;
+    void *ram = henge_alloc_ledger_exempt_ram(test_pool_size, &ledger_exempt);
+    assert(ram != NULL);
+    ((uint8_t *)ram)[0] = 0xAAU;
+    ((uint8_t *)ram)[test_pool_size - 1U] = 0x55U;
+    henge_free_ledger_exempt_ram(ram, test_pool_size);
+    (void)henge_txm_is_ptraced();
+    (void)henge_txm_is_cs_debugged();
 }
 
 static void test_virtio_gpu_backends(void) {
