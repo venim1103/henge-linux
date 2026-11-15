@@ -34,7 +34,7 @@ static void test_unix_socket_path_bounds(void) {
 
     /* Non-iOS deep host path falls back to deterministic /tmp/hl-<hash>-<name>. */
     const char *deep_host_path =
-        "/Users/developer/workspace/nested/extremely/long/directory/hierarchy/for/virtual/machines/ArchLinux";
+        "/Users/developer/workspace/nested/extremely/long/directory/hierarchy/for/virtual/machines/ArchLinux/session";
     assert(strlen(deep_host_path) >= HENGE_DARWIN_SUN_PATH_MAX);
     rc = henge_format_unix_socket_path(deep_host_path, "share.sock", out, sizeof(out));
     assert(rc == 0);
