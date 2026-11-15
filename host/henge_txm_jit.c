@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#if !defined(__APPLE__)
 #define _POSIX_C_SOURCE 200809L
+#endif
 
 #include "henge_txm_jit.h"
 #include "henge_platform.h"
@@ -10,7 +12,15 @@
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <sys/sysctl.h>
+#include <sys/types.h>
 #include <unistd.h>
+
+extern kern_return_t mach_memory_entry_ownership(
+    mem_entry_name_port_t mem_entry,
+    task_t owner,
+    int ledger_tag,
+    int ledger_flags
+);
 #endif
 
 #ifndef MAP_ANONYMOUS
