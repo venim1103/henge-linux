@@ -30,7 +30,7 @@ jobs:
           python3 -m py_compile guest/henge-xdg-open
           bash -n guest/setup-arch-bridge.sh
           bash -n scripts/provision_archlinux_arm64.sh
-          ./scripts/provision_archlinux_arm64.sh --dry-run
+          bash scripts/provision_archlinux_arm64.sh --dry-run
 
   ios-build:
     name: iOS Unsigned IPA Build (macOS)

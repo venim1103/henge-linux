@@ -50,7 +50,7 @@ ios-lib: | $(BUILD_DIR)
 	fi
 
 sync-upstream:
-	./scripts/sync_upstream.sh
+	bash ./scripts/sync_upstream.sh
 
 ios-project:
 	xcodegen generate --spec ios/project.yml
