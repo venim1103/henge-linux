@@ -42,6 +42,19 @@ jobs:
           bash -n guest/setup-arch-bridge.sh
           bash -n scripts/provision_archlinux_arm64.sh
           bash scripts/provision_archlinux_arm64.sh --dry-run
+      - name: Inspect upstream headers for Milestone 5.1 & 5.2
+        run: |
+          bash scripts/sync_upstream.sh >/dev/null
+          {
+            echo "=== hvsparse.h ==="
+            cat .upstream/WindowsiOS/host/hvsparse.h 2>/dev/null || true
+            echo "=== fb_metal.h & xhci.h ==="
+            cat .upstream/WindowsiOS/devices/fb_metal.h 2>/dev/null || true
+            cat .upstream/WindowsiOS/devices/xhci.h 2>/dev/null || true
+            echo "=== winvm / main_mac ==="
+            head -n 30 .upstream/WindowsiOS/host/winvm.c 2>/dev/null || true
+            grep -n -E "ID_AA64|A1|stash" .upstream/WindowsiOS/core/sysreg.c .upstream/WindowsiOS/core/mmu.c | head -n 25
+          } | tail -n 74
 
   ios-build:
     name: iOS Unsigned IPA Build (macOS)
