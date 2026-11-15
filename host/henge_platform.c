@@ -14,6 +14,7 @@
 static atomic_bool g_render_paused = false;
 static pthread_mutex_t g_render_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+#if !(defined(__APPLE__) && TARGET_OS_IPHONE)
 static uint64_t fnv1a_64(const char *str) {
     uint64_t hash = 14695981039346656037ULL;
     const unsigned char *p = (const unsigned char *)str;
@@ -23,6 +24,7 @@ static uint64_t fnv1a_64(const char *str) {
     }
     return hash;
 }
+#endif
 
 /*
  * Extract an iOS app container root (up to the 36-char UUID directory) when
