@@ -1,0 +1,52 @@
+name: HengeLinux
+options:
+  bundleIdPrefix: io.hengelinux
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    SWIFT_VERSION: "6.0"
+    CLANG_C_LANGUAGE_STANDARD: c11
+    GCC_PREPROCESSOR_DEFINITIONS:
+      - "$(inherited)"
+      - "HV_TLB_PAGE_BITS=12"
+    HEADER_SEARCH_PATHS:
+      - "$(inherited)"
+      - "$(SRCROOT)/../host"
+
+targets:
+  HengeLinux:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../host/henge_platform.c
+      - path: ../host/henge_platform.h
+    entitlements:
+      path: HengeLinux.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.hengelinux.app
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    frameworks:
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: AudioToolbox.framework
+      - sdk: SafariServices.framework
+      - sdk: GameController.framework

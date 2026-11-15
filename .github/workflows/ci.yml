@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  core-tests:
+    name: Core & Platform Unit Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run 4 KiB TLB compatibility tests
+        run: make HV_TLB_PAGE_BITS=12 test-core
+      - name: Run 16 KiB TLB fast-path tests
+        run: make clean && make HV_TLB_PAGE_BITS=14 test-core
+      - name: Validate guest OAuth bridge syntax
+        run: python3 -m py_compile guest/henge-xdg-open
+
+  ios-build:
+    name: iOS Unsigned IPA Build (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Run macOS platform tests
+        run: make test-core
+      - name: Generate Xcode project
+        run: xcodegen generate --spec ios/project.yml
+      - name: Build unsigned iphoneos bundle
+        run: |
+          xcodebuild \
+            -project ios/HengeLinux.xcodeproj \
+            -scheme HengeLinux \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build

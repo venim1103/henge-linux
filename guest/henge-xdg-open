@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""
+henge-xdg-open: Arch Linux guest URL opener and dual-stack OAuth callback relay.
+
+1. Detects localhost/loopback redirect_uri ports (127.0.0.1 or [::1]) in OAuth URLs.
+2. Exposes the port via PUT http://10.0.2.4/.henge/expose-port and bridges
+   10.0.2.15:<PORT> <-> 127.0.0.1:<PORT> / [::1]:<PORT>.
+3. Opens the URL in native iOS SFSafariViewController via PUT http://10.0.2.4/.henge/open-url
+   (supporting Face ID, Passkeys, and existing Safari sessions).
+4. Dismisses the Safari sheet via PUT http://10.0.2.4/.henge/oauth-done once the
+   loopback callback returns HTTP 200 or 302.
+"""
+
+import re
+import socket
+import sys
+import threading
+import urllib.parse
+import urllib.request
+
+GATEWAY = "http://10.0.2.4/.henge"
+GUEST_NIC_IP = "10.0.2.15"
+
+
+def gateway_put(endpoint: str, payload: str = "") -> None:
+    req = urllib.request.Request(
+        f"{GATEWAY}/{endpoint}",
+        data=payload.encode("utf-8"),
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3):
+            pass
+    except Exception:
+        pass
+
+
+def extract_loopback_port(target_url: str) -> int | None:
+    parsed = urllib.parse.urlparse(target_url)
+    params = urllib.parse.parse_qs(parsed.query)
+    for key in ("redirect_uri", "redirect_url", "callback", "state"):
+        for val in params.get(key, []):
+            match = re.search(
+                r"https?://(?:localhost|127\.0\.0\.1|\[::1\]):(\d{2,5})",
+                urllib.parse.unquote(val),
+            )
+            if match:
+                return int(match.group(1))
+    return None
+
+
+def connect_loopback(port: int) -> socket.socket:
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            sock.connect((host, port))
+            sock.settimeout(None)
+            return sock
+        except OSError:
+            sock.close()
+    raise ConnectionRefusedError(f"No loopback listener on port {port}")
+
+
+def relay_stream(src: socket.socket, dst: socket.socket, done_event: threading.Event) -> None:
+    try:
+        while True:
+            chunk = src.recv(4096)
+            if not chunk:
+                break
+            if b"HTTP/1." in chunk and (b" 200 " in chunk or b" 302 " in chunk):
+                done_event.set()
+            dst.sendall(chunk)
+    except OSError:
+        pass
+    finally:
+        try:
+            dst.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
+def run_oauth_bridge(port: int, url: str) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.settimeout(180.0)
+    try:
+        listener.bind((GUEST_NIC_IP, port))
+        listener.listen(4)
+    except OSError:
+        gateway_put("open-url", url)
+        return
+
+    gateway_put("expose-port", str(port))
+    gateway_put("open-url", url)
+
+    done_event = threading.Event()
+    try:
+        while not done_event.is_set():
+            try:
+                client, _ = listener.accept()
+            except TimeoutError:
+                break
+            try:
+                upstream = connect_loopback(port)
+            except OSError:
+                client.close()
+                continue
+            t1 = threading.Thread(target=relay_stream, args=(client, upstream, done_event), daemon=True)
+            t2 = threading.Thread(target=relay_stream, args=(upstream, client, done_event), daemon=True)
+            t1.start()
+            t2.start()
+            t1.join(timeout=5.0)
+            t2.join(timeout=5.0)
+            client.close()
+            upstream.close()
+    finally:
+        listener.close()
+        if done_event.is_set():
+            gateway_put("oauth-done", str(port))
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or not sys.argv[1]:
+        print("usage: henge-xdg-open <url>", file=sys.stderr)
+        return 2
+
+    target = sys.argv[1]
+    port = extract_loopback_port(target)
+    if port is not None:
+        run_oauth_bridge(port, target)
+    else:
+        gateway_put("open-url", target)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
