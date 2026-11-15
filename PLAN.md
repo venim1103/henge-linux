@@ -29,36 +29,37 @@
 ```text
 henge-linux/
 ├── host/                           # C11 & ARM64 assembly host substrate (compiled into libhengelinux.a & iOS app)
-│   ├── henge_platform.{h,c}        # Darwin <104B sun_path formatter, TCR_EL1 TG0/TG1 decoder, 16KiB RAM aligner, render pause gate
-│   ├── henge_txm_jit.{h,c}         # TXM [4GiB, 64GiB) VA validator, 0x69 page blessing, LEDGER_NO_FOOTPRINT allocator
-│   ├── henge_brk.S                 # ARM64 brk #0xf00d traps (x16=1 prepare region, x16=0 detach debugger)
+│   ├── henge_platform.{h,c}        # Darwin <104B sun_path formatter (iOS sandbox /tmp), TCR_EL1 decoder, RAM aligner, render mutex gate
+│   ├── henge_txm_jit.{h,c}         # TXM [4GiB, 64GiB) VA validator, 0x69 blessing, P_TRACED vs CS_DEBUGGED, MAP_MEM_NAMED_CREATE RAM
+│   ├── henge_brk.S                 # ARM64 brk #0xf00d traps with .cfi unwind & BTI landing pads
 │   └── henge_virtio_gpu.{h,c}      # VirtIO-GPU PCI (0x1af4:0x1050) backend selector (2D GOP vs 3D VirGL/ANGLE)
 ├── tools/
-│   └── hvsparse.c                  # Zero-skipping 64 KiB block sparse disk container packer/unpacker
-├── ios/                            # XcodeGen iOS 26.0+ SwiftUI app + embedded JIT helper extension
-│   ├── project.yml                 # Generates HengeLinux.xcodeproj (HengeLinux app + HengeLinuxJITExtension)
+│   └── hvsparse.c                  # Zero-skipping 64 KiB block sparse disk container packer/unpacker (64 KiB aligned data_offset)
+├── ios/                            # XcodeGen iOS 26.0+ SwiftUI app + embedded JIT helper extension (links libhengelinux.a)
+│   ├── project.yml                 # Generates HengeLinux.xcodeproj with Files sharing + nested JITExtension/Info.plist
 │   ├── HengeLinux.entitlements     # com.apple.developer.kernel.increased-memory-limit
 │   ├── Sources/
-│   │   ├── HengeLinuxApp.swift     # Launcher, hardware RAM presets, SafariSheetView, lifecycle observers
+│   │   ├── HengeLinuxApp.swift     # Launcher, dynamic physicalMemory RAM cap, async JIT boot, SafariSheetView
 │   │   ├── SessionView.swift       # Metal framebuffer host, clamshell input deck, compact modifier strip
 │   │   ├── HingeSensorView.swift   # Runtime UIHingeInteraction detector + single-screen clamshell preview toggle
-│   │   ├── MetalLifecycleGuard.swift # Thread-safe willResignActive/didBecomeActive CAMetalLayer pause gate
-│   │   ├── SelfDebugJITClient.swift  # Pairing record check, JIT activation state machine, GPU backend picker
+│   │   ├── MetalLifecycleGuard.swift # Synchronous NotificationCenter observer + C pthread_mutex render fence
+│   │   ├── SelfDebugJITClient.swift  # P_TRACED / CS_DEBUGGED state machine + process-lifetime pool reuse
 │   │   └── HengeLinux-Bridging-Header.h
 │   └── JITExtension/
-│       └── JITExtensionHandler.swift # com.apple.ar.viewer NSExtension request handler for in-app TXM blessing
+│       ├── Info.plist              # Nested NSExtension dictionary (com.apple.ar.viewer)
+│       └── JITExtensionHandler.swift # NSExtension request handler for in-app TXM blessing
 ├── guest/                          # Scripts deployed inside the Arch Linux aarch64 guest
-│   ├── henge-xdg-open              # Dual-stack (127.0.0.1 / [::1] <-> 10.0.2.15) OAuth relay + SafariSheet bridge
+│   ├── henge-xdg-open              # Non-blocking double-fork dual-stack OAuth relay + EADDRINUSE + SafariSheet bridge
 │   └── setup-arch-bridge.sh        # Installs xdg-open handler, systemd-networkd VirtIO DHCP, and /mnt/ios-share
 ├── scripts/
-│   ├── sync_upstream.sh            # Clones/updates ammaarreshi/WindowsiOS into .upstream/WindowsiOS
+│   ├── sync_upstream.sh            # Initializes/fetches ammaarreshi/WindowsiOS (branches, tags, or pinned SHAs)
 │   ├── build_ios_deps.sh           # Cross-compiles iOS static deps with /opt/homebrew vs /usr/local detection
 │   └── provision_archlinux_arm64.sh # Boots Archboot AArch64 ISO in QEMU with EDK2 + NVMe and packs hvsparse
 ├── tests/
-│   └── test_core.c                 # Deterministic unit tests for sun_path, MMU granules, RAM, TXM JIT, VirtIO-GPU
+│   └── test_core.c                 # Unit tests for iOS sandbox sun_path, MMU granules, RAM, render lock, TXM JIT, VirtIO-GPU
 ├── docs/
 │   └── RESEARCH.md                 # Deep technical review of WindowsiOS and 6 Linux-on-iOS architectures
-└── .github/workflows/ci.yml        # Linux unit tests + macOS XcodeGen + unsigned .ipa build & artifact upload
+└── .github/workflows/ci.yml        # Least-privilege Linux unit tests + Xcode 26 macOS unsigned .ipa build & upload
 ```
 
 ---
@@ -72,15 +73,16 @@ Every code change in `henge-linux` must preserve these verified platform invaria
    - All RX/RW dual-mapped JIT pools must land inside `[0x0100000000, 0x1000000000)` (`[4 GiB, 64 GiB)`) and pass `henge_txm_is_valid_jit_range()`.
 2. **TXM Byte-0 `0x69` Blessing Marker:**
    - Every 16 KiB (`16,384`-byte) page in the RX JIT region must carry `0x69` at byte offset `0` during the `x16=1; brk #0xf00d` (`0xa0013ed4`) debugger handshake before `mach_vm_remap` creates the RW alias and `x16=0; brk #0xf00d` detaches.
-3. **iOS App-Switcher Metal Drawable Guard (`willResignActive`):**
+3. **iOS App-Switcher Metal Drawable Guard & Render Fence (`willResignActive`):**
    - iOS reclaims `CAMetalLayer` drawables immediately upon `UIApplication.willResignActiveNotification` *before* `didEnterBackground`. Submitting even a single Metal frame after `willResignActive` causes a fatal `gpus_ReturnNotPermittedKillClient` termination on resume.
-   - `MetalLifecycleGuard` sets `hengelinux_set_render_paused(true)` synchronously on `willResignActive` and refuses `nextDrawable()` until `didBecomeActive`.
-4. **Darwin `AF_UNIX` `sun_path` 104-Byte Limit:**
-   - Deep iOS sandbox paths (`/var/mobile/Containers/Data/Application/<UUID>/Documents/...`) routinely exceed Darwin's 104-byte `sockaddr_un.sun_path` buffer. All internal `libslirp` <-> WebDAV/control sockets must be formatted via `henge_format_unix_socket_path()`, which hashes long container paths into `/tmp/hl-<64bit-hex>-<name>`.
-5. **iPhoneOS SDK Header Restrictions:**
+   - `MetalLifecycleGuard` registers synchronous `NotificationCenter.default.addObserver(..., queue: .main)` observers in `init()` and serializes drawable acquisition/commit under `hengelinux_render_lock()` / `hengelinux_render_unlock()` so in-flight GPU work finishes before `willResignActive` returns.
+4. **Darwin `AF_UNIX` `sun_path` 104-Byte Limit & iOS Seatbelt Sandbox:**
+   - Deep iOS sandbox paths (`/private/var/mobile/Containers/Data/Application/<UUID>/Documents/...`) exceed Darwin's 104-byte `sockaddr_un.sun_path` limit, and iOS Seatbelt blocks `bind()` in global `/tmp`. `henge_format_unix_socket_path()` normalizes iOS container paths to `/var/mobile/Containers/Data/Application/<UUID>/tmp/<name>` (91 bytes `< 104`) and reserves `/tmp/hl-<64bit-hex>-<name>` for macOS/Linux hosts.
+5. **iPhoneOS SDK Header Restrictions & `CS_DEBUGGED` Persistence:**
    - Apple's public `iPhoneOS.sdk` rejects `#include <mach/mach_vm.h>` with `#error mach_vm.h unsupported.` Use `<mach/mach.h>` instead.
+   - `P_TRACED` clears immediately upon `henge_jit26_detach()`, while `CS_DEBUGGED` (`0x10000000` via `csops`) persists for the process lifetime. `henge_alloc_ledger_exempt_ram()` checks `henge_txm_is_cs_debugged()` and allocates via `mach_make_memory_entry_64(MAP_MEM_NAMED_CREATE)` + `mach_memory_entry_ownership(..., VM_LEDGER_TAG_DEFAULT, VM_LEDGER_FLAG_NO_FOOTPRINT)` + `vm_map()`.
 6. **Guest RAM Budgeting by Device Class:**
-   - `LEDGER_NO_FOOTPRINT` bypasses the ~3 GB per-process Mach ledger kill, but physical RAM exhaustion still triggers system-wide Jetsam kills. Default presets enforce `2,560 MiB` (2.5 GiB) on 8 GB devices (iPhone 16 Pro), `4,608 MiB` (4.5 GiB) on 12 GB devices (iPhone Duo / Pro), and `6,144 MiB` (6.0 GiB) on 16 GB iPad Pros.
+   - `LEDGER_NO_FOOTPRINT` bypasses the ~3 GB per-process Mach ledger kill, but physical RAM exhaustion still triggers system-wide Jetsam kills. Presets enforce `2,560 MiB` on 8 GB devices (iPhone 16 Pro), `4,608 MiB` on 12 GB devices (iPhone Duo / Pro), and `6,144 MiB` on 16 GB iPad Pros, dynamically capped to ~60% of `ProcessInfo.processInfo.physicalMemory`.
 
 ---
 
@@ -100,17 +102,17 @@ Every code change in `henge-linux` must preserve these verified platform invaria
 - [x] `scripts/provision_archlinux_arm64.sh` automating EDK2 firmware setup, Archboot AArch64 ISO resolution, QEMU `virt` + NVMe installation, and `.hvsparse` packing.
 - [x] `guest/henge-xdg-open` and `guest/setup-arch-bridge.sh` bridging IPv4/IPv6 loopback OAuth listeners (`127.0.0.1` / `[::1]` <-> `10.0.2.15`) to `http://10.0.2.4/.henge/expose-port`, `/open-url` (`SFSafariViewController`), and `/oauth-done`.
 
-### Phase 4: TXM Self-Debug `NSExtension` & VirtIO-GPU Backend Configuration — **COMPLETED (Scaffold & C/ASM Primitives)**
-- [x] `host/henge_txm_jit.{h,c}` and `host/henge_brk.S` implementing low-VA bounds checking, `0x69` page-blessing marker helpers, `brk #0xf00d` assembly traps, and `LEDGER_NO_FOOTPRINT` RAM allocation.
-- [x] `ios/JITExtension/JITExtensionHandler.swift` (`com.apple.ar.viewer` extension target in `ios/project.yml`) and `ios/Sources/SelfDebugJITClient.swift`.
-- [x] `host/henge_virtio_gpu.{h,c}` defining `2D UEFI GOP` and `3D VirtIO-GPU VirGL (ANGLE Metal)` configuration descriptors.
+### Phase 4: TXM Self-Debug `NSExtension`, VirtIO-GPU Config & Pre-Phase-5 Hardening — **COMPLETED**
+- [x] `host/henge_txm_jit.{h,c}` and `host/henge_brk.S` implementing low-VA bounds checking, `0x69` page-blessing marker helpers, `.cfi`/BTI `brk #0xf00d` assembly traps, `P_TRACED` vs `CS_DEBUGGED` detection, and `MAP_MEM_NAMED_CREATE` + `LEDGER_NO_FOOTPRINT` RAM allocation.
+- [x] `ios/JITExtension/JITExtensionHandler.swift` + nested `ios/JITExtension/Info.plist` (`com.apple.ar.viewer` extension target in `ios/project.yml`), Files app sharing keys (`UIFileSharingEnabled` / `LSSupportsOpeningDocumentsInPlace`), single-source-of-truth `libhengelinux.a` linking, and synchronous `MetalLifecycleGuard` render fence.
+- [x] `host/henge_virtio_gpu.{h,c}` defining `2D UEFI GOP` and `3D VirtIO-GPU VirGL (ANGLE Metal)` configuration descriptors, plus non-blocking double-fork `guest/henge-xdg-open` and 64 KiB aligned `tools/hvsparse.c`.
 
 ### Phase 5: Upstream Engine Integration, Live VM Runtime & 3D VirGL Bring-Up — **NEXT**
-1. **Milestone 5.1 — Upstream `HengeVM` / `WindowsiOS` Engine Linkage:**
-   - Extend `scripts/sync_upstream.sh` and `Makefile` (`ios-lib`) to compile synced upstream `core/` (`translate.c`, `memop.c`, `mmu.c`, `sysreg.c`, `cpu.c`, `jit.c`) and `devices/` (`pcie.c`, `nvme.c`, `xhci.c`, `hda.c`, `virtio_net.c`, `fb_metal.m`, `audio_mac.c`, `share.c`) into `build/ios/libhengelinux.a`.
-   - Apply targeted patches for Arch Linux: (a) enforce `henge_format_unix_socket_path()` in `host/share.c` so deep iOS sandbox paths never truncate at 104 bytes; (b) wire `hengelinux_is_render_paused()` into `devices/fb_metal.m` and `host/audio_mac.c` so `willResignActive` immediately halts Metal drawable acquisition and CoreAudio callbacks; (c) route `winios_jit.c` through `henge_txm_is_valid_jit_range()`.
+1. **Milestone 5.1 — Upstream `HengeVM` / `WindowsiOS` Engine Linkage & Linux `arm64` Kernel Audit:**
+   - Extend `Makefile` (`ios-lib`) to compile synced upstream `core/` (`classify.c`, `operands.c`, `translate.c`, `dispatch.c`, `mmu.c` with `-mgeneral-regs-only`, `memop.c`, `exception.c`, `sysreg.c`, `machine.c`), `host/` (`jit_region.c`, `enter.S`, `disk.c`, `net_slirp.c`, `share.c`, `audio_mac.c`, `hvsparse.c`), and `devices/` (`fb_metal.m`, `nvme.c`, `pcie.c`, `gicv3.c`, `xhci.c`, `hda.c`, `virtio_net.c`, etc.) into `build/ios/libhengelinux.a`, and compare `tools/hvsparse.c` header layout against upstream `host/hvsparse.h`.
+   - Apply targeted patches (`patches/*.patch` in `scripts/sync_upstream.sh`): (a) enforce `henge_format_unix_socket_path()` in `host/share.c:959`; (b) wrap `devices/fb_metal.m:166` and `host/audio_mac.c` callbacks with `hengelinux_render_lock()` / `hengelinux_is_render_paused()`; (c) validate `host/jit_region.c` ranges with `henge_txm_is_valid_jit_range()`; (d) verify Linux `TCR_EL1.A1=0` ASID extraction in `core/mmu.c` (`HvTlbStash`), mask PAC/SVE/MTE bits in `core/sysreg.c` ID registers to avoid `APIAKeyLo_EL1` MSR trap storms, and keep `HV_TLB_PAGE_BITS=12` default during UEFI EDK2 4 KiB DXE boot.
 2. **Milestone 5.2 — Live VM Runner Bridge (`HengeVMBridge.{h,mm}`):**
-   - Create an Objective-C++/C bridge class connecting `HengeLinuxApp.swift` and `SessionView.swift` (`MTKView` / `CAMetalLayer`, touch/keyboard HID events, and `SafariSheetView` callbacks from `10.0.2.4/.henge/open-url`) to the `HengeVM` vCPU threads and `hvsparse` block device (`Documents/Machines/ArchLinux/archlinux.hvsparse`).
+   - Create an Objective-C++/C bridge class connecting `HengeLinuxApp.swift` and `SessionView.swift` (`MTKView` / `CAMetalLayer`, touch/keyboard HID events, and `SafariSheetView` callbacks from `10.0.2.4/.henge/open-url`) to the `HengeVM` vCPU threads and `hvsparse` block device (`Documents/Machines/ArchLinux/archlinux.hvsparse`), compensating `CNTVCT_EL0` across background suspend so Linux's 20s softlockup watchdog does not fire on resume.
 3. **Milestone 5.3 — End-to-End Arch Linux Boot & 16 KiB Kernel Validation:**
    - Provision a bootable `archlinux.hvsparse` image with `scripts/provision_archlinux_arm64.sh`, run `guest/setup-arch-bridge.sh` inside the guest, and verify boot-to-shell/desktop on physical hardware (iPhone 16 Pro at `2,560 MiB` RAM and iPhone Duo at `4,608 MiB` RAM).
    - Compare `HV_TLB_PAGE_BITS=12` (stock 4 KiB Archboot kernel) vs. `HV_TLB_PAGE_BITS=14` (custom `CONFIG_ARM64_16K_PAGES=y` Arch kernel).
