@@ -10,7 +10,6 @@
 
 #if defined(__APPLE__)
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
 #include <unistd.h>

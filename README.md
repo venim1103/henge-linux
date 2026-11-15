@@ -4,7 +4,10 @@
 
 `henge-linux` adapts the direct ARM64-to-ARM64 dynamic binary translation architecture of [`ammaarreshi/WindowsiOS`](https://github.com/ammaarreshi/WindowsiOS) and [`Leviidev/Henge`](https://github.com/Leviidev/Henge) (`HengeVM`) to boot mainline `aarch64` Arch Linux on modern iPhones and iPads, combining full kernel (`EL1`) fidelity with 16 KiB page-granule alignment, TXM dual-mapped JIT, and ledger-exempt guest RAM.
 
-> **Documentation:** See [`docs/RESEARCH.md`](docs/RESEARCH.md) for the complete technical review, comparison of all 6 Linux-on-iOS execution architectures, device adaptation notes, and unified implementation blueprint.
+> **Documentation:**
+> - [`PLAN.md`](PLAN.md) — Detailed engineering implementation plan, module architecture, technical invariants, and Phase 1–5 roadmap.
+> - [`HANDOVER.md`](HANDOVER.md) — Current repository status, file inventory, CI build guide, and next-session handover checklist.
+> - [`docs/RESEARCH.md`](docs/RESEARCH.md) — Complete technical review of `WindowsiOS`/`HengeVM` and all 6 Linux-on-iOS execution architectures.
 
 ---
 
