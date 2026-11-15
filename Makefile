@@ -18,9 +18,9 @@ CFLAGS_COMMON := -std=c11 -O2 -Wall -Wextra -Werror -DHV_TLB_PAGE_BITS=$(HV_TLB_
 BUILD_DIR := build
 UPSTREAM_DIR := .upstream/WindowsiOS
 
-.PHONY: all clean test-core sync-upstream ios-project
+.PHONY: all clean test-core hvsparse ios-lib sync-upstream ios-project
 
-all: test-core
+all: test-core hvsparse
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
@@ -28,8 +28,26 @@ $(BUILD_DIR):
 $(BUILD_DIR)/test_core: tests/test_core.c host/henge_platform.c host/henge_platform.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) -pthread tests/test_core.c host/henge_platform.c -o $(BUILD_DIR)/test_core
 
+$(BUILD_DIR)/hvsparse: tools/hvsparse.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS_COMMON) tools/hvsparse.c -o $(BUILD_DIR)/hvsparse
+
+hvsparse: $(BUILD_DIR)/hvsparse
+
 test-core: $(BUILD_DIR)/test_core
 	./$(BUILD_DIR)/test_core
+
+ios-lib: | $(BUILD_DIR)
+	@mkdir -p $(BUILD_DIR)/ios
+	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		IOS_SDK=$$(xcrun --sdk iphoneos --show-sdk-path); \
+		xcrun --sdk iphoneos clang -std=c11 -O2 -arch arm64 -mios-version-min=26.0 \
+			-isysroot "$$IOS_SDK" -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost \
+			-c host/henge_platform.c -o $(BUILD_DIR)/ios/henge_platform.o; \
+		ar rcs $(BUILD_DIR)/ios/libhengelinux.a $(BUILD_DIR)/ios/henge_platform.o; \
+		echo "[ios-lib] Built $(BUILD_DIR)/ios/libhengelinux.a"; \
+	else \
+		echo "[ios-lib] Skipping iphoneos static archive on non-Darwin host"; \
+	fi
 
 sync-upstream:
 	./scripts/sync_upstream.sh

@@ -12,12 +12,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run 4 KiB TLB compatibility tests
-        run: make HV_TLB_PAGE_BITS=12 test-core
+      - name: Run 4 KiB TLB compatibility tests & build hvsparse
+        run: make HV_TLB_PAGE_BITS=12 test-core hvsparse
+      - name: Verify hvsparse pack/unpack round-trip
+        run: |
+          python3 -c '
+          data = b"\x00" * 65536 + b"ARCH_LINUX_AARCH64" + b"\x00" * (131072 - 18) + b"\xff" * 4096
+          open("build/raw.bin", "wb").write(data)
+          '
+          ./build/hvsparse pack build/raw.bin build/test.hvsparse
+          ./build/hvsparse unpack build/test.hvsparse build/unpacked.bin
+          cmp build/raw.bin build/unpacked.bin
       - name: Run 16 KiB TLB fast-path tests
-        run: make clean && make HV_TLB_PAGE_BITS=14 test-core
-      - name: Validate guest OAuth bridge syntax
-        run: python3 -m py_compile guest/henge-xdg-open
+        run: make clean && make HV_TLB_PAGE_BITS=14 test-core hvsparse
+      - name: Validate guest bridge & Archboot provisioning scripts
+        run: |
+          python3 -m py_compile guest/henge-xdg-open
+          bash -n guest/setup-arch-bridge.sh
+          bash -n scripts/provision_archlinux_arm64.sh
+          ./scripts/provision_archlinux_arm64.sh --dry-run
 
   ios-build:
     name: iOS Unsigned IPA Build (macOS)
@@ -26,8 +39,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install XcodeGen
         run: brew install xcodegen
-      - name: Run macOS platform tests
-        run: make test-core
+      - name: Run macOS platform tests & build ios-lib
+        run: make test-core hvsparse ios-lib
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/project.yml
       - name: Build unsigned iphoneos bundle
