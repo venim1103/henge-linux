@@ -10,8 +10,8 @@ import UIKit
 @MainActor
 final class MetalLifecycleGuard: ObservableObject {
     @Published private(set) var isPaused: Bool = false
-    private var resignObserver: NSObjectProtocol?
-    private var activeObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var resignObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var activeObserver: NSObjectProtocol?
 
     init() {
         resignObserver = NotificationCenter.default.addObserver(
