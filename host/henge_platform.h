@@ -48,12 +48,15 @@ uint32_t henge_decode_granule_bits(uint32_t tg_bits, int ttbr1);
 uint64_t henge_align_guest_ram_bytes(uint32_t requested_mib, uint32_t device_cap_mib);
 
 /*
- * Thread-safe C-ABI lifecycle pause gate called from SwiftUI/UIKit on
- * UIApplication.willResignActiveNotification / didBecomeActiveNotification
- * so Metal drawables and CoreAudio queues halt before iOS app-switcher capture.
+ * Thread-safe C-ABI lifecycle pause gate and render mutex called from
+ * SwiftUI/UIKit on UIApplication.willResignActiveNotification /
+ * didBecomeActiveNotification so in-flight Metal drawables finish before
+ * UIKit revokes GPU submission privileges.
  */
 void hengelinux_set_render_paused(bool paused);
 bool hengelinux_is_render_paused(void);
+void hengelinux_render_lock(void);
+void hengelinux_render_unlock(void);
 
 #ifdef __cplusplus
 }

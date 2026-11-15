@@ -5,8 +5,10 @@
  * so multi-gigabyte Arch Linux images fit comfortably in iOS app containers.
  */
 
+#if !defined(__APPLE__)
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
+#endif
 
 #include <errno.h>
 #include <stdbool.h>
@@ -58,7 +60,10 @@ static int cmd_pack(const char *raw_path, const char *sparse_path) {
 
     uint32_t block_count = (uint32_t)((virtual_size + HVSPARSE_BLOCK_SIZE - 1ULL) / HVSPARSE_BLOCK_SIZE);
     uint64_t table_bytes = (uint64_t)block_count * sizeof(uint64_t);
-    uint64_t data_offset = sizeof(HvSparseHeader) + table_bytes;
+    uint64_t raw_header_end = sizeof(HvSparseHeader) + table_bytes;
+    uint64_t data_offset = (raw_header_end + HVSPARSE_BLOCK_SIZE - 1ULL) &
+                           ~((uint64_t)HVSPARSE_BLOCK_SIZE - 1ULL);
+    uint64_t pad_bytes = data_offset - raw_header_end;
 
     uint64_t *offsets = calloc(block_count > 0 ? block_count : 1U, sizeof(uint64_t));
     uint8_t *buf = malloc(HVSPARSE_BLOCK_SIZE);
@@ -87,8 +92,10 @@ static int cmd_pack(const char *raw_path, const char *sparse_path) {
         .data_offset = data_offset,
     };
 
+    memset(buf, 0, HVSPARSE_BLOCK_SIZE);
     if (fwrite(&hdr, sizeof(hdr), 1, out) != 1 ||
-        (block_count > 0 && fwrite(offsets, sizeof(uint64_t), block_count, out) != block_count)) {
+        (block_count > 0 && fwrite(offsets, sizeof(uint64_t), block_count, out) != block_count) ||
+        (pad_bytes > 0 && fwrite(buf, 1, (size_t)pad_bytes, out) != (size_t)pad_bytes)) {
         fclose(out);
         free(offsets);
         free(buf);
@@ -158,6 +165,14 @@ static int cmd_unpack(const char *sparse_path, const char *raw_path) {
         hdr.version != HVSPARSE_VERSION ||
         hdr.block_size != HVSPARSE_BLOCK_SIZE) {
         fprintf(stderr, "hvsparse: invalid header in '%s'\n", sparse_path);
+        fclose(in);
+        return 1;
+    }
+
+    uint64_t expected_blocks = (hdr.virtual_size + HVSPARSE_BLOCK_SIZE - 1ULL) / HVSPARSE_BLOCK_SIZE;
+    if ((uint64_t)hdr.block_count != expected_blocks ||
+        hdr.data_offset < sizeof(HvSparseHeader) + (uint64_t)hdr.block_count * sizeof(uint64_t)) {
+        fprintf(stderr, "hvsparse: corrupt block table bounds in '%s'\n", sparse_path);
         fclose(in);
         return 1;
     }

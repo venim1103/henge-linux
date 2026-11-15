@@ -39,7 +39,16 @@ bool henge_txm_is_valid_jit_range(uintptr_t base, size_t size);
 int henge_txm_stamp_blessing_markers(uint8_t *rw_base, size_t size);
 bool henge_txm_verify_blessing_markers(const uint8_t *base, size_t size);
 
-/* Query whether the current process has active debugger / CS_DEBUGGED status. */
+/*
+ * Query debugger / code-signing debug state:
+ *   - henge_txm_is_ptraced(): true only while a debugger is actively attached
+ *     (P_TRACED); required before executing brk #0xf00d traps.
+ *   - henge_txm_is_cs_debugged(): true when XNU CS_DEBUGGED (0x10000000) is
+ *     set on the process, which persists after debugserver detachment and
+ *     authorizes LEDGER_NO_FOOTPRINT memory entries.
+ */
+bool henge_txm_is_ptraced(void);
+bool henge_txm_is_cs_debugged(void);
 bool henge_txm_is_debugger_attached(void);
 
 /*
