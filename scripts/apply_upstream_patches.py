@@ -109,50 +109,20 @@ def main() -> int:
         print(f"[patch] {fb_metal_m}: header already applied")
     patch_file(
         fb_metal_m,
-        "hengelinux_render_lock()",
-        """        const uint8_t *px = NULL;
-        uint32_t w = 0, h = 0, stride = 0;
-        if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
+        "_hengeUnlockedTick",
+        """- (void)tick {
+    @autoreleasepool {""",
+        """- (void)tick {
+    hengelinux_render_lock();
+    if (!hengelinux_is_render_paused()) {
+        [self _hengeUnlockedTick];
+    }
+    hengelinux_render_unlock();
+}
 
-        os_unfair_lock_lock(&lock);""",
-        """        const uint8_t *px = NULL;
-        uint32_t w = 0, h = 0, stride = 0;
-        if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
-
-        hengelinux_render_lock();
-        if (hengelinux_is_render_paused()) {
-            hengelinux_render_unlock();
-            return;
-        }
-
-        os_unfair_lock_lock(&lock);""",
+- (void)_hengeUnlockedTick {
+    @autoreleasepool {""",
     )
-    patch_file(
-        fb_metal_m,
-        "os_unfair_lock_unlock(&lock);\n        hengelinux_render_unlock();",
-        """        lastHash = hval;
-        lastDrawableSize = dsize;
-        atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
-        os_unfair_lock_unlock(&lock);""",
-        """        lastHash = hval;
-        lastDrawableSize = dsize;
-        atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
-        os_unfair_lock_unlock(&lock);
-        hengelinux_render_unlock();""",
-    )
-    # Ensure early returns inside [HvFbMetalPresenter tick] release hengelinux_render_lock()
-    fb_updated = fb_metal_m.read_text(encoding="utf-8")
-    target_tick_body = """        os_unfair_lock_lock(&lock);
-        CAMetalLayer *curLayer = layer;"""
-    if target_tick_body in fb_updated and "os_unfair_lock_unlock(&lock);\n            hengelinux_render_unlock();\n            return;" not in fb_updated:
-        idx = fb_updated.index(target_tick_body)
-        before = fb_updated[:idx]
-        after = fb_updated[idx:].replace(
-            "os_unfair_lock_unlock(&lock);\n            return;",
-            "os_unfair_lock_unlock(&lock);\n            hengelinux_render_unlock();\n            return;",
-        )
-        fb_metal_m.write_text(before + after, encoding="utf-8")
-        print(f"[patch] {fb_metal_m}: guarded early returns with hengelinux_render_unlock()")
 
     # 3. host/audio_mac.c: pause audio playback/capture callbacks when backgrounded
     audio_mac_c = upstream / "host/audio_mac.c"

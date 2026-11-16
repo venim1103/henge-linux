@@ -26,6 +26,8 @@ settings:
       - "$(SRCROOT)/../.upstream/WindowsiOS/devices"
       - "$(SRCROOT)/../.upstream/WindowsiOS/ios/deps/include"
       - "$(SRCROOT)/../.upstream/WindowsiOS/ios/deps/include/slirp"
+      - "$(SRCROOT)/../.upstream/WindowsiOS/ios/deps/include/glib-2.0"
+      - "$(SRCROOT)/../.upstream/WindowsiOS/ios/deps/lib/glib-2.0/include"
 
 targets:
   HengeLinuxJITExtension:
@@ -41,6 +43,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.hengelinux.app.jit-extension
         GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
 
   HengeLinux:
     type: application
@@ -90,7 +93,6 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     frameworks:
       - sdk: Metal.framework
-      - sdk: MetalKit.framework
       - sdk: QuartzCore.framework
       - sdk: AudioToolbox.framework
       - sdk: SafariServices.framework

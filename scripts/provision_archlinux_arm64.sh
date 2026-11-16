@@ -110,22 +110,36 @@ if [ ! -f "$ISO_PATH" ]; then
     fi
     echo "[provision] Downloading $ARCHBOOT_BASE_URL/$ISO_NAME -> $ISO_PATH"
     curl -fL "$ARCHBOOT_BASE_URL/$ISO_NAME" -o "$ISO_PATH.part"
+    if curl -fsSL "$ARCHBOOT_BASE_URL/sha256sums.txt" -o "$WORK_DIR/sha256sums.txt"; then
+        EXPECTED_SHA="$(awk -v name="$ISO_NAME" '$2 == name || $2 == ("*" name) { print $1; exit }' "$WORK_DIR/sha256sums.txt")"
+        if [ -n "$EXPECTED_SHA" ]; then
+            if command -v sha256sum >/dev/null 2>&1; then
+                ACTUAL_SHA="$(sha256sum "$ISO_PATH.part" | awk '{print $1}')"
+            else
+                ACTUAL_SHA="$(shasum -a 256 "$ISO_PATH.part" | awk '{print $1}')"
+            fi
+            if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+                echo "[provision] SHA-256 mismatch for $ISO_NAME (expected $EXPECTED_SHA, got $ACTUAL_SHA)" >&2
+                rm -f "$ISO_PATH.part"
+                exit 1
+            fi
+            echo "[provision] Verified SHA-256 for $ISO_NAME"
+        fi
+    fi
     mv "$ISO_PATH.part" "$ISO_PATH"
 fi
 
-ACCEL_FLAG="-accel tcg"
+ACCEL_ARGS=(-accel tcg -cpu cortex-a76)
 if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-    ACCEL_FLAG="-accel hvf -cpu host"
+    ACCEL_ARGS=(-accel hvf -cpu host)
 elif [ -r /dev/kvm ] && [ "$(uname -m)" = "aarch64" ]; then
-    ACCEL_FLAG="-accel kvm -cpu host"
-else
-    ACCEL_FLAG="-accel tcg -cpu cortex-a76"
+    ACCEL_ARGS=(-accel kvm -cpu host)
 fi
 
 echo "[provision] Booting Archboot installer over serial console (run 'setup' inside guest to install to /dev/nvme0n1, ensure kernel cmdline includes 'console=tty0 console=ttyAMA0,115200', then poweroff)..."
 qemu-system-aarch64 \
     -M virt,gic-version=3,acpi=on \
-    $ACCEL_FLAG \
+    "${ACCEL_ARGS[@]}" \
     -smp "$CPUS" \
     -m "$RAM_MIB" \
     -drive if=pflash,format=raw,readonly=on,file="$WORK_DIR/code.fd" \

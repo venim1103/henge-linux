@@ -32,10 +32,17 @@ done
 if [ -x ".upstream/WindowsiOS/scripts/build_ios_deps.sh" ]; then
     UPSTREAM_DEPS=".upstream/WindowsiOS/ios/deps"
     REQUIRED_LIBS=(libffi.a libglib-2.0.a libintl.a libpcre2-8.a libslirp.a)
+    REQUIRED_HDRS=(
+        "$UPSTREAM_DEPS/include/slirp/libslirp.h"
+        "$UPSTREAM_DEPS/include/glib-2.0/glib.h"
+        "$UPSTREAM_DEPS/lib/glib-2.0/include/glibconfig.h"
+    )
     HAVE_ALL_CACHED=1
-    if [ ! -f "$UPSTREAM_DEPS/include/slirp/libslirp.h" ]; then
-        HAVE_ALL_CACHED=0
-    fi
+    for hdr in "${REQUIRED_HDRS[@]}"; do
+        if [ ! -s "$hdr" ]; then
+            HAVE_ALL_CACHED=0
+        fi
+    done
     for lib in "${REQUIRED_LIBS[@]}"; do
         if [ ! -s "$UPSTREAM_DEPS/lib/$lib" ]; then
             HAVE_ALL_CACHED=0
@@ -59,8 +66,12 @@ from pathlib import Path
 import sys
 p = Path("scripts/build_ios_deps.sh")
 txt = p.read_text(encoding="utf-8")
-txt = txt.replace("/opt/homebrew/bin/python3", sys.argv[1])
-txt = txt.replace("export PATH=\"/opt/homebrew/bin:", f"export PATH=\"{sys.argv[2]}:/opt/homebrew/bin:")
+old_py = "/opt/homebrew/bin/python3"
+old_path = "export PATH=\"/opt/homebrew/bin:"
+assert old_py in txt, f"Expected {old_py} in upstream build_ios_deps.sh"
+assert old_path in txt, f"Expected {old_path} in upstream build_ios_deps.sh"
+txt = txt.replace(old_py, sys.argv[1])
+txt = txt.replace(old_path, f"export PATH=\"{sys.argv[2]}:/opt/homebrew/bin:")
 Path(sys.argv[3]).write_text(txt, encoding="utf-8")
 ' "$PYTHON3_BIN" "$BREW_PREFIX/bin" "$PATCHED_SCRIPT"
         chmod +x "$PATCHED_SCRIPT"
@@ -84,10 +95,12 @@ Path(sys.argv[3]).write_text(txt, encoding="utf-8")
             exit 1
         fi
     done
-    if [ ! -f "$UPSTREAM_DEPS/include/slirp/libslirp.h" ]; then
-        echo "[deps] Missing expected header after build: $UPSTREAM_DEPS/include/slirp/libslirp.h" >&2
-        exit 1
-    fi
+    for hdr in "${REQUIRED_HDRS[@]}"; do
+        if [ ! -s "$hdr" ]; then
+            echo "[deps] Missing expected header after build: $hdr" >&2
+            exit 1
+        fi
+    done
 else
     echo "[deps] Upstream not yet synced; run ./scripts/sync_upstream.sh first."
     exit 1

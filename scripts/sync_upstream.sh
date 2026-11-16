@@ -15,6 +15,8 @@ if [ ! -d "$DEST_DIR/.git" ]; then
     echo "[sync] Initializing $DEST_DIR ($UPSTREAM_URL @ $UPSTREAM_REF)"
     git init "$DEST_DIR" >/dev/null
     git -C "$DEST_DIR" remote add origin "$UPSTREAM_URL"
+else
+    git -C "$DEST_DIR" remote set-url origin "$UPSTREAM_URL"
 fi
 
 echo "[sync] Fetching $UPSTREAM_URL ($UPSTREAM_REF)"
