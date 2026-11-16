@@ -173,6 +173,7 @@ struct HengeLinuxApp: App {
                 Section("Guest Image (`Documents/Machines/ArchLinux`)") {
                     LabeledContent("Disk Container", value: "archlinux.hvsparse")
                     LabeledContent("UEFI Firmware", value: "code.fd / vars.fd")
+                    LabeledContent("Background Snapshot", value: HengeVMBridge.shared.hasSavedBackgroundSnapshot ? "suspend.state (Verified)" : "None")
                     LabeledContent("Aligned Guest Bytes", value: "\(alignedBytes) B")
                     LabeledContent("Host Bridge", value: "http://10.0.2.4/.henge/")
                     LabeledContent("VM Engine", value: HengeVMBridge.shared.isEngineLinked ? "Linked (HengeVM)" : "Host Substrate Only")
