@@ -28,9 +28,10 @@ $(BUILD_DIR):
 
 HOST_SRCS := host/henge_platform.c host/henge_txm_jit.c host/henge_virtio_gpu.c
 HOST_HDRS := host/henge_platform.h host/henge_txm_jit.h host/henge_virtio_gpu.h
+HOST_ASM  := $(if $(filter aarch64 arm64,$(UNAME_M)),host/henge_brk.S,)
 
-$(BUILD_DIR)/test_core: tests/test_core.c $(HOST_SRCS) $(HOST_HDRS) host/henge_brk.S | $(BUILD_DIR)
-	$(CC) $(CFLAGS_COMMON) -pthread tests/test_core.c $(HOST_SRCS) host/henge_brk.S -o $(BUILD_DIR)/test_core
+$(BUILD_DIR)/test_core: tests/test_core.c $(HOST_SRCS) $(HOST_HDRS) $(HOST_ASM) | $(BUILD_DIR)
+	$(CC) $(CFLAGS_COMMON) -pthread tests/test_core.c $(HOST_SRCS) $(HOST_ASM) -o $(BUILD_DIR)/test_core
 
 $(BUILD_DIR)/hvsparse: tools/hvsparse.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) tools/hvsparse.c -o $(BUILD_DIR)/hvsparse

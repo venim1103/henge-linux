@@ -86,8 +86,21 @@ jobs:
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             build
+          APP_BUNDLE="build/DerivedData/Build/Products/Release-iphoneos/HengeLinux.app"
+          EXT_PLIST="$APP_BUNDLE/PlugIns/HengeLinuxJITExtension.appex/Info.plist"
+          python3 -c '
+          import plistlib, sys
+          with open(sys.argv[1], "rb") as f:
+              pl = plistlib.load(f)
+          ext = pl.get("NSExtension") or {}
+          assert ext.get("NSExtensionPointIdentifier") == "com.apple.ar.viewer", f"bad NSExtensionPointIdentifier: {ext}"
+          assert str(ext.get("NSExtensionPrincipalClass", "")).endswith(".JITExtensionHandler"), f"bad NSExtensionPrincipalClass: {ext}"
+          assert pl.get("CFBundleVersion"), f"missing CFBundleVersion: {pl}"
+          assert pl.get("CFBundleShortVersionString"), f"missing CFBundleShortVersionString: {pl}"
+          print("[verify] HengeLinuxJITExtension Info.plist valid:", ext)
+          ' "$EXT_PLIST"
           mkdir -p build/ipa/Payload
-          cp -R build/DerivedData/Build/Products/Release-iphoneos/HengeLinux.app build/ipa/Payload/
+          cp -R "$APP_BUNDLE" build/ipa/Payload/
           (cd build/ipa && zip -qr ../HengeLinux-unsigned.ipa Payload)
           shasum -a 256 build/HengeLinux-unsigned.ipa > build/HengeLinux-unsigned.ipa.sha256
           ls -lh build/HengeLinux-unsigned.ipa

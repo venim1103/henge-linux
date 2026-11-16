@@ -13,6 +13,8 @@ settings:
     SWIFT_VERSION: "6.0"
     CLANG_C_LANGUAGE_STANDARD: c11
     CLANG_CXX_LANGUAGE_STANDARD: c++20
+    MARKETING_VERSION: "0.5.3"
+    CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: YES
     HV_TLB_PAGE_BITS: "12"
     GCC_PREPROCESSOR_DEFINITIONS:
@@ -39,6 +41,13 @@ targets:
           - Info.plist
     info:
       path: JITExtension/Info.plist
+      properties:
+        CFBundleDisplayName: HengeLinux JIT Helper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.ar.viewer
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).JITExtensionHandler
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.hengelinux.app.jit-extension
@@ -54,6 +63,8 @@ targets:
         buildPhase: resources
     entitlements:
       path: HengeLinux.entitlements
+      properties:
+        com.apple.developer.kernel.increased-memory-limit: true
     dependencies:
       - target: HengeLinuxJITExtension
         embed: true
