@@ -239,6 +239,8 @@ struct SessionView: View {
 final class MetalDisplaySurfaceView: UIView, UIKeyInput {
     var onFocusChanged: ((Bool) -> Void)?
     var onCharacterTyped: (() -> Void)?
+    private var pendingKeystrokes: [(usage: UInt8, shift: Bool)] = []
+    private var isDrainingKeystrokes = false
 
     override class var layerClass: AnyClass {
         CAMetalLayer.self
@@ -386,23 +388,45 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
 
     // MARK: - Software On-Screen Keyboard (UIKeyInput)
 
+    private func enqueueHidKeystroke(usage: UInt8, shift: Bool) {
+        pendingKeystrokes.append((usage: usage, shift: shift))
+        if !isDrainingKeystrokes {
+            drainNextKeystroke()
+        }
+    }
+
+    private func drainNextKeystroke() {
+        guard !pendingKeystrokes.isEmpty else {
+            isDrainingKeystrokes = false
+            return
+        }
+        isDrainingKeystrokes = true
+        let next = pendingKeystrokes.removeFirst()
+        if next.shift {
+            HengeVMBridge.shared.sendHidKeyUsage(0xE1, pressed: true)
+        }
+        HengeVMBridge.shared.sendHidKeyUsage(next.usage, pressed: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.014) { [weak self] in
+            HengeVMBridge.shared.sendHidKeyUsage(next.usage, pressed: false)
+            if next.shift {
+                HengeVMBridge.shared.sendHidKeyUsage(0xE1, pressed: false)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.008) { [weak self] in
+                self?.drainNextKeystroke()
+            }
+        }
+    }
+
     func insertText(_ text: String) {
         for scalar in text.unicodeScalars {
             guard let (usage, shift) = Self.asciiToHid(scalar.value) else { continue }
-            if shift {
-                HengeVMBridge.shared.sendHidKeyUsage(0xE1, pressed: true)
-            }
-            HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: true)
-            HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: false)
-            if shift {
-                HengeVMBridge.shared.sendHidKeyUsage(0xE1, pressed: false)
-            }
+            enqueueHidKeystroke(usage: usage, shift: shift)
         }
         onCharacterTyped?()
     }
 
     func deleteBackward() {
-        HengeVMBridge.shared.tapHidKeyUsage(0x2A)
+        enqueueHidKeystroke(usage: 0x2A, shift: false)
         onCharacterTyped?()
     }
 

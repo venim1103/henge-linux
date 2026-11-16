@@ -211,6 +211,7 @@ private final class GdbRspTxmBlesser {
     private let poolBytes: UInt64
     private var fd: Int32 = -1
     private var noAckMode: Bool = false
+    private var recvBuf = [UInt8]()
 
     init(host: String, port: UInt16, targetPID: Int32, poolBytes: UInt64) {
         self.host = host
@@ -308,13 +309,9 @@ private final class GdbRspTxmBlesser {
 
                     let pageSize: UInt64 = 16 * 1024
                     let pageCount = Int(poolBytes / pageSize)
-                    for idx in 0..<pageCount {
-                        let pageAddr = rxBase &+ (UInt64(idx) * pageSize)
-                        let addrHex = String(pageAddr, radix: 16)
-                        guard sendPacket("M\(addrHex),1:69") == "OK" else {
-                            _ = sendPacket("P0=0000000000000000;thread:\(tid);")
-                            return .failed(reason: "Failed writing 0x69 blessing byte at 0x\(addrHex).")
-                        }
+                    if let blessError = blessPages(rxBase: rxBase, pageCount: pageCount, pageSize: pageSize) {
+                        _ = sendPacket("P0=0000000000000000;thread:\(tid);")
+                        return .failed(reason: blessError)
                     }
 
                     blessedRxBase = rxBase
@@ -337,11 +334,54 @@ private final class GdbRspTxmBlesser {
         return .failed(reason: "Exceeded maximum debugserver breakpoint iterations.")
     }
 
+    private func blessPages(rxBase: UInt64, pageCount: Int, pageSize: UInt64) -> String? {
+        if !noAckMode {
+            for idx in 0..<pageCount {
+                let pageAddr = rxBase &+ (UInt64(idx) * pageSize)
+                let addrHex = String(pageAddr, radix: 16)
+                guard sendPacket("M\(addrHex),1:69") == "OK" else {
+                    return "Failed writing 0x69 blessing byte at 0x\(addrHex)."
+                }
+            }
+            return nil
+        }
+
+        // Batch-pipeline M<addr>,1:69 writes in NoAckMode so 24,576 x 16 KiB pages
+        // complete in < 1 s over 10.7.0.1 instead of 24,576 sequential RTTs.
+        let batchSize = 128
+        var idx = 0
+        while idx < pageCount {
+            let end = min(idx + batchSize, pageCount)
+            var outBytes = [UInt8]()
+            outBytes.reserveCapacity((end - idx) * 24)
+            for pageIdx in idx..<end {
+                let pageAddr = rxBase &+ (UInt64(pageIdx) * pageSize)
+                let payload = "M\(String(pageAddr, radix: 16)),1:69"
+                outBytes.append(contentsOf: framePacket(payload))
+            }
+            guard sendAll(outBytes) else {
+                let addrHex = String(rxBase &+ (UInt64(idx) * pageSize), radix: 16)
+                return "Failed sending pipelined 0x69 blessing batch at 0x\(addrHex)."
+            }
+            for pageIdx in idx..<end {
+                guard let reply = receiveNextPacket(), reply == "OK" else {
+                    let addrHex = String(rxBase &+ (UInt64(pageIdx) * pageSize), radix: 16)
+                    return "Failed writing 0x69 blessing byte at 0x\(addrHex)."
+                }
+            }
+            idx = end
+        }
+        return nil
+    }
+
     private func connectTCP() -> Bool {
         let sock = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard sock >= 0 else { return false }
 
-        var tv = timeval(tv_sec: 3, tv_usec: 0)
+        var noDelay: Int32 = 1
+        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &noDelay, socklen_t(MemoryLayout<Int32>.size))
+
+        var tv = timeval(tv_sec: 15, tv_usec: 0)
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
@@ -363,6 +403,7 @@ private final class GdbRspTxmBlesser {
             Darwin.close(sock)
             return false
         }
+        recvBuf.removeAll(keepingCapacity: true)
         fd = sock
         return true
     }
@@ -372,43 +413,56 @@ private final class GdbRspTxmBlesser {
             Darwin.close(fd)
             fd = -1
         }
+        recvBuf.removeAll(keepingCapacity: false)
     }
 
-    private func sendPacket(_ payload: String) -> String? {
-        guard fd >= 0 else { return nil }
+    private func framePacket(_ payload: String) -> [UInt8] {
         let payloadBytes = Array(payload.utf8)
         let checksum = payloadBytes.reduce(UInt8(0)) { $0 &+ $1 }
-        let framed = String(format: "$%@#%02x", payload, checksum)
-        let outBytes = Array(framed.utf8)
+        return Array(String(format: "$%@#%02x", payload, checksum).utf8)
+    }
 
+    private func sendAll(_ outBytes: [UInt8]) -> Bool {
+        guard fd >= 0 else { return false }
         var sent = 0
         while sent < outBytes.count {
             let n = outBytes.withUnsafeBytes { raw in
                 Darwin.send(fd, raw.baseAddress!.advanced(by: sent), outBytes.count - sent, 0)
             }
-            if n <= 0 { return nil }
+            if n <= 0 { return false }
             sent += n
         }
+        return true
+    }
 
-        var buf = [UInt8]()
-        var scratch = [UInt8](repeating: 0, count: 1024)
-        while buf.count < 65536 {
-            let n = Darwin.recv(fd, &scratch, scratch.count, 0)
-            if n <= 0 { return nil }
-            buf.append(contentsOf: scratch[0..<n])
-
-            if let dollarIdx = buf.firstIndex(of: UInt8(ascii: "$")),
-               let hashIdx = buf[dollarIdx...].firstIndex(of: UInt8(ascii: "#")),
-               buf.distance(from: hashIdx, to: buf.endIndex) >= 3 {
+    private func receiveNextPacket() -> String? {
+        guard fd >= 0 else { return nil }
+        var scratch = [UInt8](repeating: 0, count: 4096)
+        while recvBuf.count < 65536 {
+            if let dollarIdx = recvBuf.firstIndex(of: UInt8(ascii: "$")),
+               let hashIdx = recvBuf[dollarIdx...].firstIndex(of: UInt8(ascii: "#")),
+               recvBuf.distance(from: hashIdx, to: recvBuf.endIndex) >= 3 {
                 if !noAckMode {
                     var ack: UInt8 = UInt8(ascii: "+")
                     _ = Darwin.send(fd, &ack, 1, 0)
                 }
-                let bodyStart = buf.index(after: dollarIdx)
-                return String(decoding: buf[bodyStart..<hashIdx], as: UTF8.self)
+                let bodyStart = recvBuf.index(after: dollarIdx)
+                let body = String(decoding: recvBuf[bodyStart..<hashIdx], as: UTF8.self)
+                let packetEnd = recvBuf.index(hashIdx, offsetBy: 3)
+                recvBuf.removeSubrange(recvBuf.startIndex..<packetEnd)
+                return body
             }
+
+            let n = Darwin.recv(fd, &scratch, scratch.count, 0)
+            if n <= 0 { return nil }
+            recvBuf.append(contentsOf: scratch[0..<n])
         }
         return nil
+    }
+
+    private func sendPacket(_ payload: String) -> String? {
+        guard sendAll(framePacket(payload)) else { return nil }
+        return receiveNextPacket()
     }
 
     private func extractHexField(in packet: String, prefix: String) -> String? {

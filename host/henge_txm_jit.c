@@ -227,10 +227,12 @@ static void restore_low_va_hold(size_t bytes) {
 static bool verify_rx_rw_selftest(uint8_t *rx, uint8_t *rw, size_t bytes) {
     /* movz w0, #42 ; ret */
     static const uint32_t kCode[2] = {0x52800540U, 0xD65F03C0U};
-    if (rx == NULL || rw == NULL || bytes < (size_t)HENGE_HOST_PAGE_SIZE) {
+    static const uint32_t kZero[2] = {0U, 0U};
+    if (rx == NULL || rw == NULL || bytes < (size_t)HENGE_HOST_PAGE_SIZE + 16U) {
         return false;
     }
-    const size_t offsets[2] = {0U, bytes - (size_t)HENGE_HOST_PAGE_SIZE};
+    /* Offset +4 preserves byte-0 0x69 TXM page-blessing markers on first/last pages. */
+    const size_t offsets[2] = {4U, bytes - (size_t)HENGE_HOST_PAGE_SIZE + 4U};
     for (int i = 0; i < 2; i++) {
         size_t off = offsets[i];
         memcpy(rw + off, kCode, sizeof(kCode));
@@ -239,10 +241,15 @@ static bool verify_rx_rw_selftest(uint8_t *rx, uint8_t *rw, size_t bytes) {
         uint32_t readback[2] = {0U, 0U};
         memcpy(readback, rx + off, sizeof(readback));
         if (readback[0] != kCode[0] || readback[1] != kCode[1]) {
+            memcpy(rw + off, kZero, sizeof(kZero));
+            sys_icache_invalidate(rx + off, sizeof(kZero));
             return false;
         }
         int (*fn)(void) = (int (*)(void))(void *)(rx + off);
-        if (fn() != 42) {
+        int res = fn();
+        memcpy(rw + off, kZero, sizeof(kZero));
+        sys_icache_invalidate(rx + off, sizeof(kZero));
+        if (res != 42) {
             return false;
         }
     }
@@ -335,6 +342,10 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
         rw = 0;
         kr = vm_remap(mach_task_self(), &rw, (vm_size_t)bytes, 0, VM_FLAGS_ANYWHERE,
                       mach_task_self(), (vm_address_t)rx, FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
+        if (kr == KERN_SUCCESS && (uintptr_t)rw == rx) {
+            vm_deallocate(mach_task_self(), rw, (vm_size_t)bytes);
+            kr = KERN_INVALID_ADDRESS;
+        }
     }
     if (kr != KERN_SUCCESS) {
         vm_deallocate(mach_task_self(), (vm_address_t)rx, (vm_size_t)bytes);
@@ -349,7 +360,8 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
         vm_deallocate(mach_task_self(), rw, (vm_size_t)bytes);
         vm_deallocate(mach_task_self(), (vm_address_t)rx, (vm_size_t)bytes);
         restore_low_va_hold(bytes);
-        set_jit_status("Failed: vm_protect RW (%s)", mach_error_string(kr));
+        set_jit_status("Failed: vm_protect RW (%s, cur=0x%x max=0x%x)",
+                       mach_error_string(kr), (unsigned int)cur_prot, (unsigned int)max_prot);
         pthread_mutex_unlock(&g_pool_mutex);
         return false;
     }

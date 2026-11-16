@@ -38,8 +38,37 @@ final class SelfDebugJITClient: ObservableObject {
     @Published private(set) var extensionDiagnostic: String?
 
     static let defaultJitPoolMiB: Int = 384
-    static let appGroupIdentifier: String = "group.io.hengelinux.shared"
-    static let extensionIdentifier: String = "io.hengelinux.app.jit-extension"
+    static let defaultAppGroupIdentifier: String = "group.io.hengelinux.shared"
+    static let defaultExtensionIdentifier: String = "io.hengelinux.app.jit-extension"
+
+    /// Resolves the embedded `.appex` bundle identifier dynamically so SideStore / AltStore
+    /// free-account bundle ID rewrites (e.g. `io.hengelinux.app.<TEAMID>.jit-extension`) work.
+    static var resolvedExtensionIdentifier: String {
+        if let plugInsURL = Bundle.main.builtInPlugInsURL {
+            let appexURL = plugInsURL.appendingPathComponent("HengeLinuxJITExtension.appex")
+            if let appexID = Bundle(url: appexURL)?.bundleIdentifier, !appexID.isEmpty {
+                return appexID
+            }
+        }
+        if let hostID = Bundle.main.bundleIdentifier, !hostID.isEmpty {
+            return "\(hostID).jit-extension"
+        }
+        return defaultExtensionIdentifier
+    }
+
+    static var resolvedAppGroupIdentifier: String {
+        let fm = FileManager.default
+        if fm.containerURL(forSecurityApplicationGroupIdentifier: defaultAppGroupIdentifier) != nil {
+            return defaultAppGroupIdentifier
+        }
+        if let hostID = Bundle.main.bundleIdentifier, !hostID.isEmpty {
+            let rewrittenGroup = "group.\(hostID)"
+            if fm.containerURL(forSecurityApplicationGroupIdentifier: rewrittenGroup) != nil {
+                return rewrittenGroup
+            }
+        }
+        return defaultAppGroupIdentifier
+    }
 
     init() {
         henge_jit_install_trap_guard()
@@ -54,7 +83,7 @@ final class SelfDebugJITClient: ObservableObject {
 
     var appGroupPairingFileURL: URL? {
         FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier)?
+            .containerURL(forSecurityApplicationGroupIdentifier: Self.resolvedAppGroupIdentifier)?
             .appendingPathComponent("pairing.plist")
     }
 
@@ -112,21 +141,22 @@ final class SelfDebugJITClient: ObservableObject {
         // with a background pool-acquisition polling loop so debugserver attaches to our PID
         // and services brk #0x69 / brk #0xf00d traps on a worker thread.
         if hasPairingFile && HengeJITExtensionBridge.isExtensionRuntimeAvailable() {
+            let activeAppGroupID = Self.resolvedAppGroupIdentifier
             var requestPayload: [String: Any] = [
                 "targetPID": NSNumber(value: getpid()),
                 "poolBytes": NSNumber(value: UInt64(poolBytes)),
                 "vpnLoopback": "10.7.0.1",
-                "appGroupID": Self.appGroupIdentifier
+                "appGroupID": activeAppGroupID
             ]
             // Fallback when free Apple ID sideloading strips App Group containers.
             if !syncedToGroup, let fallbackData = try? Data(contentsOf: pairingFileURL) {
                 requestPayload["pairingData"] = fallbackData
             }
 
-            async let xpcOutcome = Self.invokeJitExtension(userInfo: requestPayload, timeoutSeconds: 6.5)
+            async let xpcOutcome = Self.invokeJitExtension(userInfo: requestPayload, timeoutSeconds: 15.0)
             async let workerAcquire = Self.probeAcquirePool(
                 poolBytes: poolBytes,
-                maxAttempts: 40,
+                maxAttempts: 110,
                 intervalNs: 150_000_000
             )
 
@@ -200,7 +230,7 @@ final class SelfDebugJITClient: ObservableObject {
     ) async -> ExtensionInvocationResult {
         await withCheckedContinuation { continuation in
             HengeJITExtensionBridge.invokeExtension(
-                withIdentifier: Self.extensionIdentifier,
+                withIdentifier: Self.resolvedExtensionIdentifier,
                 userInfo: userInfo,
                 timeoutSeconds: timeoutSeconds
             ) { responseInfo, error in

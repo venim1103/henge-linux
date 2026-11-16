@@ -15,9 +15,23 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 install -Dm755 "$SCRIPT_DIR/henge-xdg-open" /usr/local/bin/henge-xdg-open
-if [ -e /usr/bin/xdg-open ] && [ ! -L /usr/bin/xdg-open ] && [ ! -e /usr/local/bin/xdg-open ]; then
+# Provide /usr/local/bin/xdg-open ONLY when /usr/bin/xdg-open is absent so we never
+# shadow /usr/bin/xdg-open in $PATH (which would cause an infinite execv loop).
+if [ -L /usr/local/bin/xdg-open ] && [ "$(readlink -f /usr/local/bin/xdg-open)" = "/usr/local/bin/henge-xdg-open" ] && [ -e /usr/bin/xdg-open ]; then
+    rm -f /usr/local/bin/xdg-open
+fi
+if [ ! -e /usr/bin/xdg-open ] && [ ! -e /usr/local/bin/xdg-open ]; then
     ln -sf /usr/local/bin/henge-xdg-open /usr/local/bin/xdg-open
 fi
+
+install -d /etc/profile.d
+cat <<'EOF' > /etc/profile.d/henge-safari-bridge.sh
+# Route CLI OAuth helpers (gh, gcloud, git web--browse) to iOS SafariSheetView.
+if [ -z "${BROWSER:-}" ]; then
+    export BROWSER="/usr/local/bin/henge-xdg-open"
+fi
+EOF
+chmod 0644 /etc/profile.d/henge-safari-bridge.sh
 
 install -d /usr/local/share/applications
 cat <<'EOF' > /usr/local/share/applications/henge-safari-bridge.desktop

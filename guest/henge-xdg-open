@@ -343,7 +343,18 @@ def main() -> int:
 
     target = sys.argv[1]
     if not is_allowed_http_url(target):
+        if os.environ.get("HENGE_XDG_FALLBACK") == "1":
+            print(f"henge-xdg-open: blocked recursive xdg-open fallback for URI: {target}", file=sys.stderr)
+            return 1
         if os.path.isfile("/usr/bin/xdg-open") and os.access("/usr/bin/xdg-open", os.X_OK):
+            os.environ["HENGE_XDG_FALLBACK"] = "1"
+            browser_env = os.environ.get("BROWSER", "")
+            if "henge-xdg-open" in browser_env:
+                filtered = [p for p in browser_env.split(":") if "henge-xdg-open" not in p]
+                if filtered:
+                    os.environ["BROWSER"] = ":".join(filtered)
+                else:
+                    os.environ.pop("BROWSER", None)
             os.execv("/usr/bin/xdg-open", ["/usr/bin/xdg-open", *sys.argv[1:]])
         print(f"henge-xdg-open: ignoring unsupported non-HTTP(S) URI: {target}", file=sys.stderr)
         return 1
