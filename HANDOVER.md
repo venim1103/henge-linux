@@ -36,11 +36,10 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `7e765a0` | Milestone 5.3: wired cached `libffi`/`glib`/`libslirp` static deps in `scripts/build_ios_deps.sh`, `ios/project.yml`, and `.github/workflows/ci.yml`, and added `CNTVCT_EL0` background-suspend offset compensation |
 | `e1c3e3f`–`65aec93` | First audit pass + TXM dual-mapped RX/RW pool acquisition (`henge_jit_acquire_pool` + `ios/Resources/henge-jit.js`) |
 | `97da5b2`–`a2a3619` | Second 35-file audit pass (`extern "C"` ObjC++ linkage, 64-bit LE hex in `henge-jit.js`, `UIKeyInput`/`pressesBegan` HID keyboard, CAS monotonic `CNTVCT_EL0` clamp, serialized macOS CI release builds) |
-| `8a63cdd` *(HEAD)* | Replaced C preprocessor token-pasting macros in `host/henge_brk.S` with explicit `.globl _henge_jit26_*` labels under `#if defined(__APPLE__)` for Darwin Clang `.S` assembler |
-
-**Latest CI Run (`#43925931666` on `8a63cdd`):**
-- `Core & Platform Unit Tests (Linux)`: **PASSED** (`HV_TLB_PAGE_BITS=12` & `14`, `hvsparse` round-trip, script validation).
-- `iOS Unsigned IPA Build (macOS)`: `Run macOS platform tests & build full ios-lib` **PASSED** (confirming `host/henge_brk.S` compiles cleanly on Darwin Clang); final `Ld` step **FAILED** with undefined CoreAudio/AudioToolbox symbols (`_AudioComponentFindNext`, `_AudioQueueNewInput`, `_AudioUnitInitialize`, etc.) from `libhengelinux.a(up_host_audio_mac.o)` because `-framework AudioToolbox` appears in `HengeLinux-linker-args.resp` *before* `-lhengelinux` in `ios/project.yml` `OTHER_LDFLAGS`.
+| `8a63cdd` | Replaced C preprocessor token-pasting macros in `host/henge_brk.S` with explicit `.globl _henge_jit26_*` labels under `#if defined(__APPLE__)` for Darwin Clang `.S` assembler |
+| `469f5d9` | Documented 4-batch P0–P2 code audit findings and Run `#43925931666` `AudioToolbox.framework` linker order diagnosis in `HANDOVER.md`, `PLAN.md`, and `README.md` |
+| `ca83def` | Applied P0/P1 fixes: `-framework AudioToolbox` link order in `ios/project.yml`, upstream `"HVSPARSE"` extent format in `tools/hvsparse.c` + first-boot `hv_sparse_unpack` in `HengeVMBridge.mm`, `CNTVCT_EL0` decoupling from `willResignActive` in `host/henge_platform.c`, `BRK` mask + `try/finally` `Detach` in `henge-jit.js`, `volatile sig_atomic_t` + signal fence + low-VA hold restore in `host/henge_txm_jit.c`, `Task.detached` JIT probe in `SelfDebugJITClient.swift`, and persistent C-strings in `HengeVMBridge.mm` |
+| `9e52c66` *(HEAD)* | Applied P1/P2 fixes: passive `/proc/net/tcp{,6}` polling & `127.0.0.0/8` / `302` grace window in `guest/henge-xdg-open`, `rw != rx` guard in `scripts/apply_upstream_patches.py`, `.asciiCapable` + sticky modifier auto-release + real 2-finger tap/scroll in `SessionView.swift`, `NSNumber` XPC unboxing in `JITExtensionHandler.swift`, `-MMD -MP` deps in `Makefile`, and updated `tests/test_core.c` |
 
 ---
 
