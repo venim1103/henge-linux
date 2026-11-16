@@ -38,8 +38,10 @@ jobs:
         run: make clean && make HV_TLB_PAGE_BITS=14 test-core hvsparse
       - name: Validate guest bridge & Archboot provisioning scripts
         run: |
-          python3 -m py_compile guest/henge-xdg-open
+          python3 -m py_compile guest/henge-xdg-open scripts/apply_upstream_patches.py
           bash -n guest/setup-arch-bridge.sh
+          bash -n scripts/sync_upstream.sh
+          bash -n scripts/build_ios_deps.sh
           bash -n scripts/provision_archlinux_arm64.sh
           bash scripts/provision_archlinux_arm64.sh --dry-run
 

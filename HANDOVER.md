@@ -29,7 +29,10 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `f7a4fba` | Applied P0/P1 C/ASM fixes: iOS sandbox `<container>/tmp/` socket paths, `P_TRACED` vs `CS_DEBUGGED` + `MAP_MEM_NAMED_CREATE` RAM, render mutex fence, `.cfi`/BTI traps, and 64 KiB aligned `hvsparse` |
 | `55560f3` | Hardened `guest/henge-xdg-open` (double-fork daemonize, `EADDRINUSE` `expose-port`, direct `localhost` URLs), `Makefile` `ios-lib` `set -euo pipefail`, `sync_upstream.sh` SHA fetch, and `ci.yml` |
 | `1a60781` | Wired `libhengelinux.a` into `ios/project.yml`, added Files app sharing + nested `JITExtension/Info.plist`, synchronous `MetalLifecycleGuard` observer, async JIT boot, and `physicalMemory` RAM cap |
-| *(HEAD)* | Updated `PLAN.md`, `HANDOVER.md`, and `README.md` with P0/P1 audit resolutions and Phase 5 roadmap |
+| `1f6c6f4` | Added rolling `latest-ipa` GitHub Pre-Release publishing in `.github/workflows/ci.yml` and direct download links in `README.md` |
+| `9ec1bf9` | Added `scripts/apply_upstream_patches.py`, updated `scripts/sync_upstream.sh`, and wired upstream `WindowsiOS` `core/host/devices` compilation into `Makefile` (`ios-lib`) |
+| `ee0c18b` | Implemented `ios/Sources/HengeVMBridge.{h,mm}` and wired `SessionView.swift` + `HengeLinuxApp.swift` to `CAMetalLayer`, xHCI HID, and `10.0.2.4/.henge/` OAuth sheet polling |
+| *(HEAD)* | Updated `PLAN.md`, `HANDOVER.md`, `README.md`, and `.github/workflows/ci.yml` for Milestone 5.1–5.3 |
 
 ---
 
@@ -42,25 +45,27 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `PLAN.md` | Complete | Full Phase 1–5 implementation roadmap, module map, and platform invariants |
 | `HANDOVER.md` | Complete | Session handover guide, file status, CI troubleshooting notes, and next-step checklist |
 | `docs/RESEARCH.md` | Complete | Deep technical analysis of `WindowsiOS`/`HengeVM` and all 6 Linux-on-iOS approaches |
-| `Makefile` | Complete (Phase 2–4 + P1) | Builds `test_core`, `hvsparse`, and Darwin `build/ios/libhengelinux.a` with `set -euo pipefail` and `-Wall -Wextra -Werror` |
+| `Makefile` | Complete (Phase 2–5.1) | Builds `test_core`, `hvsparse`, and `build/ios/libhengelinux.a` (compiling upstream `WindowsiOS` `core/host/devices` when synced alongside `host/henge_*.c`) |
 | `host/henge_platform.{h,c}` | Complete (P0/P1 hardened) | iOS sandbox `<container>/tmp/` `<104`-byte `sun_path` formatter, `TCR_EL1` `TG0`/`TG1` decoder, 16 KiB RAM aligner, and `pthread_mutex_t` render pause fence (`hengelinux_render_lock`) |
 | `host/henge_txm_jit.{h,c}` | Complete (P0 hardened) | TXM low-VA window `[4 GiB, 64 GiB)` (`< 0x7000000000`) validator, `0x69` page blessing, separated `P_TRACED` vs `CS_DEBUGGED`, and `MAP_MEM_NAMED_CREATE` + `LEDGER_NO_FOOTPRINT` RAM allocator |
 | `host/henge_brk.S` | Complete (P1 polished) | ARM64 `brk #0xf00d` (`0xa0013ed4`) traps (`x16=1` prepare, `x16=0` detach) with `.cfi_startproc` unwind and `hint #34` (`bti c`) |
 | `host/henge_virtio_gpu.{h,c}` | Complete (Config layer) | Configures PCI `0x1af4:0x1050` VirtIO-GPU in `2D GOP` or `3D VirGL` (`capset 1 & 2` + `ANGLE Metal`) mode |
 | `tools/hvsparse.c` | Complete (P1 hardened) | Zero-skipping 64 KiB sparse disk container packer/unpacker (`HVSP` v1) with 64 KiB aligned `data_offset` and `block_count` bounds validation |
 | `tests/test_core.c` | Complete | Unit tests for iOS sandbox `sun_path`, MMU granule decoding, RAM clamping/alignment, render lock/pause gate, TXM VA bounds & `0x69` blessing, and VirtIO-GPU capsets |
-| `ios/project.yml` | Complete (P0/P1 hardened) | XcodeGen spec (`iOS 26.0`, `Swift 6.0`, `ARCHS: arm64`) linking `libhengelinux.a`, enabling Files app sharing, and embedding `HengeLinuxJITExtension` with `JITExtension/Info.plist` |
+| `ios/project.yml` | Complete (Phase 5.2) | XcodeGen spec (`iOS 26.0`, `Swift 6.0`, `C++20`) linking `libhengelinux.a` + `ios/deps`, enabling Files app sharing, audio background mode, and `HengeLinuxJITExtension` |
 | `ios/JITExtension/Info.plist` | Complete | Explicit `Info.plist` with nested `NSExtension` dictionary (`com.apple.ar.viewer`) for PlugInKit / SideStore validation |
 | `ios/HengeLinux.entitlements` | Complete | Requests `com.apple.developer.kernel.increased-memory-limit` |
-| `ios/Sources/HengeLinuxApp.swift` | Complete (P1 hardened) | Launcher UI with `ProcessInfo.physicalMemory` RAM cap, async `prepareSession()` boot button, `prepareForReboot()` pool reuse, and `SafariSheetView` |
-| `ios/Sources/SessionView.swift` | Complete (UI shell) | Hosts `MTKView` framebuffer, top status bar, clamshell split-deck mode, and compact modifier strip (`Esc`, `Tab`, `Ctrl`, `Alt`, `Super`, `F1/F2/F12`) |
+| `ios/Sources/HengeVMBridge.{h,mm}` | Complete (Phase 5.2) | ObjC++/C++20 bridge connecting `HvWinVmConfig`, `CAMetalLayer`, xHCI HID keyboard/tablet, `LEDGER_NO_FOOTPRINT` RAM, and `10.0.2.4/.henge/` OAuth/clipboard APIs |
+| `ios/Sources/HengeLinuxApp.swift` | Complete (Phase 5.2) | Launcher UI with `ProcessInfo.physicalMemory` RAM cap, async JIT boot, `HengeVMBridge.startGuest`, and `10.0.2.4/.henge/open-url` `SafariSheetView` polling |
+| `ios/Sources/SessionView.swift` | Complete (Phase 5.2) | Hosts `MTKView` framebuffer attached to `HengeVMBridge`, clamshell trackpad gesture relay, and HID key modifier/function bar (`Esc`, `Tab`, `Ctrl`, `Alt`, `Super`, `F1/F2/F12`, `Ctrl+Alt+Del`) |
 | `ios/Sources/HingeSensorView.swift` | Complete | Runtime `NSClassFromString("UIHingeInteraction")` check so single-screen iPhones boot straight into full-screen canvas while offering a manual Split Deck toggle |
 | `ios/Sources/MetalLifecycleGuard.swift` | Complete (P1 hardened) | Synchronous `NotificationCenter` `willResignActive`/`didBecomeActive` observers + `withRenderLock` serializing Metal drawables against UIKit suspension |
 | `ios/Sources/SelfDebugJITClient.swift` | Complete (P1 hardened) | Async activation state machine checking `henge_txm_is_ptraced()` + `henge_txm_is_cs_debugged()` and preserving blessed pool across VM reboots |
 | `ios/JITExtension/JITExtensionHandler.swift` | Scaffolded | `com.apple.ar.viewer` `NSExtensionRequestHandling` entry point; ready to link `StikJIT.xcframework` + `idevice` |
 | `guest/henge-xdg-open` | Complete (P1 hardened) | Non-blocking double-fork guest URL opener & dual-stack OAuth relay with `EADDRINUSE` `expose-port`, direct `localhost` URLs, and 0.3s response flush delay |
 | `guest/setup-arch-bridge.sh` | Complete | Installs `henge-xdg-open` as `xdg-open`, configures `systemd-networkd` DHCP on `virtio_net`, and creates `/mnt/ios-share` |
-| `scripts/sync_upstream.sh` | Complete (P1 hardened) | Initializes/fetches `ammaarreshi/WindowsiOS` via `git init` + `fetch --depth 1` (supports branches, tags, and pinned commit SHAs) |
+| `scripts/sync_upstream.sh` | Complete (Phase 5.1) | Initializes/fetches `ammaarreshi/WindowsiOS` and invokes `scripts/apply_upstream_patches.py` |
+| `scripts/apply_upstream_patches.py` | Complete (Phase 5.1) | Idempotently patches upstream `share.c` (`<104B` `sun_path`), `fb_metal.m` & `audio_mac.c` (render pause fence), and `jit_region.c` (TXM low-VA guard) |
 | `scripts/build_ios_deps.sh` | Complete | Validates Homebrew (`/opt/homebrew` or `/usr/local`) and delegates iOS static library cross-compilation (`libffi`, `glib`, `libslirp`) |
 | `scripts/provision_archlinux_arm64.sh` | Complete | Downloads latest Archboot AArch64 ISO, boots QEMU `virt` + EDK2 + NVMe, and packs `archlinux.hvsparse` |
 | `.github/workflows/ci.yml` | Complete | Runs Linux C tests (`HV_TLB_PAGE_BITS=12` & `14`), `hvsparse` round-trip, script syntax checks, and macOS XcodeGen + unsigned `.ipa` packaging |
@@ -94,22 +99,15 @@ We inspected `ammaarreshi/WindowsiOS` in CI (`#43729534994`–`#43770680469`) an
 - **Host Primitives (`host/`):** `jit_region.c`, `enter.S`, `disk.c`, `winvm.c`, `net_slirp.c`, `share.c`, `audio_mac.c`, `hvsparse.c`.
 - **Virtual Devices (`devices/`):** `fb_metal.m`, `nvme.c`, `pcie.c`, `gicv3.c`, `xhci.c`, `hda.c`, `virtio_net.c`, `acpi.c`, `fdt.c`, `fw_cfg.c`, `pflash.c`, `pl011.c`, `pl031.c`, `pl061.c`, `timer.c`, `virtio.c`, `virtio_blk.c`, `virtio_input.c`, `virtio_snd.c`, `winvirt.c`.
 
-When continuing in a new chat window, start immediately with **Milestone 5.1 & 5.2**:
+When continuing in a new chat window, **Milestones 5.1 & 5.2 are landed** (`apply_upstream_patches.py`, `Makefile` upstream linkage, and `HengeVMBridge.{h,mm}`). Start immediately with **Milestone 5.3 & 5.4**:
 
-1. **Link Upstream `WindowsiOS` Engine & Apply Patches (`scripts/sync_upstream.sh` + `patches/*.patch` + `Makefile`):**
-   - Inspect `.upstream/WindowsiOS/host/{hvsparse.h,winvm.h}` and `devices/{fb_metal.h,xhci.h}` + `scripts/build_ios_deps.sh` to align `tools/hvsparse.c` header layout with `devices/nvme.c` and resolve iOS static dependency paths (`libffi`, `glib`, `libslirp`).
-   - Extend `Makefile` (`ios-lib`) to compile upstream `core/*.c` (`-mgeneral-regs-only` on `mmu.c`), `host/*.c`/`enter.S`, and `devices/*.{c,m}` alongside `host/henge_*.c` into `build/ios/libhengelinux.a` (which `ios/project.yml` links via `-lhengelinux`).
-   - Apply patches in `scripts/sync_upstream.sh`:
-     - `host/share.c:959`: format Unix socket path via `henge_format_unix_socket_path()` so deep iOS sandbox paths bind inside `<container>/tmp/` (`<104` bytes).
-     - `devices/fb_metal.m:166` & `host/audio_mac.c:35,109`: wrap `[curLayer nextDrawable]` / commit and audio callbacks with `hengelinux_render_lock()` and `hengelinux_is_render_paused()`.
-     - `host/jit_region.c:15,34`: validate JIT ranges with `henge_txm_is_valid_jit_range()`.
-     - Keep `HV_TLB_PAGE_BITS=12` default during UEFI EDK2 4 KiB DXE boot until `core/mmu.c` sub-page protection under `HV_TLB_PAGE_BITS=14` is verified.
-2. **Wire SwiftUI Frontend to `HengeVM` Runtime (`ios/Sources/HengeVMBridge.{h,mm}`):**
-   - Connect `SessionView.swift`'s `MTKView` / `CAMetalLayer` to `fb_metal.m`, forward touch/keyboard events to `devices/xhci.c`, route `10.0.2.4/.henge/open-url` notifications to `HengeLinuxApp.safariURL` (`SafariSheetView`), and compensate `CNTVCT_EL0` across background suspend so Linux's 20s softlockup detector does not fire on resume.
-   - Load guest disk `Documents/Machines/ArchLinux/archlinux.hvsparse` and UEFI firmware `code.fd` / `vars.fd` with `effectiveRamMiB` allocated via `henge_alloc_ledger_exempt_ram()`.
-3. **Provision & Boot Arch Linux AArch64 Image:**
-   - Run `make hvsparse && bash scripts/provision_archlinux_arm64.sh` on a Mac or Linux host, install Arch Linux via Archboot setup onto `/dev/nvme0n1`, run `sudo bash /path/to/guest/setup-arch-bridge.sh` inside the guest, and copy `archlinux.hvsparse`, `code.fd`, and `vars.fd` into the iPhone app's `Documents/Machines/ArchLinux/` folder via the iOS Files app.
-4. **Embed `StikJIT` (`MPL-2.0`) + `idevice` (`MIT`) & 3D VirGL:**
+1. **Build iOS Static Dependencies (`libffi`, `glib`, `libslirp`) & Link Full Engine in CI (`scripts/build_ios_deps.sh` + `ios/project.yml` + `.github/workflows/ci.yml`):**
+   - Run `bash scripts/sync_upstream.sh && bash scripts/build_ios_deps.sh` (and cache `.upstream/WindowsiOS/ios/deps` in `.github/workflows/ci.yml` `ios-build`) so `libhengelinux.a` links `libffi.a`, `libglib-2.0.a`, and `libslirp.a` (`HENGE_HAS_UPSTREAM_ENGINE == 1`) in the published `latest-ipa` `.ipa`.
+   - Add background-suspend `CNTVCT_EL0` offset compensation in `scripts/apply_upstream_patches.py` (`core/sysreg.c`) so Linux's 20s softlockup watchdog does not fire after iOS background suspension.
+2. **Provision & Boot Arch Linux AArch64 Image (Milestone 5.3):**
+   - Run `make hvsparse && bash scripts/provision_archlinux_arm64.sh` on a Mac or Linux host, install Arch Linux via Archboot setup onto `/dev/nvme0n1`, run `sudo bash /path/to/guest/setup-arch-bridge.sh` inside the guest, and copy `archlinux.hvsparse`, `code.fd`, and `vars.fd` into **Files -> On My iPhone -> HengeLinux -> Machines/ArchLinux/**.
+   - Compare `HV_TLB_PAGE_BITS=12` (stock 4 KiB Archboot kernel) vs. `HV_TLB_PAGE_BITS=14` (custom `CONFIG_ARM64_16K_PAGES=y` Arch kernel).
+3. **Embed `StikJIT` (`MPL-2.0`) + `idevice` (`MIT`) & 3D VirGL (Milestone 5.4):**
    - Wire `SelfDebugJITClient.swift` to invoke `HengeLinuxJITExtension` over `NSExtensionContext` / XPC to perform live `brk #0xf00d` page blessing on-device without a tethered Mac.
    - Implement `virtio-gpu-gl-pci` (`0x1af4:0x1050`) backed by `virglrenderer` + `ANGLE (Metal)` for hardware-accelerated Wayland compositors (`Hyprland`, `Wayfire`, `Sway`).
 
@@ -119,4 +117,4 @@ When continuing in a new chat window, start immediately with **Milestone 5.1 & 5
 
 Copy and paste the following into your next session to pick up immediately where this session left off:
 
-> `@github-code-editor @GitHubCodeEditor Open venim1103/henge-linux and read HANDOVER.md and PLAN.md. All P0/P1 fixes are landed—let's execute Milestone 5.1 & 5.2: inspect upstream WindowsiOS host/hvsparse.h and core/{mmu,sysreg}.c, create patches/*.patch in sync_upstream.sh, compile upstream core/ + host/ + devices/ into build/ios/libhengelinux.a in Makefile, and create HengeVMBridge.{h,mm} to wire SessionView and HengeLinuxApp to the live VM.`
+> `@github-code-editor @GitHubCodeEditor Open venim1103/henge-linux and read HANDOVER.md and PLAN.md. Milestones 5.1 & 5.2 (apply_upstream_patches.py, Makefile upstream linkage, and HengeVMBridge.{h,mm}) are landed on main—let's execute Milestone 5.3: wire cached iOS static deps (libffi/glib/libslirp) in build_ios_deps.sh + ci.yml so the published latest-ipa embeds the live HengeVM engine, and add CNTVCT_EL0 suspend-offset compensation in apply_upstream_patches.py.`
