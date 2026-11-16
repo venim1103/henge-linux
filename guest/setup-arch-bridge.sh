@@ -15,7 +15,9 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 install -Dm755 "$SCRIPT_DIR/henge-xdg-open" /usr/local/bin/henge-xdg-open
-ln -sf /usr/local/bin/henge-xdg-open /usr/local/bin/xdg-open
+if [ -e /usr/bin/xdg-open ] && [ ! -L /usr/bin/xdg-open ] && [ ! -e /usr/local/bin/xdg-open ]; then
+    ln -sf /usr/local/bin/henge-xdg-open /usr/local/bin/xdg-open
+fi
 
 install -d /usr/local/share/applications
 cat <<'EOF' > /usr/local/share/applications/henge-safari-bridge.desktop

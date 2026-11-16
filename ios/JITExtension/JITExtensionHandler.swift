@@ -15,8 +15,8 @@ final class JITExtensionHandler: NSObject, NSExtensionRequestHandling {
 
         if let inputItem = context.inputItems.first as? NSExtensionItem,
            let userInfo = inputItem.userInfo {
-            let targetPID = userInfo["targetPID"] as? Int32 ?? 0
-            let poolBytes = userInfo["poolBytes"] as? UInt64 ?? (384 * 1024 * 1024)
+            let targetPID = (userInfo["targetPID"] as? NSNumber)?.int32Value ?? 0
+            let poolBytes = (userInfo["poolBytes"] as? NSNumber)?.uint64Value ?? (384 * 1024 * 1024)
             let hasPairing = (userInfo["pairingData"] as? Data)?.isEmpty == false
 
             responseInfo["targetPID"] = targetPID

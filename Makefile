@@ -14,7 +14,7 @@ HV_TLB_PAGE_BITS ?= 12
 REQUIRE_UPSTREAM ?= 0
 
 CC ?= cc
-CFLAGS_COMMON := -std=c11 -O2 -Wall -Wextra -Werror -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost
+CFLAGS_COMMON := -std=c11 -O2 -Wall -Wextra -Werror -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost
 
 BUILD_DIR := build
 UPSTREAM_DIR := .upstream/WindowsiOS
@@ -35,6 +35,8 @@ $(BUILD_DIR)/test_core: tests/test_core.c $(HOST_SRCS) $(HOST_HDRS) $(HOST_ASM) 
 
 $(BUILD_DIR)/hvsparse: tools/hvsparse.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) tools/hvsparse.c -o $(BUILD_DIR)/hvsparse
+
+-include $(BUILD_DIR)/*.d $(BUILD_DIR)/ios/*.d
 
 hvsparse: $(BUILD_DIR)/hvsparse
 
@@ -101,7 +103,7 @@ UPSTREAM_ALL_OBJS  := \
 
 ifeq ($(UNAME_S),Darwin)
 IOS_SDK := $(shell xcrun --sdk iphoneos --show-sdk-path)
-IOS_BASE := -O2 -arch arm64 -mios-version-min=26.0 -isysroot $(IOS_SDK) -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost -Werror=implicit-function-declaration -Werror=incompatible-pointer-types
+IOS_BASE := -O2 -arch arm64 -mios-version-min=26.0 -isysroot $(IOS_SDK) -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost -Werror=implicit-function-declaration -Werror=incompatible-pointer-types
 IOS_CFLAGS := -std=c11 -Wall -Wextra -Werror $(IOS_BASE)
 IOS_UP_CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers $(IOS_BASE)
 ENG_INC := -I$(UPSTREAM_DIR)/core -I$(UPSTREAM_DIR)/host -I$(UPSTREAM_DIR)/devices -I$(UPSTREAM_DIR)/ios/deps/include -I$(UPSTREAM_DIR)/ios/deps/include/slirp -I$(UPSTREAM_DIR)/ios/deps/include/glib-2.0 -I$(UPSTREAM_DIR)/ios/deps/lib/glib-2.0/include

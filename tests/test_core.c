@@ -98,20 +98,27 @@ static void test_render_pause_lifecycle_gate(void) {
     hengelinux_set_render_paused(false);
     HENGE_CHECK(hengelinux_is_render_paused() == false);
 
-    /* Verify CNTVCT_EL0 suspend offset compensation and strict monotonicity across pause/resume. */
+    /* Verify CNTVCT_EL0 decoupling from render pause and strict monotonicity across VM clock pause/resume. */
     hengelinux_reset_suspend_counter();
     HENGE_CHECK(hengelinux_suspend_counter_offset() == 0ULL);
     uint64_t t0 = hengelinux_compensated_counter(50000000ULL);
     HENGE_CHECK(t0 == 50000000ULL);
 
+    /* GPU render pause (willResignActive / SafariSheetView) must NOT freeze guest CNTVCT_EL0. */
     hengelinux_set_render_paused(true);
+    uint64_t during_ui_overlay = hengelinux_compensated_counter(52000000ULL);
+    HENGE_CHECK(during_ui_overlay == 52000000ULL);
+    hengelinux_set_render_paused(false);
+
+    /* Explicit VM vCPU clock pause freezes CNTVCT_EL0 and records suspend offset on resume. */
+    hengelinux_set_vm_clock_paused(true);
     uint64_t frozen = hengelinux_compensated_counter(80000000ULL);
     struct timespec pause_ts = {0, 2000000L};
     nanosleep(&pause_ts, NULL);
     uint64_t frozen_later = hengelinux_compensated_counter(120000000ULL);
     HENGE_CHECK(frozen == frozen_later);
-    HENGE_CHECK(frozen >= t0);
-    hengelinux_set_render_paused(false);
+    HENGE_CHECK(frozen >= during_ui_overlay);
+    hengelinux_set_vm_clock_paused(false);
 
     uint64_t offset_after = hengelinux_suspend_counter_offset();
     HENGE_CHECK(offset_after > 0ULL);
@@ -120,6 +127,12 @@ static void test_render_pause_lifecycle_gate(void) {
     HENGE_CHECK(after_resume_clamped >= frozen);
     uint64_t after_resume_forward = hengelinux_compensated_counter(frozen + offset_after + 50000ULL);
     HENGE_CHECK(after_resume_forward == frozen + 50000ULL);
+
+    /* Unscheduled XNU freezer wall-clock jump (> 500 ms = 12,000,000 ticks) is automatically trimmed. */
+    uint64_t jump_raw = frozen + offset_after + 50000ULL + 36000000ULL; /* +1.5s jump */
+    uint64_t after_jump = hengelinux_compensated_counter(jump_raw);
+    HENGE_CHECK(after_jump == frozen + 50000ULL + 12000000ULL);
+
     hengelinux_reset_suspend_counter();
     HENGE_CHECK(hengelinux_suspend_counter_offset() == 0ULL);
 }

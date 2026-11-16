@@ -24,9 +24,24 @@ import urllib.request
 
 GATEWAY = "http://10.0.2.4/.henge"
 DEFAULT_GUEST_NIC_IP = "10.0.2.15"
-OAUTH_DONE_RE = re.compile(
-    rb"^HTTP/(?:1\.[01]|2(?:\.0)?)\s+(?:200|201|202|204|301|302|303|307|308)\b",
+OAUTH_FINAL_RE = re.compile(
+    rb"^HTTP/(?:1\.[01]|2(?:\.0)?)\s+(?:200|201|202|204)\b",
     re.IGNORECASE,
+)
+OAUTH_REDIRECT_RE = re.compile(
+    rb"^HTTP/(?:1\.[01]|2(?:\.0)?)\s+(?:301|302|303|307|308)\b",
+    re.IGNORECASE,
+)
+LOCATION_HEADER_RE = re.compile(rb"^Location:\s*([^\r\n]+)", re.IGNORECASE | re.MULTILINE)
+LOOPBACK_HOST_RE = re.compile(r"^https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:/|$)", re.IGNORECASE)
+OAUTH_QUERY_KEYS = (
+    "redirect_uri",
+    "redirect_url",
+    "callback",
+    "return_to",
+    "next",
+    "continue",
+    "post_logout_redirect_uri",
 )
 
 
@@ -44,7 +59,7 @@ def resolve_guest_nic_ip() -> str:
     return DEFAULT_GUEST_NIC_IP
 
 
-def gateway_put(endpoint: str, payload: str = "") -> None:
+def gateway_put(endpoint: str, payload: str = "", log_errors: bool = False) -> None:
     req = urllib.request.Request(
         f"{GATEWAY}/{endpoint}",
         data=payload.encode("utf-8"),
@@ -53,8 +68,9 @@ def gateway_put(endpoint: str, payload: str = "") -> None:
     try:
         with urllib.request.urlopen(req, timeout=3):
             pass
-    except Exception:
-        pass
+    except Exception as exc:
+        if log_errors:
+            print(f"henge-xdg-open: gateway PUT /{endpoint} failed: {exc}", file=sys.stderr)
 
 
 def is_allowed_http_url(target_url: str) -> bool:
@@ -65,23 +81,50 @@ def is_allowed_http_url(target_url: str) -> bool:
     return parsed.scheme.lower() in ("http", "https") and bool(parsed.hostname)
 
 
+def is_loopback_hostname(host: str | None) -> bool:
+    if not host:
+        return False
+    h = host.strip("[]").lower()
+    if h in ("localhost", "::1", "::ffff:127.0.0.1"):
+        return True
+    parts = h.split(".")
+    if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+        return int(parts[0]) == 127
+    return False
+
+
+def _match_loopback_port_in_text(raw_val: str) -> int | None:
+    decoded = urllib.parse.unquote(raw_val)
+    match = re.search(
+        r"https?://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]):(\d{1,5})",
+        decoded,
+        re.IGNORECASE,
+    )
+    if match:
+        port = int(match.group(1))
+        if 1 <= port <= 65535:
+            return port
+    return None
+
+
 def extract_loopback_port(target_url: str) -> int | None:
     parsed = urllib.parse.urlparse(target_url)
-    if parsed.hostname in ("localhost", "127.0.0.1", "::1") and parsed.port is not None:
+    if is_loopback_hostname(parsed.hostname) and parsed.port is not None:
         port = int(parsed.port)
         return port if 1 <= port <= 65535 else None
 
     params = urllib.parse.parse_qs(parsed.query)
-    for key in ("redirect_uri", "redirect_url", "callback"):
+    for key in OAUTH_QUERY_KEYS:
         for val in params.get(key, []):
-            match = re.search(
-                r"https?://(?:localhost|127\.0\.0\.1|\[::1\]):(\d{2,5})",
-                urllib.parse.unquote(val),
-            )
-            if match:
-                port = int(match.group(1))
-                if 1 <= port <= 65535:
-                    return port
+            port = _match_loopback_port_in_text(val)
+            if port is not None:
+                return port
+
+    for values in params.values():
+        for val in values:
+            port = _match_loopback_port_in_text(val)
+            if port is not None:
+                return port
     return None
 
 
@@ -103,6 +146,19 @@ def connect_loopback(port: int, wait_seconds: float = 3.0) -> socket.socket:
     raise ConnectionRefusedError(f"No loopback listener on port {port}")
 
 
+def _response_completes_oauth(header_bytes: bytes) -> bool:
+    if OAUTH_FINAL_RE.match(header_bytes):
+        return True
+    if OAUTH_REDIRECT_RE.match(header_bytes):
+        loc_match = LOCATION_HEADER_RE.search(header_bytes)
+        if loc_match:
+            loc = loc_match.group(1).decode("latin-1", errors="ignore").strip()
+            if loc.startswith("/") or LOOPBACK_HOST_RE.match(loc):
+                return False
+        return True
+    return False
+
+
 def relay_stream(
     src: socket.socket,
     dst: socket.socket,
@@ -117,15 +173,18 @@ def relay_stream(
             if not chunk:
                 break
             if is_response and not header_checked:
-                header_buf.extend(chunk[:48])
-                if len(header_buf) >= 16 or b"\n" in header_buf:
+                header_buf.extend(chunk[:512])
+                if b"\r\n\r\n" in header_buf or b"\n\n" in header_buf or len(header_buf) >= 512:
                     header_checked = True
-                    if OAUTH_DONE_RE.match(bytes(header_buf)):
+                    if _response_completes_oauth(bytes(header_buf)):
                         done_event.set()
             dst.sendall(chunk)
     except OSError:
         pass
     finally:
+        if is_response and not header_checked and header_buf:
+            if _response_completes_oauth(bytes(header_buf)):
+                done_event.set()
         try:
             dst.shutdown(socket.SHUT_WR)
         except OSError:
@@ -167,16 +226,18 @@ def handle_relay_client(client: socket.socket, port: int, done_event: threading.
 
 
 def is_port_listening(port: int) -> bool:
-    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-        probe = socket.socket(family, socket.SOCK_STREAM)
+    """Passively inspect /proc/net/tcp and /proc/net/tcp6 for TCP_LISTEN (0A) without sending SYNs."""
+    target_hex = f":{port:04X}"
+    for proc_path in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
-            probe.settimeout(0.25)
-            if probe.connect_ex((host, port)) == 0:
-                return True
+            with open(proc_path, "r", encoding="utf-8") as fh:
+                next(fh, None)
+                for line in fh:
+                    cols = line.split()
+                    if len(cols) >= 4 and cols[3].upper() == "0A" and cols[1].upper().endswith(target_hex):
+                        return True
         except OSError:
-            pass
-        finally:
-            probe.close()
+            continue
     return False
 
 
@@ -227,8 +288,8 @@ def run_oauth_bridge(port: int, url: str) -> None:
         if exc.errno == errno.EADDRINUSE:
             # Guest listener already bound 0.0.0.0/[::] on this port; expose via libslirp
             # and wait in background until the one-shot OAuth listener closes to dismiss Safari.
-            gateway_put("expose-port", str(port))
-            gateway_put("open-url", url)
+            gateway_put("expose-port", str(port), log_errors=True)
+            gateway_put("open-url", url, log_errors=True)
             daemonize_background()
             wait_for_port_listener(port, timeout=3.0)
             deadline = time.monotonic() + 180.0
@@ -236,11 +297,11 @@ def run_oauth_bridge(port: int, url: str) -> None:
                 time.sleep(0.4)
             gateway_put("oauth-done", str(port))
             return
-        gateway_put("open-url", url)
+        gateway_put("open-url", url, log_errors=True)
         return
 
-    gateway_put("expose-port", str(port))
-    gateway_put("open-url", url)
+    gateway_put("expose-port", str(port), log_errors=True)
+    gateway_put("open-url", url, log_errors=True)
 
     # Return control to parent CLI caller immediately while relaying callback in background.
     daemonize_background()
@@ -248,8 +309,14 @@ def run_oauth_bridge(port: int, url: str) -> None:
     done_event = threading.Event()
     workers: list[threading.Thread] = []
     overall_deadline = time.monotonic() + 180.0
+    grace_deadline: float | None = None
     try:
-        while not done_event.is_set() and time.monotonic() < overall_deadline:
+        while time.monotonic() < overall_deadline:
+            if done_event.is_set():
+                if grace_deadline is None:
+                    grace_deadline = time.monotonic() + 1.5
+                elif time.monotonic() >= grace_deadline:
+                    break
             try:
                 client, _ = listener.accept()
             except TimeoutError:
@@ -266,7 +333,6 @@ def run_oauth_bridge(port: int, url: str) -> None:
     finally:
         listener.close()
         if done_event.is_set():
-            time.sleep(0.3)
             gateway_put("oauth-done", str(port))
 
 
@@ -286,7 +352,7 @@ def main() -> int:
     if port is not None:
         run_oauth_bridge(port, target)
     else:
-        gateway_put("open-url", target)
+        gateway_put("open-url", target, log_errors=True)
     return 0
 
 

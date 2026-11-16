@@ -161,6 +161,10 @@ def main() -> int:
         "henge_txm_is_valid_jit_range",
         """int hv_jit_region_attach(HvJitRegion *region, void *rx, void *rw, size_t bytes) {""",
         """int hv_jit_region_attach(HvJitRegion *region, void *rx, void *rw, size_t bytes) {
+    if (rw == NULL || rw == rx) {
+        fprintf(stderr, "hengevm: jit: invalid RW alias %p for RX %p\\n", rw, rx);
+        return -1;
+    }
     if (!henge_txm_is_valid_jit_range((uintptr_t)rx, bytes)) {
         fprintf(stderr, "hengevm: jit: rx range %p (+0x%zx) outside TXM low-VA bounds\\n", rx, bytes);
         return -1;

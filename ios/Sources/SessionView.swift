@@ -38,7 +38,10 @@ struct SessionView: View {
 
                 MetalFramebufferRepresentable(
                     lifecycle: lifecycle,
-                    focusKeyboard: $focusSoftwareKeyboard
+                    focusKeyboard: $focusSoftwareKeyboard,
+                    onCharacterTyped: {
+                        releaseActiveModifiers()
+                    }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
@@ -163,29 +166,23 @@ struct SessionView: View {
                         }
                     )
                     .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 2)
-                            .onChanged { value in
-                                let w = max(padGeo.size.width, 1)
-                                let h = max(padGeo.size.height, 1)
-                                if let prev = lastTrackpadPoint {
-                                    let dx = Double((value.location.x - prev.x) / w) * 1.35
-                                    let dy = Double((value.location.y - prev.y) / h) * 1.35
-                                    cursorNormX = min(max(cursorNormX + dx, 0), 1)
-                                    cursorNormY = min(max(cursorNormY + dy, 0), 1)
-                                    HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: 0, wheel: 0)
-                                }
-                                lastTrackpadPoint = value.location
-                            }
-                            .onEnded { _ in
-                                lastTrackpadPoint = nil
-                            }
-                    )
-                    .simultaneousGesture(
-                        SpatialTapGesture()
-                            .onEnded { _ in
+                    .overlay(
+                        TrackpadSurfaceRepresentable(
+                            onRelativeMove: { dx, dy in
+                                cursorNormX = min(max(cursorNormX + dx, 0), 1)
+                                cursorNormY = min(max(cursorNormY + dy, 0), 1)
+                                HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: 0, wheel: 0)
+                            },
+                            onSingleTap: {
                                 pulseMouseButton(1)
+                            },
+                            onTwoFingerTap: {
+                                pulseMouseButton(2)
+                            },
+                            onTwoFingerScroll: { wheelStep in
+                                HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: 0, wheel: wheelStep)
                             }
+                        )
                     )
             }
             .padding(.horizontal, 14)
@@ -221,6 +218,7 @@ struct SessionView: View {
     private func hidPulseButton(_ label: String, usage: UInt8) -> some View {
         Button(label) {
             HengeVMBridge.shared.tapHidKeyUsage(usage)
+            releaseActiveModifiers()
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -240,6 +238,7 @@ struct SessionView: View {
 
 final class MetalDisplaySurfaceView: UIView, UIKeyInput {
     var onFocusChanged: ((Bool) -> Void)?
+    var onCharacterTyped: (() -> Void)?
 
     override class var layerClass: AnyClass {
         CAMetalLayer.self
@@ -251,6 +250,16 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
 
     override var canBecomeFirstResponder: Bool {
         true
+    }
+
+    var keyboardType: UIKeyboardType {
+        get { .asciiCapable }
+        set {}
+    }
+
+    var smartInsertDeleteType: UITextSmartInsertDeleteType {
+        get { .no }
+        set {}
     }
 
     var autocorrectionType: UITextAutocorrectionType {
@@ -389,10 +398,12 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
                 HengeVMBridge.shared.sendHidKeyUsage(0xE1, pressed: false)
             }
         }
+        onCharacterTyped?()
     }
 
     func deleteBackward() {
         HengeVMBridge.shared.tapHidKeyUsage(0x2A)
+        onCharacterTyped?()
     }
 
     private static func asciiToHid(_ cp: UInt32) -> (UInt8, Bool)? {
@@ -488,9 +499,100 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
     }
 }
 
+final class MultiTouchTrackpadUIView: UIView {
+    var onRelativeMove: ((Double, Double) -> Void)?
+    var onSingleTap: (() -> Void)?
+    var onTwoFingerTap: (() -> Void)?
+    var onTwoFingerScroll: ((Int8) -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupGestures()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupGestures()
+    }
+
+    private func setupGestures() {
+        backgroundColor = .clear
+        isMultipleTouchEnabled = true
+
+        let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
+        singleTap.numberOfTapsRequired = 1
+        singleTap.numberOfTouchesRequired = 1
+
+        let twoTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap))
+        twoTap.numberOfTapsRequired = 1
+        twoTap.numberOfTouchesRequired = 2
+        singleTap.require(toFail: twoTap)
+
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.minimumNumberOfTouches = 1
+        pan.maximumNumberOfTouches = 2
+
+        addGestureRecognizer(twoTap)
+        addGestureRecognizer(singleTap)
+        addGestureRecognizer(pan)
+    }
+
+    @objc private func handleSingleTap() {
+        onSingleTap?()
+    }
+
+    @objc private func handleTwoFingerTap() {
+        onTwoFingerTap?()
+    }
+
+    @objc private func handlePan(_ gr: UIPanGestureRecognizer) {
+        let w = max(bounds.width, 1)
+        let h = max(bounds.height, 1)
+        let delta = gr.translation(in: self)
+        if gr.numberOfTouches >= 2 {
+            let wheelStep = Int8(max(-5, min(5, Int(delta.y / 24.0))))
+            if wheelStep != 0 {
+                onTwoFingerScroll?(wheelStep)
+                gr.setTranslation(.zero, in: self)
+            }
+            return
+        }
+        if gr.state == .changed {
+            let dx = Double(delta.x / w) * 1.35
+            let dy = Double(delta.y / h) * 1.35
+            onRelativeMove?(dx, dy)
+            gr.setTranslation(.zero, in: self)
+        }
+    }
+}
+
+struct TrackpadSurfaceRepresentable: UIViewRepresentable {
+    let onRelativeMove: (Double, Double) -> Void
+    let onSingleTap: () -> Void
+    let onTwoFingerTap: () -> Void
+    let onTwoFingerScroll: (Int8) -> Void
+
+    func makeUIView(context: Context) -> MultiTouchTrackpadUIView {
+        let view = MultiTouchTrackpadUIView(frame: .zero)
+        view.onRelativeMove = onRelativeMove
+        view.onSingleTap = onSingleTap
+        view.onTwoFingerTap = onTwoFingerTap
+        view.onTwoFingerScroll = onTwoFingerScroll
+        return view
+    }
+
+    func updateUIView(_ uiView: MultiTouchTrackpadUIView, context: Context) {
+        uiView.onRelativeMove = onRelativeMove
+        uiView.onSingleTap = onSingleTap
+        uiView.onTwoFingerTap = onTwoFingerTap
+        uiView.onTwoFingerScroll = onTwoFingerScroll
+    }
+}
+
 struct MetalFramebufferRepresentable: UIViewRepresentable {
     @ObservedObject var lifecycle: MetalLifecycleGuard
     @Binding var focusKeyboard: Bool
+    var onCharacterTyped: (() -> Void)?
 
     func makeUIView(context: Context) -> MetalDisplaySurfaceView {
         let view = MetalDisplaySurfaceView(frame: .zero)
@@ -499,6 +601,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
                 focusKeyboard = isFocused
             }
         }
+        view.onCharacterTyped = onCharacterTyped
         if let metalLayer = view.metalLayer {
             metalLayer.pixelFormat = .bgra8Unorm
             metalLayer.framebufferOnly = true
@@ -509,6 +612,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
 
     func updateUIView(_ uiView: MetalDisplaySurfaceView, context: Context) {
         _ = lifecycle.isPaused
+        uiView.onCharacterTyped = onCharacterTyped
         if focusKeyboard && !uiView.isFirstResponder {
             _ = uiView.becomeFirstResponder()
         } else if !focusKeyboard && uiView.isFirstResponder {
