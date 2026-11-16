@@ -135,6 +135,14 @@ struct SessionView: View {
                 hidPulseButton("F1", usage: 0x3A)
                 hidPulseButton("F2", usage: 0x3B)
                 hidPulseButton("F12", usage: 0x45)
+                Button("Paste") {
+                    if let clip = UIPasteboard.general.string, !clip.isEmpty {
+                        HengeVMBridge.shared.pushHostClipboard(clip)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .font(.caption.monospaced())
                 Button("Ctrl+Alt+Del") {
                     HengeVMBridge.shared.sendCtrlAltDel()
                 }
@@ -310,12 +318,14 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleCanvasTap(_:)))
         singleTap.numberOfTapsRequired = 1
         singleTap.numberOfTouchesRequired = 1
-        addGestureRecognizer(singleTap)
 
         let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleCanvasRightClick(_:)))
         twoFingerTap.numberOfTapsRequired = 1
         twoFingerTap.numberOfTouchesRequired = 2
+        singleTap.require(toFail: twoFingerTap)
+
         addGestureRecognizer(twoFingerTap)
+        addGestureRecognizer(singleTap)
 
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handleCanvasPan(_:)))
         pan.minimumNumberOfTouches = 1

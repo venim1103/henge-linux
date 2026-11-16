@@ -66,6 +66,7 @@ static atomic_uint_fast64_t g_clock_seq = 0ULL;
 static atomic_bool g_vm_clock_paused = false;
 static atomic_uint_fast64_t g_clock_pause_start_ticks = 0ULL;
 static atomic_uint_fast64_t g_suspend_offset_ticks = 0ULL;
+static atomic_uint_fast64_t g_neg_suspend_offset_ticks = 0ULL;
 static atomic_uint_fast64_t g_last_raw_ticks = 0ULL;
 static atomic_uint_fast64_t g_last_compensated_ticks = 0ULL;
 
@@ -113,6 +114,28 @@ static uint64_t fnv1a_64(const char *str) {
 }
 #endif
 
+static bool is_valid_uuid36(const char *s, size_t len) {
+    if (len != 36U) {
+        return false;
+    }
+    for (size_t i = 0U; i < 36U; i++) {
+        char c = s[i];
+        if (i == 8U || i == 13U || i == 18U || i == 23U) {
+            if (c != '-') {
+                return false;
+            }
+        } else {
+            bool is_hex = (c >= '0' && c <= '9') ||
+                          (c >= 'a' && c <= 'f') ||
+                          (c >= 'A' && c <= 'F');
+            if (!is_hex) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 /*
  * Extract an iOS app container root (up to the 36-char UUID directory) when
  * given a path inside /var/mobile/Containers/Data/Application/<UUID>/... or
@@ -139,7 +162,7 @@ static bool format_ios_sandbox_tmp_socket(const char *container_dir,
         size_t uuid_len = (uuid_end != NULL)
             ? (size_t)(uuid_end - uuid_start)
             : strlen(uuid_start);
-        if (uuid_len == 0U) {
+        if (!is_valid_uuid36(uuid_start, uuid_len)) {
             return false;
         }
         size_t root_len = (uuid_end != NULL)
@@ -305,9 +328,12 @@ void hengelinux_set_vm_clock_paused(bool paused) {
         uint64_t seq = atomic_load_explicit(&g_clock_seq, memory_order_relaxed);
         atomic_store_explicit(&g_clock_seq, seq + 1ULL, memory_order_release);
         if (now > start && start > 0ULL) {
-            atomic_fetch_add_explicit(&g_suspend_offset_ticks,
-                                      now - start,
-                                      memory_order_acq_rel);
+            uint64_t prev_off = atomic_fetch_add_explicit(&g_suspend_offset_ticks,
+                                                          now - start,
+                                                          memory_order_acq_rel);
+            atomic_store_explicit(&g_neg_suspend_offset_ticks,
+                                  0ULL - (prev_off + (now - start)),
+                                  memory_order_release);
         }
         atomic_store_explicit(&g_last_raw_ticks, now, memory_order_release);
         atomic_store_explicit(&g_clock_seq, seq + 2ULL, memory_order_release);
@@ -328,6 +354,12 @@ uint64_t hengelinux_suspend_counter_offset(void) {
     }
     uint64_t now = platform_raw_ticks_24mhz();
     return (now > start) ? (base_offset + (now - start)) : base_offset;
+}
+
+const uint64_t *hengelinux_negative_counter_offset_ptr(void) {
+    _Static_assert(sizeof(g_neg_suspend_offset_ticks) == sizeof(uint64_t),
+                   "g_neg_suspend_offset_ticks must be 64-bit");
+    return (const uint64_t *)&g_neg_suspend_offset_ticks;
 }
 
 static uint64_t clamp_monotonic_ticks(uint64_t candidate) {
@@ -393,7 +425,10 @@ uint64_t hengelinux_compensated_counter(uint64_t raw_ticks) {
                 atomic_store_explicit(&g_clock_seq, seq + 1ULL, memory_order_release);
                 if (cur_prev > 0ULL && (raw_ticks - cur_prev) > HENGE_SUSPEND_JUMP_THRESHOLD_TICKS) {
                     uint64_t excess = (raw_ticks - cur_prev) - HENGE_SUSPEND_JUMP_THRESHOLD_TICKS;
-                    atomic_fetch_add_explicit(&g_suspend_offset_ticks, excess, memory_order_acq_rel);
+                    uint64_t prev_off = atomic_fetch_add_explicit(&g_suspend_offset_ticks, excess, memory_order_acq_rel);
+                    atomic_store_explicit(&g_neg_suspend_offset_ticks,
+                                          0ULL - (prev_off + excess),
+                                          memory_order_release);
                 }
                 atomic_store_explicit(&g_last_raw_ticks, raw_ticks, memory_order_release);
                 atomic_store_explicit(&g_clock_seq, seq + 2ULL, memory_order_release);
@@ -422,6 +457,7 @@ void hengelinux_reset_suspend_counter(void) {
     atomic_store_explicit(&g_vm_clock_paused, false, memory_order_release);
     atomic_store_explicit(&g_clock_pause_start_ticks, 0ULL, memory_order_release);
     atomic_store_explicit(&g_suspend_offset_ticks, 0ULL, memory_order_release);
+    atomic_store_explicit(&g_neg_suspend_offset_ticks, 0ULL, memory_order_release);
     atomic_store_explicit(&g_last_raw_ticks, 0ULL, memory_order_release);
     atomic_store_explicit(&g_last_compensated_ticks, 0ULL, memory_order_release);
     atomic_store_explicit(&g_clock_seq, seq + 2ULL, memory_order_release);

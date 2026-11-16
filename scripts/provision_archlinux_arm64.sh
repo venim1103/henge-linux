@@ -43,6 +43,25 @@ find_edk2_firmware() {
 
 EDK2_CODE="$(find_edk2_firmware || true)"
 
+find_edk2_vars_template() {
+    local candidates=(
+        "/opt/homebrew/share/qemu/edk2-arm-vars.fd"
+        "/usr/local/share/qemu/edk2-arm-vars.fd"
+        "/usr/share/edk2/aarch64/vars-template-pflash.raw"
+        "/usr/share/AAVMF/AAVMF_VARS.fd"
+        "/usr/share/qemu-efi-aarch64/QEMU_VARS.fd"
+    )
+    for path in "${candidates[@]}"; do
+        if [ -f "$path" ]; then
+            echo "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+EDK2_VARS="$(find_edk2_vars_template || true)"
+
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "[provision] Dry-run configuration verified:"
     echo "  WORK_DIR          = $WORK_DIR"
@@ -51,6 +70,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "  CPUS              = $CPUS"
     echo "  ARCHBOOT_BASE_URL = $ARCHBOOT_BASE_URL"
     echo "  EDK2_CODE         = ${EDK2_CODE:-<not installed on host>}"
+    echo "  EDK2_VARS         = ${EDK2_VARS:-<not installed on host; will zero-init>}"
     exit 0
 fi
 
@@ -89,7 +109,16 @@ if [ ! -f "$WORK_DIR/code.fd" ]; then
 fi
 
 if [ ! -f "$WORK_DIR/vars.fd" ]; then
-    create_sparse_raw_file "$WORK_DIR/vars.fd" 64M
+    if [ -n "$EDK2_VARS" ]; then
+        cp "$EDK2_VARS" "$WORK_DIR/vars.fd"
+        if command -v qemu-img >/dev/null 2>&1; then
+            qemu-img resize -f raw "$WORK_DIR/vars.fd" 64M >/dev/null
+        else
+            truncate -s 64M "$WORK_DIR/vars.fd"
+        fi
+    else
+        create_sparse_raw_file "$WORK_DIR/vars.fd" 64M
+    fi
 fi
 
 if [ ! -f "$WORK_DIR/archlinux.img" ]; then

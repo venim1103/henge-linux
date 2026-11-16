@@ -49,6 +49,7 @@ systemctl enable systemd-networkd systemd-resolved >/dev/null 2>&1 || true
 if [ -e /run/systemd/resolve/stub-resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
     ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 elif [ ! -e /etc/resolv.conf ]; then
+    rm -f /etc/resolv.conf
     printf 'nameserver 10.0.2.3\n' > /etc/resolv.conf
 fi
 

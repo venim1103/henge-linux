@@ -62,7 +62,7 @@ jobs:
           if [ -d /Applications/Xcode_26.6.app ]; then
             sudo xcode-select -s /Applications/Xcode_26.6.app
           fi
-          xcodebuild -version
+          xcodebuild -version | tee .xcode-version
       - name: Install XcodeGen & iOS static dependency build tools
         run: brew install xcodegen meson ninja pkg-config
       - name: Sync & patch upstream WindowsiOS engine
@@ -71,7 +71,7 @@ jobs:
         uses: actions/cache@3edfce9056124e459a23f683a21433670d47daca # @actions/cache 6.2.0
         with:
           path: .upstream/WindowsiOS/ios/deps
-          key: ios-arm64-deps-${{ runner.os }}-xcode26-${{ hashFiles('scripts/sync_upstream.sh', 'scripts/build_ios_deps.sh') }}
+          key: ios-arm64-deps-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/sync_upstream.sh', 'scripts/build_ios_deps.sh') }}
       - name: Build or validate iOS static dependencies (libffi, glib, libslirp)
         run: bash scripts/build_ios_deps.sh
       - name: Run macOS platform tests & build full ios-lib
@@ -118,6 +118,9 @@ jobs:
     name: Publish Rolling latest-ipa Pre-Release
     needs: [core-tests, ios-build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: release-latest-ipa
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -171,12 +171,34 @@ static struct sigaction g_prev_sigtrap;
 static struct sigaction g_prev_sigbus;
 static pthread_once_t g_trap_once = PTHREAD_ONCE_INIT;
 
+static bool is_known_jit_trap_pc(uint64_t pc) {
+    const uintptr_t targets[3] = {
+        (uintptr_t)&henge_jit26_probe,
+        (uintptr_t)&henge_jit26_prepare_region,
+        (uintptr_t)&henge_jit26_detach,
+    };
+    for (size_t i = 0U; i < 3U; i++) {
+        if ((uintptr_t)pc >= targets[i] && (uintptr_t)pc < targets[i] + 24U) {
+            return true;
+        }
+    }
+    if (pc != 0ULL && (pc & 3ULL) == 0ULL) {
+        uint32_t insn = *(const uint32_t *)(uintptr_t)pc;
+        if ((insn & 0xFFE0001FU) == 0xD4200000U) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void henge_jit_trap_handler(int sig, siginfo_t *info, void *ctx) {
-    if (g_expecting_jit_trap != 0 && ctx != NULL) {
+    if (g_expecting_jit_trap != 0 && sig == SIGTRAP && ctx != NULL) {
         ucontext_t *uc = (ucontext_t *)ctx;
-        uc->uc_mcontext->__ss.__pc += 4;
-        uc->uc_mcontext->__ss.__x[0] = 0;
-        return;
+        if (is_known_jit_trap_pc((uint64_t)uc->uc_mcontext->__ss.__pc)) {
+            uc->uc_mcontext->__ss.__pc += 4;
+            uc->uc_mcontext->__ss.__x[0] = 0;
+            return;
+        }
     }
     struct sigaction *prev = (sig == SIGTRAP) ? &g_prev_sigtrap : &g_prev_sigbus;
     if ((prev->sa_flags & SA_SIGINFO) != 0 && prev->sa_sigaction != NULL) {

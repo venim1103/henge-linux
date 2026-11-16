@@ -46,6 +46,7 @@ struct HengeLinuxApp: App {
     @State private var bootErrorAlert: String?
     @State private var posture: DevicePosture = .singleScreen
     @State private var safariURL: IdentifiableURL?
+    @AppStorage("autoSyncClipboard") private var autoSyncClipboard: Bool = false
     @State private var lastPushedClipboard: String = ""
     @State private var lastPasteboardChangeCount: Int = -1
 
@@ -61,6 +62,9 @@ struct HengeLinuxApp: App {
                         posture: $posture,
                         bootWarning: bootWarning,
                         onStopSession: {
+                            if HengeVMBridge.shared.isRunning {
+                                HengeVMBridge.shared.stopGuest()
+                            }
                             isRunning = false
                             bootWarning = nil
                             jitClient.prepareForReboot()
@@ -114,7 +118,7 @@ struct HengeLinuxApp: App {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-                guard isRunning else { return }
+                guard isRunning, autoSyncClipboard else { return }
                 let pb = UIPasteboard.general
                 guard pb.changeCount != lastPasteboardChangeCount, pb.hasStrings else {
                     return
@@ -172,6 +176,7 @@ struct HengeLinuxApp: App {
                             Text(backend.rawValue).tag(backend)
                         }
                     }
+                    Toggle("Auto-Sync Host Clipboard on Focus", isOn: $autoSyncClipboard)
                     LabeledContent("TXM JIT Pool", value: "\(SelfDebugJITClient.defaultJitPoolMiB) MiB (< 0x7000000000)")
                     LabeledContent("Pairing File", value: jitClient.hasPairingFile ? "pairing.plist (Synced)" : "Missing (Optional)")
                     LabeledContent("JIT Status", value: jitStatusLabel)

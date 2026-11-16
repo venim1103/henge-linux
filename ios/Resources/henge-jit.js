@@ -32,7 +32,8 @@ try {
 
         const resumeCmd = nextResumeCmd;
         nextResumeCmd = 'c';
-        let brkResponse = send_command(resumeCmd);
+        let rawBrkResponse = send_command(resumeCmd);
+        let brkResponse = expandRspRle(rawBrkResponse);
         log(`brkResponse = ${brkResponse}`);
         if (!brkResponse || brkResponse.startsWith('E') || brkResponse.startsWith('W') || brkResponse.startsWith('X')) {
             log(`Target exited or errored: ${brkResponse}`);
@@ -111,13 +112,32 @@ try {
     }
 }
 
+function expandRspRle(packet) {
+    if (!packet || packet.indexOf('*') === -1) {
+        return packet;
+    }
+    let out = '';
+    for (let i = 0; i < packet.length; i++) {
+        if (i + 2 < packet.length && packet[i + 1] === '*') {
+            const code = packet.charCodeAt(i + 2);
+            if (code >= 32 && code <= 126) {
+                out += packet[i].repeat(Math.max(1, code - 29));
+                i += 2;
+                continue;
+            }
+        }
+        out += packet[i];
+    }
+    return out;
+}
+
 function readReg(stopPacket, regHex, threadId) {
     const rx = new RegExp(`(?:^|[;:])${regHex}:(?<reg>[0-9a-fA-F]{16});`);
     const match = rx.exec(stopPacket);
     if (match && match.groups && match.groups['reg']) {
         return match.groups['reg'];
     }
-    const fallback = send_command(`p${regHex};thread:${threadId};`);
+    const fallback = expandRspRle(send_command(`p${regHex};thread:${threadId};`));
     if (fallback && /^[0-9a-fA-F]{16}$/.test(fallback)) {
         return fallback;
     }
@@ -138,6 +158,9 @@ function JIT26HandleBrk0xf00d() {
     const command = commands[Number(x16)];
     if (command !== undefined) {
         command();
+    } else {
+        log(`Unknown brk #0xf00d command x16=${x16}; returning 0`);
+        send_command(`P0=0000000000000000;thread:${tid};`);
     }
 }
 

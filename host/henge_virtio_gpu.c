@@ -6,6 +6,7 @@
 #include "henge_virtio_gpu.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -612,6 +613,17 @@ int henge_vm_snapshot_write(const char *path,
     }
     if (ok && fflush(fp) != 0) {
         ok = false;
+    }
+    if (ok) {
+        int fd = fileno(fp);
+        if (fd < 0 || fsync(fd) != 0) {
+            ok = false;
+        }
+#if defined(__APPLE__) && defined(F_FULLFSYNC)
+        if (ok) {
+            (void)fcntl(fd, F_FULLFSYNC);
+        }
+#endif
     }
     if (fclose(fp) != 0) {
         ok = false;

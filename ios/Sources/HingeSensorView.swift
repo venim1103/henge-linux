@@ -32,7 +32,9 @@ struct HingeSensorView: View {
                 }
         }
         .onAppear {
-            if Self.hasHardwareHingeSensor {
+            if forceClamshellPreview {
+                posture = .clamshell(angleDegrees: 115.0)
+            } else if Self.hasHardwareHingeSensor {
                 posture = .openStudio
             } else {
                 posture = .singleScreen

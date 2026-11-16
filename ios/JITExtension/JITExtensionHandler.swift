@@ -467,10 +467,10 @@ private final class GdbRspTxmBlesser {
                     _ = Darwin.send(fd, &ack, 1, 0)
                 }
                 let bodyStart = recvBuf.index(after: dollarIdx)
-                let body = String(decoding: recvBuf[bodyStart..<hashIdx], as: UTF8.self)
+                let rawBody = String(decoding: recvBuf[bodyStart..<hashIdx], as: UTF8.self)
                 let packetEnd = recvBuf.index(hashIdx, offsetBy: 3)
                 recvBuf.removeSubrange(recvBuf.startIndex..<packetEnd)
-                return body
+                return expandRspRle(rawBody)
             }
 
             let n = Darwin.recv(fd, &scratch, scratch.count, 0)
@@ -478,6 +478,29 @@ private final class GdbRspTxmBlesser {
             recvBuf.append(contentsOf: scratch[0..<n])
         }
         return nil
+    }
+
+    /// Expands GDB RSP run-length encoding (`<char>*<repeatByte>`, repeat = repeatByte - 29).
+    private func expandRspRle(_ packet: String) -> String {
+        guard packet.contains("*") else { return packet }
+        let bytes = Array(packet.utf8)
+        var out = [UInt8]()
+        out.reserveCapacity(bytes.count * 2)
+        var i = 0
+        while i < bytes.count {
+            if i + 2 < bytes.count,
+               bytes[i + 1] == UInt8(ascii: "*"),
+               bytes[i + 2] >= 32,
+               bytes[i + 2] <= 126 {
+                let repeatCount = Int(bytes[i + 2]) - 29
+                out.append(contentsOf: repeatElement(bytes[i], count: max(1, repeatCount)))
+                i += 3
+            } else {
+                out.append(bytes[i])
+                i += 1
+            }
+        }
+        return String(decoding: out, as: UTF8.self)
     }
 
     private func sendPacket(_ payload: String) -> String? {

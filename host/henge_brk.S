@@ -15,6 +15,7 @@ _henge_jit26_probe:
     .cfi_startproc
     hint    #34             /* bti c */
     mov     x0, #0
+    mov     x16, #0
     brk     #0x69
     ret
     .cfi_endproc
@@ -36,6 +37,8 @@ _henge_jit26_detach:
     brk     #0xf00d
     ret
     .cfi_endproc
+
+.subsections_via_symbols
 #else
 .globl henge_jit26_probe
 .type henge_jit26_probe, %function
@@ -43,6 +46,7 @@ henge_jit26_probe:
     .cfi_startproc
     hint    #34             /* bti c */
     mov     x0, #0
+    mov     x16, #0
     brk     #0x69
     ret
     .cfi_endproc

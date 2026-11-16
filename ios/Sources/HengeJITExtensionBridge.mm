@@ -134,8 +134,15 @@ static NSString *const HengeJITExtensionBridgeDomain = @"io.hengelinux.jit-exten
     [extension beginExtensionRequestWithInputItems:@[inputItem]
                                         completion:^(id<NSCopying> _Nullable requestIdentifier) {
         [guardLock lock];
+        BOOL alreadyDone = finished;
         activeRequestID = requestIdentifier;
+        HengePrivateNSExtension *ext = retainedExtension;
         [guardLock unlock];
+
+        if (alreadyDone && requestIdentifier != nil && ext != nil &&
+            [ext respondsToSelector:@selector(cancelExtensionRequestWithIdentifier:)]) {
+            [ext cancelExtensionRequestWithIdentifier:requestIdentifier];
+        }
     }];
 }
 

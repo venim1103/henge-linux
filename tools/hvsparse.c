@@ -351,7 +351,12 @@ static int cmd_unpack(const char *sparse_path, const char *raw_path) {
     }
 
     if (!saw_terminator && hdr.virtual_size > 0ULL) {
-        fprintf(stderr, "hvsparse: warning: missing {0,0} terminator in '%s'\n", sparse_path);
+        fprintf(stderr, "hvsparse: error: truncated archive missing {0,0} terminator in '%s'\n", sparse_path);
+        fclose(out);
+        unlink(raw_path);
+        free(buf);
+        fclose(in);
+        return 1;
     }
 
     if (fflush(out) != 0 || ftruncate(fileno(out), (off_t)hdr.virtual_size) != 0 || fclose(out) != 0) {

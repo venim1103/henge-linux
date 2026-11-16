@@ -54,6 +54,12 @@ static void test_unix_socket_path_bounds(void) {
     HENGE_CHECK(strlen(out) < HENGE_DARWIN_SUN_PATH_MAX);
     HENGE_CHECK(strncmp(out, "/tmp/hl-", 8) == 0);
 
+    /* Reject malformed non-UUID container segments under /Containers/Data/Application/. */
+    const char *malformed_ios_sandbox =
+        "/private/var/mobile/Containers/Data/Application/not-a-valid-uuid/Documents/Machines/ArchLinux";
+    HENGE_CHECK(henge_format_unix_socket_path(malformed_ios_sandbox, "share.sock", out, sizeof(out)) == 0);
+    HENGE_CHECK(strncmp(out, "/tmp/hl-", 8) == 0);
+
     /* Reject path separators and traversal components in socket_name. */
     HENGE_CHECK(henge_format_unix_socket_path("/var/tmp/henge", "../evil.sock", out, sizeof(out)) == -1);
     HENGE_CHECK(henge_format_unix_socket_path("/var/tmp/henge", "..", out, sizeof(out)) == -1);

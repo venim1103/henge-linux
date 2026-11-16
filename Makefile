@@ -113,7 +113,7 @@ IOS_CFLAGS := -std=c11 -Wall -Wextra -Werror $(IOS_BASE)
 IOS_UP_CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers $(IOS_BASE)
 ENG_INC := -I$(UPSTREAM_DIR)/core -I$(UPSTREAM_DIR)/host -I$(UPSTREAM_DIR)/devices -I$(UPSTREAM_DIR)/ios/deps/include -I$(UPSTREAM_DIR)/ios/deps/include/slirp -I$(UPSTREAM_DIR)/ios/deps/include/glib-2.0 -I$(UPSTREAM_DIR)/ios/deps/lib/glib-2.0/include
 
-$(BUILD_DIR)/ios/%.o: host/%.c $(HOST_HDRS) $(TLB_STAMP) | $(BUILD_DIR)
+$(BUILD_DIR)/ios/%.o: host/%.c $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang $(IOS_CFLAGS) -c $< -o $@
 
@@ -131,7 +131,7 @@ $(BUILD_DIR)/ios/up_host_enter.o: $(UPSTREAM_DIR)/host/enter.S | $(BUILD_DIR)
 
 $(BUILD_DIR)/ios/up_dev_fb_metal.o: $(UPSTREAM_DIR)/devices/fb_metal.m $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
-	xcrun --sdk iphoneos clang -fobjc-arc -Wall -Wextra -Wno-unused-parameter $(IOS_BASE) $(ENG_INC) -c $< -o $@
+	xcrun --sdk iphoneos clang -fobjc-arc -Wall -Wextra -Wno-unused-parameter -Werror=objc-method-access $(IOS_BASE) $(ENG_INC) -c $< -o $@
 
 $(BUILD_DIR)/ios/up_core_%.o: $(UPSTREAM_DIR)/core/%.c $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
@@ -156,15 +156,19 @@ ios-lib: $(HOST_SRCS) $(HOST_HDRS) host/henge_brk.S | $(BUILD_DIR)
 	@if [ "$(UNAME_S)" = "Darwin" ]; then \
 		set -euo pipefail; \
 		NCPU=$$(sysctl -n hw.ncpu); \
+		MAKE_J_FLAG=""; \
+		if [ "$${MAKELEVEL:-0}" -eq 0 ] && [ -z "$(filter j%,$(MAKEFLAGS))" ]; then \
+			MAKE_J_FLAG="-j$$NCPU"; \
+		fi; \
 		if [ -f "$(UPSTREAM_DIR)/core/translate.c" ] && [ -f "$(UPSTREAM_DIR)/ios/deps/include/slirp/libslirp.h" ]; then \
-			echo "[ios-lib] Compiling upstream WindowsiOS core/host/devices in parallel (-j$$NCPU)"; \
-			$(MAKE) -j"$$NCPU" ios-lib-full; \
+			echo "[ios-lib] Compiling upstream WindowsiOS core/host/devices in parallel ($$MAKE_J_FLAG)"; \
+			$(MAKE) $$MAKE_J_FLAG ios-lib-full; \
 		elif [ "$(REQUIRE_UPSTREAM)" = "1" ]; then \
 			echo "[ios-lib] ERROR: REQUIRE_UPSTREAM=1 but upstream engine or ios/deps is missing!" >&2; \
 			exit 1; \
 		else \
 			echo "[ios-lib] Upstream engine or ios/deps not present; archiving host substrate only"; \
-			$(MAKE) -j"$$NCPU" $(IOS_HOST_OBJS); \
+			$(MAKE) $$MAKE_J_FLAG $(IOS_HOST_OBJS); \
 			rm -f $(BUILD_DIR)/ios/libhengelinux.a; \
 			ar rcs $(BUILD_DIR)/ios/libhengelinux.a $(IOS_HOST_OBJS); \
 			echo "[ios-lib] Built $(BUILD_DIR)/ios/libhengelinux.a"; \

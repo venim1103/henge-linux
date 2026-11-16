@@ -203,7 +203,7 @@ def main() -> int:
     translate_c = upstream / "core/translate.c"
     patch_file(
         translate_c,
-        "suspend-compensated counter via hv_sysreg_mrs",
+        "hengelinux_negative_counter_offset_ptr",
         """static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) {
     static int type = -1;
     if (type < 0) type = *(volatile uint8_t *)(uintptr_t)COMMPAGE_TIMEBASE_TYPE;
@@ -227,12 +227,30 @@ def main() -> int:
     if (el0) e->ool[slow].join = e->n;
     return 1;
 }""",
-        """static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) {
-    (void)e;
-    (void)insn;
-    (void)pc;
-    (void)physical;
-    return 0; /* route CNTVCT_EL0/CNTPCT_EL0 through suspend-compensated counter via hv_sysreg_mrs */
+        """#include "henge_platform.h"
+
+static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) {
+    static int type = -1;
+    if (type < 0) type = *(volatile uint8_t *)(uintptr_t)COMMPAGE_TIMEBASE_TYPE;
+    if (type == 0) return 0; /* the kernel's own path: leave it to the helper */
+    int rt = insn & 0x1f;
+    if (rt == 31) return 1;
+    if (!(e->flags & HV_BLOCK_EL1)) {
+        put(e, 0xb9400000u | (HV_CPU_EL0_CNT / 4) << 10 | 28 << 5 | 6); /* ldr w6, [x28, #el0_cnt] */
+        put(e, 0x36000000u | (physical ? 0u : 1u) << 19 | 6);         /* tbz w6, #enable, helper (patched) */
+        put_ool(e, (Ool){.kind = OOL_MRS, .pc = pc, .insn = insn});
+    }
+    uint32_t slow = e->nool - 1;
+    int el0 = !(e->flags & HV_BLOCK_EL1);
+    int r = is_stolen(rt) ? 15 : rt;
+    if (type == 1) put(e, 0xd5033fdfu);                                  /* isb; then CNTVCT_EL0 */
+    put(e, (type == 1 ? 0xd53be040u : type == 2 ? 0xd53be0c0u : 0xd53cfac0u) | (uint32_t)r);
+    put_lit(e, 6, (uint64_t)(uintptr_t)hengelinux_negative_counter_offset_ptr());
+    put(e, LDR_X(6, 6, 0));
+    put(e, ADD_LSL(r, r, 6, 0));
+    if (r != rt) put(e, STR_X(r, 28, slot_of(rt)));
+    if (el0) e->ool[slow].join = e->n;
+    return 1;
 }""",
     )
 

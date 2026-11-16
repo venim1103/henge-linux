@@ -67,6 +67,7 @@ void hengelinux_render_unlock(void);
  */
 void hengelinux_set_vm_clock_paused(bool paused);
 uint64_t hengelinux_suspend_counter_offset(void);
+const uint64_t *hengelinux_negative_counter_offset_ptr(void);
 uint64_t hengelinux_compensated_counter(uint64_t raw_ticks);
 void hengelinux_reset_suspend_counter(void);
 
