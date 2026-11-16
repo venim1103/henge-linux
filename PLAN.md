@@ -28,40 +28,46 @@
 
 ```text
 henge-linux/
+├── LICENSE                         # GNU General Public License v3.0 (GPL-3.0-or-later)
+├── THIRD_PARTY_NOTICES.md          # GPLv3 §5a / §6(d) attribution & pinned source provenance
 ├── host/                           # C11 & ARM64 assembly host substrate (compiled into libhengelinux.a & iOS app)
-│   ├── henge_platform.{h,c}        # Darwin <104B sun_path formatter (iOS sandbox /tmp), TCR_EL1 decoder, RAM aligner, render mutex gate
+│   ├── henge_platform.{h,c}        # Darwin <104B sun_path formatter (iOS sandbox /tmp), TCR_EL1 decoder, RAM aligner, render & CNTVCT_EL0 guards
 │   ├── henge_txm_jit.{h,c}         # TXM [4GiB, 64GiB) VA validator, 0x69 blessing, P_TRACED vs CS_DEBUGGED, MAP_MEM_NAMED_CREATE RAM
-│   ├── henge_brk.S                 # ARM64 brk #0xf00d traps with .cfi unwind & BTI landing pads
-│   └── henge_virtio_gpu.{h,c}      # VirtIO-GPU PCI (0x1af4:0x1050) backend selector (2D GOP vs 3D VirGL/ANGLE)
+│   ├── henge_brk.S                 # ARM64 brk #0x69 & brk #0xf00d traps with .cfi unwind & BTI landing pads
+│   └── henge_virtio_gpu.{h,c}      # VirtIO-GPU 1.0 PCI (0x1af4:0x1050) 2D/3D VirGL control-queue & atomic FNV-1a suspend.state snapshots
 ├── tools/
-│   └── hvsparse.c                  # Zero-skipping 64 KiB block sparse disk container packer/unpacker (64 KiB aligned data_offset)
+│   └── hvsparse.c                  # Upstream-compatible "HVSPARSE" streaming [offset, len] extent packer/unpacker
 ├── ios/                            # XcodeGen iOS 26.0+ SwiftUI app + embedded JIT helper extension (links libhengelinux.a)
-│   ├── project.yml                 # Generates HengeLinux.xcodeproj with Files sharing + nested JITExtension/Info.plist
-│   ├── HengeLinux.entitlements     # com.apple.developer.kernel.increased-memory-limit
+│   ├── project.yml                 # Generates HengeLinux.xcodeproj with Files sharing, App Group, & nested JITExtension/Info.plist
+│   ├── HengeLinux.entitlements     # com.apple.developer.kernel.increased-memory-limit & group.io.hengelinux.shared
+│   ├── Resources/
+│   │   └── henge-jit.js            # StikDebug / LLDB GDB RSP brk #0x69 / #0xf00d TXM page-blessing script
 │   ├── Sources/
-│   │   ├── HengeVMBridge.{h,mm}    # ObjC++/C++20 runtime bridge: HvWinVmConfig, CAMetalLayer, xHCI HID, 10.0.2.4/.henge/
-│   │   ├── HengeLinuxApp.swift     # Launcher, dynamic physicalMemory RAM cap, async JIT boot, SafariSheetView polling
+│   │   ├── HengeJITExtensionBridge.{h,mm} # ObjC++ NSExtension (com.apple.ar.viewer) XPC bridge with timeout/cancellation guards
+│   │   ├── HengeVMBridge.{h,mm}    # ObjC++/C++20 runtime bridge: HvWinVmConfig, hv_sparse_unpack, CAMetalLayer, xHCI HID, 10.0.2.4/.henge/
+│   │   ├── HengeLinuxApp.swift     # Launcher, dynamic physicalMemory RAM cap, async JIT boot, background snapshot, SafariSheetView polling
 │   │   ├── SessionView.swift       # Metal framebuffer host, clamshell trackpad & HID modifier strip
 │   │   ├── HingeSensorView.swift   # Runtime UIHingeInteraction detector + single-screen clamshell preview toggle
 │   │   ├── MetalLifecycleGuard.swift # Synchronous NotificationCenter observer + C pthread_mutex render fence
-│   │   ├── SelfDebugJITClient.swift  # P_TRACED / CS_DEBUGGED state machine + process-lifetime pool reuse
+│   │   ├── SelfDebugJITClient.swift  # P_TRACED / CS_DEBUGGED state machine, pairing.plist sync, & XPC/worker pool acquisition
 │   │   └── HengeLinux-Bridging-Header.h
 │   └── JITExtension/
 │       ├── Info.plist              # Nested NSExtension dictionary (com.apple.ar.viewer)
-│       └── JITExtensionHandler.swift # NSExtension request handler for in-app TXM blessing
+│       ├── HengeLinuxJITExtension.entitlements # Shared App Group entitlement
+│       └── JITExtensionHandler.swift # NSExtension request handler + 10.7.0.1 GDB RSP TXM blesser
 ├── guest/                          # Scripts deployed inside the Arch Linux aarch64 guest
 │   ├── henge-xdg-open              # Non-blocking double-fork dual-stack OAuth relay + EADDRINUSE + SafariSheet bridge
 │   └── setup-arch-bridge.sh        # Installs xdg-open handler, systemd-networkd VirtIO DHCP, and /mnt/ios-share
 ├── scripts/
 │   ├── sync_upstream.sh            # Initializes/fetches ammaarreshi/WindowsiOS and runs apply_upstream_patches.py
-│   ├── apply_upstream_patches.py   # Idempotently patches share.c (<104B sun_path), fb_metal.m, audio_mac.c, jit_region.c
+│   ├── apply_upstream_patches.py   # Idempotently patches share.c (<104B sun_path), fb_metal.m, audio_mac.c, jit_region.c, sysreg.c, translate.c
 │   ├── build_ios_deps.sh           # Cross-compiles iOS static deps with /opt/homebrew vs /usr/local detection
 │   └── provision_archlinux_arm64.sh # Boots Archboot AArch64 ISO in QEMU with EDK2 + NVMe and packs hvsparse
 ├── tests/
-│   └── test_core.c                 # Unit tests for iOS sandbox sun_path, MMU granules, RAM, render lock, TXM JIT, VirtIO-GPU
+│   └── test_core.c                 # Unit tests for iOS sandbox sun_path, MMU granules, RAM, render lock, TXM JIT, VirtIO-GPU, & snapshots
 ├── docs/
 │   └── RESEARCH.md                 # Deep technical review of WindowsiOS and 6 Linux-on-iOS architectures
-└── .github/workflows/ci.yml        # Least-privilege Linux unit tests + Xcode 26 macOS unsigned .ipa build & upload
+└── .github/workflows/ci.yml        # Least-privilege Linux unit tests + Xcode 26 macOS unsigned .ipa build & latest-ipa release
 ```
 
 ---
@@ -109,7 +115,7 @@ Every code change in `henge-linux` must preserve these verified platform invaria
 - [x] `ios/JITExtension/JITExtensionHandler.swift` + nested `ios/JITExtension/Info.plist` (`com.apple.ar.viewer` extension target in `ios/project.yml`), Files app sharing keys (`UIFileSharingEnabled` / `LSSupportsOpeningDocumentsInPlace`), single-source-of-truth `libhengelinux.a` linking, and synchronous `MetalLifecycleGuard` render fence.
 - [x] `host/henge_virtio_gpu.{h,c}` defining `2D UEFI GOP` and `3D VirtIO-GPU VirGL (ANGLE Metal)` configuration descriptors, plus non-blocking double-fork `guest/henge-xdg-open` and 64 KiB aligned `tools/hvsparse.c`.
 
-### Phase 5: Upstream Engine Integration, Live VM Runtime & 3D VirGL Bring-Up — **IN PROGRESS (5.1–5.3 Landed)**
+### Phase 5: Upstream Engine Integration, Live VM Runtime & 3D VirGL Bring-Up — **IN PROGRESS (Milestones 5.1–5.4 Landed; Milestone 5.5 `P0`–`P3` Hardening Next)**
 - [x] **Milestone 5.1 — Upstream `HengeVM` / `WindowsiOS` Engine Linkage & Patcher:**
   - Implemented `scripts/apply_upstream_patches.py` (invoked by `scripts/sync_upstream.sh`) to patch `host/share.c` (`henge_format_unix_socket_path()`), `devices/fb_metal.m` (`hengelinux_render_lock()` + `hengelinux_is_render_paused()`), `host/audio_mac.c`, and `host/jit_region.c` (`henge_txm_is_valid_jit_range()`).
   - Updated `Makefile` (`ios-lib`) to compile upstream `core/*.c` (`-mgeneral-regs-only` on `mmu.c`), `host/*.c`/`enter.S`, and `devices/*.{c,m}` into `build/ios/libhengelinux.a` whenever `.upstream/WindowsiOS` + `ios/deps` (`libffi`, `glib`, `libslirp`) are present.
@@ -127,6 +133,10 @@ Every code change in `henge-linux` must preserve these verified platform invaria
 - [x] **Milestone 5.4 (Track 2) — 3D VirtIO-GPU VirGL (`ANGLE Metal`) & Background Suspend:**
   - Implemented VirtIO-GPU 1.0 (`0x1af4:0x1050`) 2D/3D VirGL control-queue command processing (`CTX_CREATE`, `RESOURCE_CREATE_3D`, `CTX_ATTACH_RESOURCE`, `SUBMIT_3D`, `SET_SCANOUT`, `RESOURCE_FLUSH`, `num_capsets` vs `capset_mask`, `virglrenderer` + `ANGLE Metal` probe) in `host/henge_virtio_gpu.{h,c}` and wired `HengeVirtioGpuDevice` lifecycle into `HengeVMBridge.{h,mm}`.
   - Implemented atomic FNV-1a checksummed background VM snapshot serialization (`henge_vm_snapshot_write`/`read` -> `Documents/Machines/ArchLinux/suspend.state`) triggered on `UIApplication.didEnterBackgroundNotification` in `HengeLinuxApp.swift` and verified via `tests/test_core.c`.
+- [ ] **Milestone 5.5 — Post-5.4 39-File Audit Remediation (`P0`–`P3`) & Physical SideStore Boot:**
+  - **P0 Physical-Device Blockers:** Derive `SelfDebugJITClient.extensionIdentifier` dynamically from `Bundle.main.bundleIdentifier` for SideStore/AltStore bundle-ID rewrites; enable `TCP_NODELAY` and batch-pipeline `M<addr>,1:69` writes in `JITExtensionHandler.swift` (`24,576` pages `< 1 s`); preserve byte-0 `0x69` markers in `verify_rx_rw_selftest()` (`off + 4U`) and validate `rw != rx` on `VM_FLAGS_ANYWHERE` in `host/henge_txm_jit.c`; serialize `insertText` HID keystrokes with dwell spacing in `SessionView.swift`; fix the `/usr/local/bin/xdg-open` <-> `/usr/bin/xdg-open` recursion loop and configure `$BROWSER` + network-first ordering in `guest/setup-arch-bridge.sh` + `guest/henge-xdg-open`.
+  - **P1 Concurrency, Watchdog & State-Machine Fixes:** Eliminate the multi-vCPU `CNTVCT_EL0` `> 500 ms` jump torn read in `host/henge_platform.c`; replace scalar `owner_ctx_id` with a 32-bit `attached_ctx_mask` bitmask in `host/henge_virtio_gpu.c`; offload first-boot `hv_sparse_unpack()` off `@MainActor` in `HengeVMBridge.mm`; wrap `didEnterBackground` snapshot flush in `UIApplication.beginBackgroundTask`; surface honest staged VirGL UI status until PCIe `0x1af4:0x1050` MMIO/virtqueue routing + `libvirglrenderer.a`/`ANGLE` are linked; dispatch `focusKeyboard` binding updates asynchronously and guard `dismantleUIView` layer detach in `SessionView.swift`; forward non-`SIGTRAP` signals (`C<sigHex>`) in `JITExtensionHandler.swift` + `henge-jit.js`; silence CoreAudio input capture on render pause in `scripts/apply_upstream_patches.py`; and add a `HV_TLB_PAGE_BITS` stamp prerequisite in `Makefile`.
+  - **P2/P3 Durability, Performance & Tooling Polish:** Harden `guest/henge-xdg-open` (`127.0.0.0/8` + IPv4-mapped `ipaddress` check, double-unquote + portless `localhost` redirect parsing, `8192`-byte header inspection, `EADDRINUSE` `saw_listener` guard) and `arch-chroot` `/etc/resolv.conf` fallback; verify trap PCs in `henge_jit_trap_handler()` and add `.subsections_via_symbols` in `host/henge_brk.S`; validate 36-char UUIDs in `format_ios_sandbox_tmp_socket()`; call `fsync()`/`F_FULLFSYNC` before `rename()` in `henge_vm_snapshot_write()`; expand GDB RSP `*` RLE in `JITExtensionHandler.swift`; make `didBecomeActive` `UIPasteboard` sync opt-in; restore inline `CNTVCT_EL0` JIT emission in `scripts/apply_upstream_patches.py`; fail closed on truncated `.hvsparse` archives in `tools/hvsparse.c`; use `AAVMF_VARS.fd` templates in `scripts/provision_archlinux_arm64.sh`; hash `.xcode-version` and serialize `release-ipa` in `.github/workflows/ci.yml`; and expand `tests/test_core.c` coverage.
 
 ---
 
