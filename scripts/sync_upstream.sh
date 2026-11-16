@@ -21,4 +21,7 @@ echo "[sync] Fetching $UPSTREAM_URL ($UPSTREAM_REF)"
 git -C "$DEST_DIR" fetch --depth 1 origin "$UPSTREAM_REF"
 git -C "$DEST_DIR" checkout -q FETCH_HEAD
 
+echo "[sync] Applying henge-linux iOS/Linux patches"
+python3 ./scripts/apply_upstream_patches.py "$DEST_DIR"
+
 echo "[sync] Upstream engine ready at $DEST_DIR ($(git -C "$DEST_DIR" rev-parse HEAD))"
