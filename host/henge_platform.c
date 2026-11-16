@@ -5,16 +5,54 @@
 
 #include "henge_platform.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <mach/mach_time.h>
+
+/* Provide pipe2 fallback if referenced by static libglib/libslirp on iOS. */
+__attribute__((weak, visibility("default")))
+int pipe2(int fds[2], int flags) {
+    if (fds == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (pipe(fds) < 0) {
+        return -1;
+    }
+    if ((flags & O_CLOEXEC) != 0) {
+        if (fcntl(fds[0], F_SETFD, FD_CLOEXEC) < 0 || fcntl(fds[1], F_SETFD, FD_CLOEXEC) < 0) {
+            int saved = errno;
+            close(fds[0]);
+            close(fds[1]);
+            errno = saved;
+            return -1;
+        }
+    }
+    if ((flags & O_NONBLOCK) != 0) {
+        int f0 = fcntl(fds[0], F_GETFL);
+        int f1 = fcntl(fds[1], F_GETFL);
+        if (f0 < 0 || f1 < 0 ||
+            fcntl(fds[0], F_SETFL, f0 | O_NONBLOCK) < 0 ||
+            fcntl(fds[1], F_SETFL, f1 | O_NONBLOCK) < 0) {
+            int saved = errno;
+            close(fds[0]);
+            close(fds[1]);
+            errno = saved;
+            return -1;
+        }
+    }
+    return 0;
+}
 #endif
 
 static atomic_bool g_render_paused = false;

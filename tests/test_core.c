@@ -141,6 +141,9 @@ static void test_txm_jit_bounds_and_blessing(void) {
     ((uint8_t *)ram)[0] = 0xAAU;
     ((uint8_t *)ram)[test_pool_size - 1U] = 0x55U;
     henge_free_ledger_exempt_ram(ram, test_pool_size);
+    HENGE_CHECK(henge_jit_status_message() != NULL);
+    HengeJitPool queried_pool;
+    HENGE_CHECK(henge_jit_current_pool(&queried_pool) == false);
     (void)henge_txm_is_ptraced();
     (void)henge_txm_is_cs_debugged();
 }

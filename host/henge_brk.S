@@ -10,6 +10,14 @@
 .align 4
 
 #if defined(__APPLE__)
+.globl _henge_jit26_probe
+_henge_jit26_probe:
+    .cfi_startproc
+    hint    #34             /* bti c */
+    brk     #0x69
+    ret
+    .cfi_endproc
+
 .globl _henge_jit26_prepare_region
 _henge_jit26_prepare_region:
     .cfi_startproc
@@ -28,6 +36,15 @@ _henge_jit26_detach:
     ret
     .cfi_endproc
 #else
+.globl henge_jit26_probe
+.type henge_jit26_probe, %function
+henge_jit26_probe:
+    .cfi_startproc
+    hint    #34             /* bti c */
+    brk     #0x69
+    ret
+    .cfi_endproc
+
 .globl henge_jit26_prepare_region
 .type henge_jit26_prepare_region, %function
 henge_jit26_prepare_region:

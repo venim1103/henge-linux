@@ -6,12 +6,21 @@
 #include "henge_txm_jit.h"
 #include "henge_platform.h"
 
+#include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 
 #if defined(__APPLE__)
+#include <libkern/OSCacheControl.h>
 #include <mach/mach.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
+#include <sys/ucontext.h>
 #include <unistd.h>
 
 #ifndef CS_OPS_STATUS
@@ -118,6 +127,10 @@ bool henge_txm_is_debugger_attached(void) {
 }
 
 #if !defined(__aarch64__) && !defined(__arm64__)
+uint64_t henge_jit26_probe(void) {
+    return 0ULL;
+}
+
 uintptr_t henge_jit26_prepare_region(uintptr_t hint, size_t size) {
     (void)hint;
     (void)size;
@@ -127,6 +140,249 @@ uintptr_t henge_jit26_prepare_region(uintptr_t hint, size_t size) {
 void henge_jit26_detach(void) {
 }
 #endif
+
+static pthread_mutex_t g_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
+static atomic_bool g_pool_live = false;
+static HengeJitPool g_active_pool = {0};
+static char g_jit_status[256] = "Not initialized";
+
+static void set_jit_status(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(g_jit_status, sizeof(g_jit_status), fmt, ap);
+    va_end(ap);
+}
+
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+/*
+ * Reserve a 384 MiB + 16 KiB zero-fill block in __DATA at launch so a contiguous
+ * hole below 0x7000000000 (< 64 GiB) is guaranteed, then vm_deallocate it right
+ * before debugserver's _M<size>,rx allocation claims the first-fit low-VA range.
+ */
+__attribute__((used, aligned(16384)))
+static uint8_t g_jit_low_hold[HENGE_DEFAULT_JIT_POOL_BYTES + (16U << 10)];
+static bool g_jit_low_hold_released = false;
+
+static _Thread_local bool g_expecting_jit_trap = false;
+static struct sigaction g_prev_sigtrap;
+static struct sigaction g_prev_sigbus;
+static pthread_once_t g_trap_once = PTHREAD_ONCE_INIT;
+
+static void henge_jit_trap_handler(int sig, siginfo_t *info, void *ctx) {
+    (void)info;
+    if (g_expecting_jit_trap && ctx != NULL) {
+        ucontext_t *uc = (ucontext_t *)ctx;
+        uc->uc_mcontext->__ss.__pc += 4;
+        uc->uc_mcontext->__ss.__x[0] = 0;
+        return;
+    }
+    struct sigaction *prev = (sig == SIGTRAP) ? &g_prev_sigtrap : &g_prev_sigbus;
+    sigaction(sig, prev, NULL);
+    raise(sig);
+}
+
+static void install_trap_guard_once(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sa.sa_sigaction = henge_jit_trap_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTRAP, &sa, &g_prev_sigtrap);
+    sigaction(SIGBUS, &sa, &g_prev_sigbus);
+}
+
+void henge_jit_install_trap_guard(void) {
+    pthread_once(&g_trap_once, install_trap_guard_once);
+}
+
+static void release_low_va_hold(size_t bytes) {
+    if (g_jit_low_hold_released || bytes > HENGE_DEFAULT_JIT_POOL_BYTES) {
+        return;
+    }
+    vm_address_t start = ((vm_address_t)(uintptr_t)g_jit_low_hold + 16383U) & ~(vm_address_t)16383U;
+    (void)vm_deallocate(mach_task_self(), start, (vm_size_t)HENGE_DEFAULT_JIT_POOL_BYTES);
+    g_jit_low_hold_released = true;
+}
+
+static bool verify_rx_rw_selftest(uint8_t *rx, uint8_t *rw, size_t bytes) {
+    /* movz w0, #42 ; ret */
+    static const uint32_t kCode[2] = {0x52800540U, 0xD65F03C0U};
+    if (rx == NULL || rw == NULL || bytes < (size_t)HENGE_HOST_PAGE_SIZE) {
+        return false;
+    }
+    const size_t offsets[2] = {0U, bytes - (size_t)HENGE_HOST_PAGE_SIZE};
+    for (int i = 0; i < 2; i++) {
+        size_t off = offsets[i];
+        memcpy(rw + off, kCode, sizeof(kCode));
+        sys_icache_invalidate(rx + off, sizeof(kCode));
+
+        uint32_t readback[2] = {0U, 0U};
+        memcpy(readback, rx + off, sizeof(readback));
+        if (readback[0] != kCode[0] || readback[1] != kCode[1]) {
+            return false;
+        }
+        int (*fn)(void) = (int (*)(void))(void *)(rx + off);
+        if (fn() != 42) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_pool) {
+    if (bytes == 0U) {
+        bytes = (size_t)HENGE_DEFAULT_JIT_POOL_BYTES;
+    }
+    bytes = (bytes + ((size_t)HENGE_HOST_PAGE_SIZE - 1U)) & ~((size_t)HENGE_HOST_PAGE_SIZE - 1U);
+
+    pthread_mutex_lock(&g_pool_mutex);
+    if (atomic_load_explicit(&g_pool_live, memory_order_acquire)) {
+        if (out_pool != NULL) {
+            *out_pool = g_active_pool;
+        }
+        pthread_mutex_unlock(&g_pool_mutex);
+        return true;
+    }
+
+    henge_jit_install_trap_guard();
+
+    if (!henge_txm_is_cs_debugged() && !henge_txm_is_ptraced()) {
+        set_jit_status("Waiting for debugger (StikDebug or LLDB)");
+        pthread_mutex_unlock(&g_pool_mutex);
+        return false;
+    }
+
+    g_expecting_jit_trap = true;
+    uint64_t probe = henge_jit26_probe();
+    g_expecting_jit_trap = false;
+
+    if (probe == 0ULL) {
+        set_jit_status("Debugger attached; waiting for brk #0x69 trap handler");
+        pthread_mutex_unlock(&g_pool_mutex);
+        return false;
+    }
+
+    release_low_va_hold(bytes);
+
+    uintptr_t rx = 0U;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        g_expecting_jit_trap = true;
+        rx = henge_jit26_prepare_region(0U, bytes);
+        g_expecting_jit_trap = false;
+        if (rx != 0U) {
+            break;
+        }
+        struct timespec ts = {0, 50000000L};
+        nanosleep(&ts, NULL);
+    }
+
+    if (rx == 0U) {
+        set_jit_status("Failed: debugger returned NULL RX region");
+        pthread_mutex_unlock(&g_pool_mutex);
+        return false;
+    }
+    if (!henge_txm_is_valid_jit_range(rx, bytes)) {
+        vm_deallocate(mach_task_self(), (vm_address_t)rx, (vm_size_t)bytes);
+        set_jit_status("Failed: RX range outside TXM low-VA bounds (< 64 GiB)");
+        pthread_mutex_unlock(&g_pool_mutex);
+        return false;
+    }
+
+    vm_address_t rw = 0;
+    vm_prot_t cur_prot = VM_PROT_NONE;
+    vm_prot_t max_prot = VM_PROT_NONE;
+    kern_return_t kr = KERN_NO_SPACE;
+    const uintptr_t step = 16ULL << 20;
+    const uintptr_t reach = 2ULL << 30;
+    for (uintptr_t off = 0; off <= reach && kr != KERN_SUCCESS; off += step) {
+        for (int side = 0; side < 2 && kr != KERN_SUCCESS; side++) {
+            uintptr_t want = (side == 0) ? (rx + bytes + off) : (rx - bytes - off);
+            if (side == 1 && rx < bytes + off + step) {
+                continue;
+            }
+            rw = (vm_address_t)want;
+            kr = vm_remap(mach_task_self(), &rw, (vm_size_t)bytes, 0, VM_FLAGS_FIXED,
+                          mach_task_self(), (vm_address_t)rx, FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
+        }
+    }
+    if (kr != KERN_SUCCESS) {
+        rw = 0;
+        kr = vm_remap(mach_task_self(), &rw, (vm_size_t)bytes, 0, VM_FLAGS_ANYWHERE,
+                      mach_task_self(), (vm_address_t)rx, FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
+    }
+    if (kr != KERN_SUCCESS) {
+        vm_deallocate(mach_task_self(), (vm_address_t)rx, (vm_size_t)bytes);
+        set_jit_status("Failed: vm_remap RW alias (%s)", mach_error_string(kr));
+        pthread_mutex_unlock(&g_pool_mutex);
+        return false;
+    }
+
+    kr = vm_protect(mach_task_self(), rw, (vm_size_t)bytes, FALSE, VM_PROT_READ | VM_PROT_WRITE);
+    if (kr != KERN_SUCCESS) {
+        vm_deallocate(mach_task_self(), rw, (vm_size_t)bytes);
+        vm_deallocate(mach_task_self(), (vm_address_t)rx, (vm_size_t)bytes);
+        set_jit_status("Failed: vm_protect RW (%s)", mach_error_string(kr));
+        pthread_mutex_unlock(&g_pool_mutex);
+        return false;
+    }
+
+    if (!verify_rx_rw_selftest((uint8_t *)(uintptr_t)rx, (uint8_t *)(uintptr_t)rw, bytes)) {
+        vm_deallocate(mach_task_self(), rw, (vm_size_t)bytes);
+        vm_deallocate(mach_task_self(), (vm_address_t)rx, (vm_size_t)bytes);
+        set_jit_status("Failed: TXM selftest rejected RX execution");
+        pthread_mutex_unlock(&g_pool_mutex);
+        return false;
+    }
+
+    g_active_pool.rx_base = rx;
+    g_active_pool.rw_base = (uintptr_t)rw;
+    g_active_pool.size = bytes;
+    g_active_pool.blessed = true;
+    g_active_pool.dual_mapped = true;
+    atomic_store_explicit(&g_pool_live, true, memory_order_release);
+
+    if (detach_after && henge_txm_is_ptraced()) {
+        g_expecting_jit_trap = true;
+        henge_jit26_detach();
+        g_expecting_jit_trap = false;
+    }
+
+    set_jit_status("Blessed (%zu MiB TXM RX/RW)", bytes >> 20);
+    if (out_pool != NULL) {
+        *out_pool = g_active_pool;
+    }
+    pthread_mutex_unlock(&g_pool_mutex);
+    return true;
+}
+#else
+void henge_jit_install_trap_guard(void) {
+}
+
+bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_pool) {
+    (void)bytes;
+    (void)detach_after;
+    (void)out_pool;
+    set_jit_status("TXM breakpoint JIT unavailable on this host");
+    return false;
+}
+#endif
+
+bool henge_jit_current_pool(HengeJitPool *out_pool) {
+    if (!atomic_load_explicit(&g_pool_live, memory_order_acquire)) {
+        return false;
+    }
+    pthread_mutex_lock(&g_pool_mutex);
+    bool live = atomic_load_explicit(&g_pool_live, memory_order_acquire);
+    if (live && out_pool != NULL) {
+        *out_pool = g_active_pool;
+    }
+    pthread_mutex_unlock(&g_pool_mutex);
+    return live;
+}
+
+const char *henge_jit_status_message(void) {
+    return g_jit_status;
+}
 
 void *henge_alloc_ledger_exempt_ram(size_t size, bool *out_ledger_exempt) {
     if (out_ledger_exempt != NULL) {

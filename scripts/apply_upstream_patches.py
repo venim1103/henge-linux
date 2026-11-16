@@ -184,7 +184,7 @@ def main() -> int:
         jit_region_c,
         '#include "henge_txm_jit.h"',
         '#include "jit_region.h"\n',
-        '#include "jit_region.h"\n#include "henge_txm_jit.h"\n',
+        '#include "jit_region.h"\n#include <stdio.h>\n#include "henge_txm_jit.h"\n',
     )
     patch_file(
         jit_region_c,

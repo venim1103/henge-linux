@@ -53,11 +53,23 @@ bool henge_txm_is_debugger_attached(void);
 
 /*
  * Low-level ARM64 breakpoint primitives matching StikDebug / universal.js:
+ *   brk #0x69             -> probe active JIT debugger (returns 0xE0000069 in x0)
  *   x16 = 1; brk #0xf00d  -> prepare & bless RX JIT region of `size` bytes
  *   x16 = 0; brk #0xf00d  -> detach debugserver cleanly
  */
+uint64_t henge_jit26_probe(void);
 uintptr_t henge_jit26_prepare_region(uintptr_t hint, size_t size);
 void henge_jit26_detach(void);
+
+/*
+ * Install SIGTRAP/SIGBUS guard so untethered brk #0x69 / #0xf00d probes never
+ * terminate the process, and acquire/cache the process-lifetime dual-mapped
+ * RX/RW TXM JIT pool (< 0x7000000000).
+ */
+void henge_jit_install_trap_guard(void);
+bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_pool);
+bool henge_jit_current_pool(HengeJitPool *out_pool);
+const char *henge_jit_status_message(void);
 
 /*
  * Allocate and release guest physical RAM using Darwin LEDGER_NO_FOOTPRINT

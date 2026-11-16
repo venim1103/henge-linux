@@ -47,6 +47,8 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: Resources
+        buildPhase: resources
     entitlements:
       path: HengeLinux.entitlements
     dependencies:

@@ -193,6 +193,23 @@ static void henge_on_vm_exit(int reason) {
     }
 
 #if HENGE_HAS_UPSTREAM_ENGINE
+    HengeJitPool jitPool;
+    std::memset(&jitPool, 0, sizeof(jitPool));
+    if (!henge_jit_acquire_pool((size_t)HENGE_DEFAULT_JIT_POOL_BYTES, true, &jitPool)) {
+        henge_free_ledger_exempt_ram(ramPtr, (size_t)alignedBytes);
+        const char *jitErr = henge_jit_status_message();
+        NSString *msg = (jitErr && jitErr[0] != '\0')
+            ? [NSString stringWithFormat:@"TXM JIT pool not active (%s). Attach StikDebug (henge-jit.js) or LLDB, then tap Boot.", jitErr]
+            : @"TXM JIT pool not active. Attach StikDebug (henge-jit.js) or LLDB, then tap Boot.";
+        _statusText = msg;
+        if (error) {
+            *error = [NSError errorWithDomain:HengeVMErrorDomain
+                                         code:1006
+                                     userInfo:@{NSLocalizedDescriptionKey: msg}];
+        }
+        return NO;
+    }
+
     HvWinVmConfig cfg;
     std::memset(&cfg, 0, sizeof(cfg));
     cfg.code_fd = codeURL.path.UTF8String;
@@ -202,7 +219,9 @@ static void henge_on_vm_exit(int reason) {
     cfg.share_sock = shareSockPath;
     cfg.ncpus = (cpuCount > 0) ? cpuCount : 4;
     cfg.ram_mb = alignedBytes / (1024ULL * 1024ULL);
-    cfg.jit_bytes = HENGE_DEFAULT_JIT_POOL_BYTES;
+    cfg.jit_rx = (void *)jitPool.rx_base;
+    cfg.jit_rw = (void *)jitPool.rw_base;
+    cfg.jit_bytes = jitPool.size;
     cfg.prealloc_ram = ramPtr;
     cfg.enable_sound = 1;
 

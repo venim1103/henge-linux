@@ -24,6 +24,10 @@ final class SelfDebugJITClient: ObservableObject {
 
     static let defaultJitPoolMiB: Int = 384
 
+    init() {
+        henge_jit_install_trap_guard()
+    }
+
     var pairingFileURL: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
@@ -41,18 +45,24 @@ final class SelfDebugJITClient: ObservableObject {
 
         state = .requestingExtension
 
-        if henge_txm_is_ptraced() || henge_txm_is_cs_debugged() {
-            state = .blessed(poolMiB: Self.defaultJitPoolMiB, ledgerExempt: true)
+        var pool = HengeJitPool()
+        let poolBytes = Int(Self.defaultJitPoolMiB) * 1024 * 1024
+        if henge_jit_acquire_pool(poolBytes, true, &pool) {
+            state = .blessed(
+                poolMiB: Int(pool.size / (1024 * 1024)),
+                ledgerExempt: henge_txm_is_cs_debugged()
+            )
             return
         }
 
+        let status = String(cString: henge_jit_status_message())
         if hasPairingFile {
             state = .fallbackUntethered(
-                reason: "pairing.plist present — attach StikDebug/LLDB (in-app XPC lands in Milestone 5.4)."
+                reason: "\(status) · pairing.plist found (attach StikDebug with henge-jit.js; in-app XPC lands in Milestone 5.4)."
             )
         } else {
             state = .fallbackUntethered(
-                reason: "Place pairing.plist in Documents or attach StikDebug / LLDB for TXM JIT."
+                reason: "\(status) · Attach StikDebug (henge-jit.js) or LLDB for 384 MiB TXM JIT."
             )
         }
     }
