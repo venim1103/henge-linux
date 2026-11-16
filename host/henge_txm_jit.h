@@ -70,6 +70,7 @@ void henge_jit_install_trap_guard(void);
 bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_pool);
 bool henge_jit_current_pool(HengeJitPool *out_pool);
 const char *henge_jit_status_message(void);
+void henge_jit_copy_status(char *buf, size_t cap);
 
 /*
  * Allocate and release guest physical RAM using Darwin LEDGER_NO_FOOTPRINT
