@@ -97,6 +97,10 @@ struct HengeLinuxApp: App {
                     lastPasteboardChangeCount = UIPasteboard.general.changeCount
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+                guard isRunning else { return }
+                _ = HengeVMBridge.shared.saveBackgroundSnapshot()
+            }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
                 guard isRunning else { return }
                 let pb = UIPasteboard.general

@@ -19,6 +19,8 @@ NS_SWIFT_UI_ACTOR
 
 @property (nonatomic, readonly) BOOL isEngineLinked;
 @property (nonatomic, readonly) BOOL isRunning;
+@property (nonatomic, readonly) BOOL isVirgl3DActive;
+@property (nonatomic, readonly) BOOL hasSavedBackgroundSnapshot;
 @property (nonatomic, readonly) uint32_t activeRamMiB;
 @property (nonatomic, readonly, copy) NSString *statusText;
 @property (nonatomic, readonly) uint64_t framesPresented;
@@ -35,6 +37,9 @@ NS_SWIFT_UI_ACTOR
 
 /// Stop the VM and release ledger-exempt guest RAM.
 - (void)stopGuest;
+
+/// Persist a checksummed background VM snapshot (`Documents/Machines/ArchLinux/suspend.state`).
+- (BOOL)saveBackgroundSnapshot;
 
 /// Forward USB HID keyboard usage codes (`0x29` Esc, `0x2B` Tab, `0xE0` Ctrl, etc.).
 - (void)sendHidKeyUsage:(uint8_t)usage pressed:(BOOL)pressed;

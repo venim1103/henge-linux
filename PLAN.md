@@ -124,8 +124,9 @@ Every code change in `henge-linux` must preserve these verified platform invaria
 - [x] **Milestone 5.4 (Track 1) — Embedded `HengeLinuxJITExtension` XPC Handshake & TXM GDB RSP Blesser:**
   - Wired `HengeJITExtensionBridge.{h,mm}` (`NSExtension` `com.apple.ar.viewer` lifecycle + one-shot timeout/cancellation guards) and `SelfDebugJITClient.swift` (App Group `group.io.hengelinux.shared` `pairing.plist` sync + concurrent XPC & `Task.detached` `henge_jit_acquire_pool` loop).
   - Implemented `pairing.plist` lockdown validation, `#if canImport(StikJIT)` / `#if canImport(Idevice)` hooks, and a pure-Swift `10.7.0.1` GDB RSP `vAttach` / `brk #0x69` / `brk #0xf00d` (`_M...,rx` + byte-0 `0x69` 16 KiB page blessing) engine in `ios/JITExtension/JITExtensionHandler.swift` (drop `StikJIT.xcframework` + `idevice.xcframework` into `ios/Frameworks/` for automatic RSD `debugproxy` tunnel creation).
-- [ ] **Milestone 5.4 (Track 2) — 3D VirtIO-GPU VirGL (`ANGLE Metal`) & Background Suspend:**
-  - Implement PCIe `virtio-gpu-gl-pci` (`0x1af4:0x1050`) backed by `virglrenderer` + `ANGLE (Metal)` for hardware-accelerated Wayland compositors (`Hyprland`, `Wayfire`, `Sway`), plus `tctiSH`-style background state serialization.
+- [x] **Milestone 5.4 (Track 2) — 3D VirtIO-GPU VirGL (`ANGLE Metal`) & Background Suspend:**
+  - Implemented VirtIO-GPU 1.0 (`0x1af4:0x1050`) 2D/3D VirGL control-queue command processing (`CTX_CREATE`, `RESOURCE_CREATE_3D`, `CTX_ATTACH_RESOURCE`, `SUBMIT_3D`, `SET_SCANOUT`, `RESOURCE_FLUSH`, `num_capsets` vs `capset_mask`, `virglrenderer` + `ANGLE Metal` probe) in `host/henge_virtio_gpu.{h,c}` and wired `HengeVirtioGpuDevice` lifecycle into `HengeVMBridge.{h,mm}`.
+  - Implemented atomic FNV-1a checksummed background VM snapshot serialization (`henge_vm_snapshot_write`/`read` -> `Documents/Machines/ArchLinux/suspend.state`) triggered on `UIApplication.didEnterBackgroundNotification` in `HengeLinuxApp.swift` and verified via `tests/test_core.c`.
 
 ---
 

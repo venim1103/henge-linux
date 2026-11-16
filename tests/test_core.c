@@ -179,12 +179,82 @@ static void test_virtio_gpu_backends(void) {
     HENGE_CHECK(henge_virtio_gpu_init_config((HengeGpuBackendMode)99, 128U, &cfg) == -1);
     HENGE_CHECK(henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_GOP_2D, 128U, &cfg) == 0);
     HENGE_CHECK(cfg.pci_vendor_id == 0U);
+    HENGE_CHECK(cfg.num_capsets == 0U);
     HENGE_CHECK(henge_virtio_gpu_supports_virgl(&cfg) == false);
 
     HENGE_CHECK(henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_VIRGL_3D, 512U, &cfg) == 0);
     HENGE_CHECK(cfg.pci_vendor_id == HENGE_VIRTIO_PCI_VENDOR_ID);
     HENGE_CHECK(cfg.pci_device_id == HENGE_VIRTIO_GPU_DEVICE_ID);
+    HENGE_CHECK(cfg.num_capsets == 2U);
     HENGE_CHECK(henge_virtio_gpu_supports_virgl(&cfg) == true);
+    (void)henge_virtio_gpu_has_virglrenderer();
+
+    HengeVirtioGpuDevice *gpu = henge_virtio_gpu_create(&cfg);
+    HENGE_CHECK(gpu != NULL);
+    HENGE_CHECK((henge_virtio_gpu_feature_bits(gpu) & HENGE_VIRTIO_GPU_F_VIRGL) != 0ULL);
+    HENGE_CHECK(henge_virtio_gpu_set_display_mode(gpu, 0U, 2556U, 1179U, true) == 0);
+
+    /* Reject 3D commands referencing nonexistent context or resource IDs. */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_SUBMIT_3D, 99U, 0U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_FLUSH, 0U, 77U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE);
+
+    /* Exercise full VirGL 3D context -> 3D resource -> attach -> submit -> scanout -> flush lifecycle. */
+    uint32_t virgl_cmd_stream[4] = {0x00010001U, 0x00000000U, 1920U, 1080U};
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_CTX_CREATE, 1U, 0U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_active_contexts(gpu) == 1U);
+
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, 1U, 10U, 0U, 1920U, 1080U, 1U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_active_resources(gpu) == 1U);
+
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, 1U, 10U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_SUBMIT_3D, 1U, 10U, 0U, 0U, 0U, 0U,
+        virgl_cmd_stream, sizeof(virgl_cmd_stream)) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_SET_SCANOUT, 1U, 10U, 0U, 1920U, 1080U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_scanout_resource(gpu, 0U) == 10U);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_FLUSH, 1U, 10U, 0U, 1920U, 1080U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_flush_count(gpu) == 1ULL);
+
+    /* Verify checksummed background VM snapshot persistence and corruption rejection. */
+    const char *snap_path = "build/test_suspend.state";
+    const char payload[] = "ARCHLINUX_VIRGL_WAYLAND_STATE";
+    HengeVmSnapshotInfo snap_in = {
+        .version = 1U,
+        .ram_mib = 2560U,
+        .cpu_count = 4U,
+        .gpu_mode = (uint32_t)HENGE_GPU_BACKEND_VIRGL_3D,
+        .scanout0_res_id = 10U,
+        .suspend_counter_offset = 48000000ULL,
+        .gpu_flush_count = henge_virtio_gpu_flush_count(gpu),
+    };
+    HENGE_CHECK(henge_vm_snapshot_write(snap_path, &snap_in, payload, sizeof(payload)) == 0);
+
+    HengeVmSnapshotInfo snap_out;
+    char read_payload[64] = {0};
+    HENGE_CHECK(henge_vm_snapshot_read(snap_path, &snap_out, read_payload, sizeof(read_payload)) == 0);
+    HENGE_CHECK(snap_out.ram_mib == 2560U);
+    HENGE_CHECK(snap_out.gpu_mode == (uint32_t)HENGE_GPU_BACKEND_VIRGL_3D);
+    HENGE_CHECK(snap_out.scanout0_res_id == 10U);
+    HENGE_CHECK(snap_out.gpu_flush_count == 1ULL);
+    HENGE_CHECK(strcmp(read_payload, payload) == 0);
+    remove(snap_path);
+
+    henge_virtio_gpu_destroy(gpu);
 }
 
 int main(void) {

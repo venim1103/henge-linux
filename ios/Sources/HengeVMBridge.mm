@@ -26,16 +26,19 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
     BOOL _running;
     BOOL _vmCreated;
     uint32_t _activeRamMiB;
+    int _activeCpuCount;
     NSString *_statusText;
     CAMetalLayer *__weak _displayLayer;
     void *_guestRam;
     size_t _guestRamBytes;
     HengeVirtioGpuConfig _gpuConfig;
+    HengeVirtioGpuDevice *_gpuDevice;
     std::string _codePathStr;
     std::string _varsPathStr;
     std::string _diskPathStr;
     std::string _shareDirStr;
     std::string _shareSockStr;
+    std::string _snapshotPathStr;
 }
 - (void)handleEngineExitReason:(int)reason;
 @end
@@ -65,11 +68,13 @@ static void henge_on_vm_exit(int reason) {
         _running = NO;
         _vmCreated = NO;
         _activeRamMiB = 0;
+        _activeCpuCount = 4;
         _statusText = self.isEngineLinked
             ? @"Engine linked · Ready"
             : @"Host substrate ready (run sync_upstream.sh + build_ios_deps.sh for full VM)";
         _guestRam = nullptr;
         _guestRamBytes = 0;
+        _gpuDevice = nullptr;
     }
     return self;
 }
@@ -86,6 +91,19 @@ static void henge_on_vm_exit(int reason) {
     return _running;
 }
 
+- (BOOL)isVirgl3DActive {
+    return _running && _gpuDevice != nullptr && henge_virtio_gpu_supports_virgl(&_gpuConfig);
+}
+
+- (BOOL)hasSavedBackgroundSnapshot {
+    NSURL *docsURL = [self documentsDirectoryURL];
+    NSURL *snapURL = [[[docsURL URLByAppendingPathComponent:@"Machines" isDirectory:YES]
+                        URLByAppendingPathComponent:@"ArchLinux" isDirectory:YES]
+                       URLByAppendingPathComponent:@"suspend.state"];
+    HengeVmSnapshotInfo info;
+    return henge_vm_snapshot_read(snapURL.path.fileSystemRepresentation, &info, nullptr, 0U) == 0;
+}
+
 - (uint32_t)activeRamMiB {
     return _activeRamMiB;
 }
@@ -95,10 +113,11 @@ static void henge_on_vm_exit(int reason) {
 }
 
 - (uint64_t)framesPresented {
+    uint64_t virglFrames = (_gpuDevice != nullptr) ? henge_virtio_gpu_flush_count(_gpuDevice) : 0ULL;
 #if HENGE_HAS_UPSTREAM_ENGINE
-    return _running ? hv_winvm_display_frames() : 0ULL;
+    return _running ? (hv_winvm_display_frames() + virglFrames) : 0ULL;
 #else
-    return 0ULL;
+    return _running ? virglFrames : 0ULL;
 #endif
 }
 
@@ -140,6 +159,11 @@ static void henge_on_vm_exit(int reason) {
         ? HENGE_GPU_BACKEND_VIRGL_3D
         : HENGE_GPU_BACKEND_GOP_2D;
     henge_virtio_gpu_init_config(mode, (mode == HENGE_GPU_BACKEND_VIRGL_3D) ? 512U : 128U, &_gpuConfig);
+    if (_gpuDevice != nullptr) {
+        henge_virtio_gpu_destroy(_gpuDevice);
+        _gpuDevice = nullptr;
+    }
+    _gpuDevice = henge_virtio_gpu_create(&_gpuConfig);
 
     NSURL *docsURL = [self documentsDirectoryURL];
     NSURL *machineDir = [[docsURL URLByAppendingPathComponent:@"Machines" isDirectory:YES]
@@ -154,6 +178,8 @@ static void henge_on_vm_exit(int reason) {
     NSURL *varsURL = [machineDir URLByAppendingPathComponent:@"vars.fd"];
     NSURL *sparseURL = [machineDir URLByAppendingPathComponent:@"archlinux.hvsparse"];
     NSURL *rawDiskURL = [machineDir URLByAppendingPathComponent:@"archlinux.img"];
+    NSURL *snapURL = [machineDir URLByAppendingPathComponent:@"suspend.state"];
+    _snapshotPathStr = snapURL.path.fileSystemRepresentation;
 
     BOOL hasSparse = [fm fileExistsAtPath:sparseURL.path];
     BOOL hasRaw = [fm fileExistsAtPath:rawDiskURL.path];
@@ -304,10 +330,15 @@ static void henge_on_vm_exit(int reason) {
     _guestRam = ramPtr;
     _guestRamBytes = (size_t)alignedBytes;
     _activeRamMiB = (uint32_t)cfg.ram_mb;
+    _activeCpuCount = cfg.ncpus;
     _vmCreated = YES;
     _running = YES;
-    _statusText = [NSString stringWithFormat:@"Running · %llu MiB (%@)",
+    NSString *gpuLabel = henge_virtio_gpu_supports_virgl(&_gpuConfig)
+        ? @"VirGL 3D"
+        : @"2D GOP";
+    _statusText = [NSString stringWithFormat:@"Running · %llu MiB · %@ (%@)",
                    cfg.ram_mb,
+                   gpuLabel,
                    ledgerExempt ? @"LEDGER_NO_FOOTPRINT" : @"standard ledger"];
 
     CAMetalLayer *layer = _displayLayer;
@@ -328,6 +359,31 @@ static void henge_on_vm_exit(int reason) {
 #endif
 }
 
+- (BOOL)saveBackgroundSnapshot {
+    if (!_running || _snapshotPathStr.empty()) {
+        return NO;
+    }
+#if HENGE_HAS_UPSTREAM_ENGINE
+    if (_vmCreated) {
+        hv_winvm_flush_disks();
+    }
+#endif
+    HengeVmSnapshotInfo info;
+    std::memset(&info, 0, sizeof(info));
+    info.version = 1U;
+    info.ram_mib = _activeRamMiB;
+    info.cpu_count = (_activeCpuCount > 0) ? (uint32_t)_activeCpuCount : 4U;
+    info.gpu_mode = (uint32_t)_gpuConfig.mode;
+    info.scanout0_res_id = (_gpuDevice != nullptr)
+        ? henge_virtio_gpu_scanout_resource(_gpuDevice, 0U)
+        : 0U;
+    info.suspend_counter_offset = hengelinux_suspend_counter_offset();
+    info.gpu_flush_count = (_gpuDevice != nullptr)
+        ? henge_virtio_gpu_flush_count(_gpuDevice)
+        : 0ULL;
+    return henge_vm_snapshot_write(_snapshotPathStr.c_str(), &info, nullptr, 0U) == 0;
+}
+
 - (void)stopGuest {
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_vmCreated) {
@@ -336,9 +392,14 @@ static void henge_on_vm_exit(int reason) {
         hv_winvm_flush_disks();
     }
 #endif
+    if (_gpuDevice != nullptr) {
+        henge_virtio_gpu_destroy(_gpuDevice);
+        _gpuDevice = nullptr;
+    }
     _running = NO;
     _vmCreated = NO;
     _activeRamMiB = 0;
+    _activeCpuCount = 4;
     if (_guestRam != nullptr && _guestRamBytes > 0) {
         henge_free_ledger_exempt_ram(_guestRam, _guestRamBytes);
         _guestRam = nullptr;
