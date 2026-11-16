@@ -246,14 +246,34 @@ private final class GdbRspTxmBlesser {
 
         var blessedRxBase: UInt64 = 0
         var pagesBlessed = 0
+        var trapIterations = 0
+        var nextResumePacket = "c"
 
-        for _ in 0..<32 {
-            guard let stopReply = sendPacket("c"),
+        for _ in 0..<256 {
+            let resumePacket = nextResumePacket
+            nextResumePacket = "c"
+            guard let stopReply = sendPacket(resumePacket),
                   !stopReply.isEmpty,
                   !stopReply.hasPrefix("E"),
                   !stopReply.hasPrefix("W"),
                   !stopReply.hasPrefix("X") else {
                 return .failed(reason: "Target stopped unexpectedly during JIT handshake.")
+            }
+
+            if stopReply.hasPrefix("T"), stopReply.count >= 3 {
+                let sigHex = String(stopReply.dropFirst().prefix(2))
+                if let sig = UInt8(sigHex, radix: 16), sig != 0x05 && sig != 0x00 {
+                    if sig == 0x04 || sig == 0x06 || sig == 0x0A || sig == 0x0B {
+                        return .failed(reason: "Target stopped with fatal signal 0x\(sigHex) during JIT handshake.")
+                    }
+                    nextResumePacket = "C\(sigHex)"
+                    continue
+                }
+            }
+
+            trapIterations += 1
+            if trapIterations > 32 {
+                return .failed(reason: "Exceeded maximum debugserver breakpoint iterations.")
             }
 
             guard let tid = extractHexField(in: stopReply, prefix: "thread:") else {

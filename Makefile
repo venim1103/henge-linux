@@ -18,6 +18,7 @@ CFLAGS_COMMON := -std=c11 -O2 -Wall -Wextra -Werror -MMD -MP -DHV_TLB_PAGE_BITS=
 
 BUILD_DIR := build
 UPSTREAM_DIR := .upstream/WindowsiOS
+TLB_STAMP := $(BUILD_DIR)/.tlb_bits_$(HV_TLB_PAGE_BITS)
 
 .PHONY: all clean test-core hvsparse ios-lib ios-lib-full sync-upstream ios-project
 
@@ -26,11 +27,15 @@ all: test-core hvsparse
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
+$(TLB_STAMP): | $(BUILD_DIR)
+	@rm -f $(BUILD_DIR)/.tlb_bits_*
+	@touch $@
+
 HOST_SRCS := host/henge_platform.c host/henge_txm_jit.c host/henge_virtio_gpu.c
 HOST_HDRS := host/henge_platform.h host/henge_txm_jit.h host/henge_virtio_gpu.h
 HOST_ASM  := $(if $(filter aarch64 arm64,$(UNAME_M)),host/henge_brk.S,)
 
-$(BUILD_DIR)/test_core: tests/test_core.c $(HOST_SRCS) $(HOST_HDRS) $(HOST_ASM) | $(BUILD_DIR)
+$(BUILD_DIR)/test_core: tests/test_core.c $(HOST_SRCS) $(HOST_HDRS) $(HOST_ASM) $(TLB_STAMP) | $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) -pthread tests/test_core.c $(HOST_SRCS) $(HOST_ASM) -o $(BUILD_DIR)/test_core
 
 $(BUILD_DIR)/hvsparse: tools/hvsparse.c | $(BUILD_DIR)
@@ -108,7 +113,7 @@ IOS_CFLAGS := -std=c11 -Wall -Wextra -Werror $(IOS_BASE)
 IOS_UP_CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers $(IOS_BASE)
 ENG_INC := -I$(UPSTREAM_DIR)/core -I$(UPSTREAM_DIR)/host -I$(UPSTREAM_DIR)/devices -I$(UPSTREAM_DIR)/ios/deps/include -I$(UPSTREAM_DIR)/ios/deps/include/slirp -I$(UPSTREAM_DIR)/ios/deps/include/glib-2.0 -I$(UPSTREAM_DIR)/ios/deps/lib/glib-2.0/include
 
-$(BUILD_DIR)/ios/%.o: host/%.c $(HOST_HDRS) | $(BUILD_DIR)
+$(BUILD_DIR)/ios/%.o: host/%.c $(HOST_HDRS) $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang $(IOS_CFLAGS) -c $< -o $@
 
@@ -116,7 +121,7 @@ $(BUILD_DIR)/ios/henge_brk.o: host/henge_brk.S | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$(IOS_SDK)" -c $< -o $@
 
-$(BUILD_DIR)/ios/up_core_mmu.o: $(UPSTREAM_DIR)/core/mmu.c | $(BUILD_DIR)
+$(BUILD_DIR)/ios/up_core_mmu.o: $(UPSTREAM_DIR)/core/mmu.c $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang $(IOS_UP_CFLAGS) $(ENG_INC) -mgeneral-regs-only -c $< -o $@
 
@@ -124,19 +129,19 @@ $(BUILD_DIR)/ios/up_host_enter.o: $(UPSTREAM_DIR)/host/enter.S | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$(IOS_SDK)" -c $< -o $@
 
-$(BUILD_DIR)/ios/up_dev_fb_metal.o: $(UPSTREAM_DIR)/devices/fb_metal.m | $(BUILD_DIR)
+$(BUILD_DIR)/ios/up_dev_fb_metal.o: $(UPSTREAM_DIR)/devices/fb_metal.m $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang -fobjc-arc -Wall -Wextra -Wno-unused-parameter $(IOS_BASE) $(ENG_INC) -c $< -o $@
 
-$(BUILD_DIR)/ios/up_core_%.o: $(UPSTREAM_DIR)/core/%.c | $(BUILD_DIR)
+$(BUILD_DIR)/ios/up_core_%.o: $(UPSTREAM_DIR)/core/%.c $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang $(IOS_UP_CFLAGS) $(ENG_INC) -c $< -o $@
 
-$(BUILD_DIR)/ios/up_host_%.o: $(UPSTREAM_DIR)/host/%.c | $(BUILD_DIR)
+$(BUILD_DIR)/ios/up_host_%.o: $(UPSTREAM_DIR)/host/%.c $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang $(IOS_UP_CFLAGS) $(ENG_INC) -c $< -o $@
 
-$(BUILD_DIR)/ios/up_dev_%.o: $(UPSTREAM_DIR)/devices/%.c | $(BUILD_DIR)
+$(BUILD_DIR)/ios/up_dev_%.o: $(UPSTREAM_DIR)/devices/%.c $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang $(IOS_UP_CFLAGS) $(ENG_INC) -c $< -o $@
 

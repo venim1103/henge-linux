@@ -7,6 +7,7 @@
 #include "henge_txm_jit.h"
 #include "henge_virtio_gpu.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -137,6 +138,48 @@ static void test_render_pause_lifecycle_gate(void) {
     HENGE_CHECK(hengelinux_suspend_counter_offset() == 0ULL);
 }
 
+typedef struct {
+    pthread_barrier_t *barrier;
+    uint64_t           raw_ticks;
+    uint64_t           observed_ticks;
+} CounterRaceWorkerArg;
+
+static void *counter_race_worker(void *opaque) {
+    CounterRaceWorkerArg *arg = (CounterRaceWorkerArg *)opaque;
+    pthread_barrier_wait(arg->barrier);
+    arg->observed_ticks = hengelinux_compensated_counter(arg->raw_ticks);
+    return NULL;
+}
+
+static void test_multivcpu_counter_jump_atomicity(void) {
+    hengelinux_reset_suspend_counter();
+    uint64_t base_raw = 100000000ULL;
+    HENGE_CHECK(hengelinux_compensated_counter(base_raw) == base_raw);
+
+    /* Four vCPU threads wake concurrently across a +2.0 s (48,000,000 tick) XNU freeze jump. */
+    uint64_t jump_raw = base_raw + 48000000ULL;
+    pthread_barrier_t barrier;
+    HENGE_CHECK(pthread_barrier_init(&barrier, NULL, 4U) == 0);
+
+    pthread_t threads[4];
+    CounterRaceWorkerArg args[4];
+    for (size_t i = 0; i < 4; i++) {
+        args[i].barrier = &barrier;
+        args[i].raw_ticks = jump_raw + (uint64_t)i;
+        args[i].observed_ticks = 0ULL;
+        HENGE_CHECK(pthread_create(&threads[i], NULL, counter_race_worker, &args[i]) == 0);
+    }
+    for (size_t i = 0; i < 4; i++) {
+        HENGE_CHECK(pthread_join(threads[i], NULL) == 0);
+        uint64_t expected_min = base_raw + 12000000ULL;
+        uint64_t expected_max = base_raw + 12000000ULL + 3ULL;
+        HENGE_CHECK(args[i].observed_ticks >= expected_min);
+        HENGE_CHECK(args[i].observed_ticks <= expected_max);
+    }
+    pthread_barrier_destroy(&barrier);
+    hengelinux_reset_suspend_counter();
+}
+
 static void test_txm_jit_bounds_and_blessing(void) {
     /* Valid 384 MiB TXM range in [4 GiB, 64 GiB). */
     HENGE_CHECK(henge_txm_is_valid_jit_range(0x0180000000ULL, HENGE_DEFAULT_JIT_POOL_BYTES) == true);
@@ -217,6 +260,28 @@ static void test_virtio_gpu_backends(void) {
     HENGE_CHECK(henge_virtio_gpu_process_ctrl(
         gpu, HENGE_VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, 1U, 10U, 0U, 0U, 0U, 0U, NULL, 0U) ==
         HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_context_attached_resources(gpu, 1U) == 1U);
+
+    /* Duplicate attach on same context is idempotent; attaching a second Wayland context tracks both. */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, 1U, 10U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_context_attached_resources(gpu, 1U) == 1U);
+
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_CTX_CREATE, 2U, 0U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, 2U, 10U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_context_attached_resources(gpu, 2U) == 1U);
+
+    /* Detaching context 2 leaves context 1 attached; unref clears remaining context counts. */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE, 2U, 10U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_context_attached_resources(gpu, 2U) == 0U);
+    HENGE_CHECK(henge_virtio_gpu_context_attached_resources(gpu, 1U) == 1U);
     HENGE_CHECK(henge_virtio_gpu_process_ctrl(
         gpu, HENGE_VIRTIO_GPU_CMD_SUBMIT_3D, 1U, 10U, 0U, 0U, 0U, 0U,
         virgl_cmd_stream, sizeof(virgl_cmd_stream)) ==
@@ -254,6 +319,13 @@ static void test_virtio_gpu_backends(void) {
     HENGE_CHECK(strcmp(read_payload, payload) == 0);
     remove(snap_path);
 
+    /* Unreferencing resource 10 decrements context 1's attached_resources counter to 0. */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF, 0U, 10U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_context_attached_resources(gpu, 1U) == 0U);
+    HENGE_CHECK(henge_virtio_gpu_scanout_resource(gpu, 0U) == 0U);
+
     henge_virtio_gpu_destroy(gpu);
 }
 
@@ -262,6 +334,7 @@ int main(void) {
     test_mmu_granule_decoding();
     test_guest_ram_alignment();
     test_render_pause_lifecycle_gate();
+    test_multivcpu_counter_jump_atomicity();
     test_txm_jit_bounds_and_blessing();
     test_virtio_gpu_backends();
     printf("[PASS] test_core: all platform, MMU, RAM, lifecycle, TXM JIT, and VirtIO-GPU checks passed.\n");

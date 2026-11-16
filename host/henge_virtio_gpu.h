@@ -106,6 +106,7 @@ uint32_t henge_virtio_gpu_scanout_resource(const HengeVirtioGpuDevice *dev, uint
 uint64_t henge_virtio_gpu_flush_count(const HengeVirtioGpuDevice *dev);
 uint32_t henge_virtio_gpu_active_contexts(const HengeVirtioGpuDevice *dev);
 uint32_t henge_virtio_gpu_active_resources(const HengeVirtioGpuDevice *dev);
+uint32_t henge_virtio_gpu_context_attached_resources(const HengeVirtioGpuDevice *dev, uint32_t ctx_id);
 
 /* Update host display geometry for primary (0) or USB-C external (1) scanout. */
 int henge_virtio_gpu_set_display_mode(HengeVirtioGpuDevice *dev,

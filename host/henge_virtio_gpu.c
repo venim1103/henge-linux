@@ -34,7 +34,7 @@ typedef struct {
     bool     is_3d;
     bool     has_backing;
     uint32_t resource_id;
-    uint32_t owner_ctx_id;
+    uint32_t attached_ctx_mask;
     uint32_t width;
     uint32_t height;
     uint32_t format;
@@ -114,12 +114,17 @@ bool henge_virtio_gpu_has_virglrenderer(void) {
 #endif
 }
 
-static HengeGpuContextSlot *find_context_locked(HengeVirtioGpuDevice *dev, uint32_t ctx_id) {
+static HengeGpuContextSlot *find_context_locked(HengeVirtioGpuDevice *dev,
+                                                uint32_t ctx_id,
+                                                size_t *out_slot_idx) {
     if (ctx_id == 0U) {
         return NULL;
     }
     for (size_t i = 0; i < HENGE_VIRTIO_GPU_MAX_CONTEXTS; i++) {
         if (dev->contexts[i].active && dev->contexts[i].ctx_id == ctx_id) {
+            if (out_slot_idx != NULL) {
+                *out_slot_idx = i;
+            }
             return &dev->contexts[i];
         }
     }
@@ -240,6 +245,18 @@ uint32_t henge_virtio_gpu_active_resources(const HengeVirtioGpuDevice *dev) {
     return active;
 }
 
+uint32_t henge_virtio_gpu_context_attached_resources(const HengeVirtioGpuDevice *dev, uint32_t ctx_id) {
+    if (dev == NULL || ctx_id == 0U) {
+        return 0U;
+    }
+    HengeVirtioGpuDevice *mut = (HengeVirtioGpuDevice *)dev;
+    pthread_mutex_lock(&mut->lock);
+    HengeGpuContextSlot *ctx = find_context_locked(mut, ctx_id, NULL);
+    uint32_t count = (ctx != NULL) ? ctx->attached_resources : 0U;
+    pthread_mutex_unlock(&mut->lock);
+    return count;
+}
+
 int henge_virtio_gpu_set_display_mode(HengeVirtioGpuDevice *dev,
                                       uint32_t scanout_id,
                                       uint32_t width,
@@ -308,7 +325,7 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT;
                 break;
             }
-            if (find_context_locked(dev, ctx_id) != NULL) {
+            if (find_context_locked(dev, ctx_id, NULL) != NULL) {
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT;
                 break;
             }
@@ -330,14 +347,16 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
         }
 
         case HENGE_VIRTIO_GPU_CMD_CTX_DESTROY: {
-            HengeGpuContextSlot *ctx = find_context_locked(dev, ctx_id);
+            size_t slot_idx = 0U;
+            HengeGpuContextSlot *ctx = find_context_locked(dev, ctx_id, &slot_idx);
             if (ctx == NULL) {
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT;
                 break;
             }
+            uint32_t ctx_bit = 1U << (uint32_t)slot_idx;
             for (size_t i = 0; i < HENGE_VIRTIO_GPU_MAX_RESOURCES; i++) {
-                if (dev->resources[i].active && dev->resources[i].owner_ctx_id == ctx_id) {
-                    dev->resources[i].owner_ctx_id = 0U;
+                if (dev->resources[i].active) {
+                    dev->resources[i].attached_ctx_mask &= ~ctx_bit;
                 }
             }
             memset(ctx, 0, sizeof(*ctx));
@@ -374,7 +393,7 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
             free_res->is_3d = is_3d;
             free_res->has_backing = false;
             free_res->resource_id = resource_id;
-            free_res->owner_ctx_id = 0U;
+            free_res->attached_ctx_mask = 0U;
             free_res->width = width;
             free_res->height = height;
             free_res->format = format;
@@ -386,6 +405,13 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
             if (res == NULL) {
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE;
                 break;
+            }
+            for (size_t c = 0; c < HENGE_VIRTIO_GPU_MAX_CONTEXTS; c++) {
+                if ((res->attached_ctx_mask & (1U << (uint32_t)c)) != 0U &&
+                    dev->contexts[c].active &&
+                    dev->contexts[c].attached_resources > 0U) {
+                    dev->contexts[c].attached_resources--;
+                }
             }
             for (size_t s = 0; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
                 if (dev->scanouts[s].resource_id == resource_id) {
@@ -417,7 +443,8 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
         }
 
         case HENGE_VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE: {
-            HengeGpuContextSlot *ctx = find_context_locked(dev, ctx_id);
+            size_t slot_idx = 0U;
+            HengeGpuContextSlot *ctx = find_context_locked(dev, ctx_id, &slot_idx);
             if (ctx == NULL) {
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT;
                 break;
@@ -427,13 +454,17 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE;
                 break;
             }
-            res->owner_ctx_id = ctx_id;
-            ctx->attached_resources++;
+            uint32_t ctx_bit = 1U << (uint32_t)slot_idx;
+            if ((res->attached_ctx_mask & ctx_bit) == 0U) {
+                res->attached_ctx_mask |= ctx_bit;
+                ctx->attached_resources++;
+            }
             break;
         }
 
         case HENGE_VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE: {
-            HengeGpuContextSlot *ctx = find_context_locked(dev, ctx_id);
+            size_t slot_idx = 0U;
+            HengeGpuContextSlot *ctx = find_context_locked(dev, ctx_id, &slot_idx);
             if (ctx == NULL) {
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT;
                 break;
@@ -443,8 +474,9 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE;
                 break;
             }
-            if (res->owner_ctx_id == ctx_id) {
-                res->owner_ctx_id = 0U;
+            uint32_t ctx_bit = 1U << (uint32_t)slot_idx;
+            if ((res->attached_ctx_mask & ctx_bit) != 0U) {
+                res->attached_ctx_mask &= ~ctx_bit;
                 if (ctx->attached_resources > 0U) {
                     ctx->attached_resources--;
                 }
@@ -463,7 +495,7 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
 
         case HENGE_VIRTIO_GPU_CMD_SUBMIT_3D: {
             if (dev->cfg.mode != HENGE_GPU_BACKEND_VIRGL_3D ||
-                find_context_locked(dev, ctx_id) == NULL) {
+                find_context_locked(dev, ctx_id, NULL) == NULL) {
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT;
                 break;
             }

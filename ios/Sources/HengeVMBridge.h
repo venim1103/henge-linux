@@ -27,6 +27,11 @@ NS_SWIFT_UI_ACTOR
 
 /// Attach or detach the `MetalDisplaySurfaceView` `CAMetalLayer` for UEFI GOP / framebuffer output.
 - (void)attachDisplayLayer:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(attachDisplayLayer(_:));
+- (void)detachDisplayLayerIfMatching:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(detachDisplayLayer(ifMatching:));
+
+/// Unpack `archlinux.hvsparse` into `archlinux.img` off the main thread when needed
+/// before calling `startGuestWithRamMiB:`.
+- (void)prepareDiskImageWithCompletion:(void (^)(BOOL success, NSError * _Nullable error))completion;
 
 /// Start the Arch Linux AArch64 VM with `ramMiB` and `cpuCount` using guest
 /// artifacts in `Documents/Machines/ArchLinux/{archlinux.hvsparse,code.fd,vars.fd}`.

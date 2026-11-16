@@ -147,6 +147,16 @@ def main() -> int:
     for (UInt32 i = 0; i < io->mNumberBuffers; i++)
         hv_hda_pull_playback(hda, io->mBuffers[i].mData, io->mBuffers[i].mDataByteSize);""",
     )
+    patch_file(
+        audio_mac_c,
+        "!hengelinux_is_render_paused() && hda",
+        """    HvHda *hda = (HvHda *)opaque;
+    if (hda && buf && buf->mAudioDataByteSize > 0)
+        hv_hda_push_capture(hda, buf->mAudioData, buf->mAudioDataByteSize);""",
+        """    HvHda *hda = (HvHda *)opaque;
+    if (!hengelinux_is_render_paused() && hda && buf && buf->mAudioDataByteSize > 0)
+        hv_hda_push_capture(hda, buf->mAudioData, buf->mAudioDataByteSize);""",
+    )
 
     # 4. host/jit_region.c: enforce TXM low-VA ceiling (< 64 GiB / 0x7000000000)
     jit_region_c = upstream / "host/jit_region.c"

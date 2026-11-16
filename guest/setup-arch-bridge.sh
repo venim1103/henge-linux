@@ -33,6 +33,26 @@ fi
 EOF
 chmod 0644 /etc/profile.d/henge-safari-bridge.sh
 
+# 1. Configure VirtIO-Net DHCP and DNS first so minimal Archboot rootfs installs
+#    without python3 or xdg-utils still obtain working networking.
+install -d /etc/systemd/network
+cat <<'EOF' > /etc/systemd/network/20-henge-virtio.network
+[Match]
+Driver=virtio_net
+
+[Network]
+DHCP=yes
+DNS=10.0.2.3
+EOF
+
+systemctl enable systemd-networkd systemd-resolved >/dev/null 2>&1 || true
+if [ -e /run/systemd/resolve/stub-resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
+    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+elif [ ! -e /etc/resolv.conf ]; then
+    printf 'nameserver 10.0.2.3\n' > /etc/resolv.conf
+fi
+
+# 2. Configure XDG desktop MIME associations when python3 / desktop-file-utils exist.
 install -d /usr/local/share/applications
 cat <<'EOF' > /usr/local/share/applications/henge-safari-bridge.desktop
 [Desktop Entry]
@@ -48,13 +68,14 @@ if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/local/share/applications || true
 fi
 
-install -d /etc/xdg
-python3 - <<'PY'
+if command -v python3 >/dev/null 2>&1; then
+    install -d /etc/xdg
+    python3 - <<'PY'
 from configparser import RawConfigParser
 from pathlib import Path
 
 path = Path("/etc/xdg/mimeapps.list")
-cfg = RawConfigParser()
+cfg = RawConfigParser(strict=False)
 cfg.optionxform = str
 if path.exists():
     cfg.read(path, encoding="utf-8")
@@ -65,20 +86,8 @@ cfg.set("Default Applications", "x-scheme-handler/https", "henge-safari-bridge.d
 with path.open("w", encoding="utf-8") as fh:
     cfg.write(fh, space_around_delimiters=False)
 PY
-
-install -d /etc/systemd/network
-cat <<'EOF' > /etc/systemd/network/20-henge-virtio.network
-[Match]
-Driver=virtio_net
-
-[Network]
-DHCP=yes
-DNS=10.0.2.3
-EOF
-
-systemctl enable systemd-networkd systemd-resolved >/dev/null 2>&1 || true
-if [ -e /run/systemd/resolve/stub-resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
-    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+else
+    echo "[guest-setup] Note: python3 not installed; skipped /etc/xdg/mimeapps.list (BROWSER env hook is active)." >&2
 fi
 
 install -d /mnt/ios-share

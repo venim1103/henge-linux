@@ -41,6 +41,7 @@ struct HengeLinuxApp: App {
     @StateObject private var jitClient = SelfDebugJITClient()
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
     @State private var isRunning: Bool = false
+    @State private var isPreparingDisk: Bool = false
     @State private var bootWarning: String?
     @State private var bootErrorAlert: String?
     @State private var posture: DevicePosture = .singleScreen
@@ -99,7 +100,18 @@ struct HengeLinuxApp: App {
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
                 guard isRunning else { return }
+                var bgTaskID: UIBackgroundTaskIdentifier = .invalid
+                bgTaskID = UIApplication.shared.beginBackgroundTask(withName: "HengeDiskFlush") {
+                    if bgTaskID != .invalid {
+                        UIApplication.shared.endBackgroundTask(bgTaskID)
+                        bgTaskID = .invalid
+                    }
+                }
                 _ = HengeVMBridge.shared.saveBackgroundSnapshot()
+                if bgTaskID != .invalid {
+                    UIApplication.shared.endBackgroundTask(bgTaskID)
+                    bgTaskID = .invalid
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
                 guard isRunning else { return }
@@ -173,7 +185,7 @@ struct HengeLinuxApp: App {
                 Section("Guest Image (`Documents/Machines/ArchLinux`)") {
                     LabeledContent("Disk Container", value: "archlinux.hvsparse")
                     LabeledContent("UEFI Firmware", value: "code.fd / vars.fd")
-                    LabeledContent("Background Snapshot", value: HengeVMBridge.shared.hasSavedBackgroundSnapshot ? "suspend.state (Verified)" : "None")
+                    LabeledContent("Background Snapshot", value: HengeVMBridge.shared.hasSavedBackgroundSnapshot ? "suspend.state (Disk Flushed + Metadata)" : "None")
                     LabeledContent("Aligned Guest Bytes", value: "\(alignedBytes) B")
                     LabeledContent("Host Bridge", value: "http://10.0.2.4/.henge/")
                     LabeledContent("VM Engine", value: HengeVMBridge.shared.isEngineLinked ? "Linked (HengeVM)" : "Host Substrate Only")
@@ -182,6 +194,29 @@ struct HengeLinuxApp: App {
                 Section {
                     Button {
                         Task {
+                            isPreparingDisk = true
+                            let diskReady: Result<Void, Error> = await withCheckedContinuation { continuation in
+                                HengeVMBridge.shared.prepareDiskImage { success, error in
+                                    if success {
+                                        continuation.resume(returning: .success(()))
+                                    } else {
+                                        let fallback = NSError(
+                                            domain: "HengeVM",
+                                            code: 1007,
+                                            userInfo: [NSLocalizedDescriptionKey: "Failed to prepare guest disk image."]
+                                        )
+                                        continuation.resume(returning: .failure(error ?? fallback))
+                                    }
+                                }
+                            }
+                            isPreparingDisk = false
+                            if case .failure(let err) = diskReady {
+                                bootWarning = err.localizedDescription
+                                bootErrorAlert = err.localizedDescription
+                                isRunning = false
+                                return
+                            }
+
                             await jitClient.prepareSession()
                             if HengeVMBridge.shared.isEngineLinked,
                                case .fallbackUntethered(let reason) = jitClient.state {
@@ -212,12 +247,15 @@ struct HengeLinuxApp: App {
                             }
                         }
                     } label: {
-                        Label("Boot Arch Linux (\(effectiveRamMiB) MiB)", systemImage: "play.fill")
-                            .frame(maxWidth: .infinity)
-                            .font(.headline)
+                        Label(
+                            isPreparingDisk ? "Unpacking Disk Image..." : "Boot Arch Linux (\(effectiveRamMiB) MiB)",
+                            systemImage: "play.fill"
+                        )
+                        .frame(maxWidth: .infinity)
+                        .font(.headline)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(jitClient.state == .requestingExtension)
+                    .disabled(isPreparingDisk || jitClient.state == .requestingExtension)
                 }
             }
             .navigationTitle("henge-linux")

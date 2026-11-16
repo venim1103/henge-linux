@@ -621,8 +621,10 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     func makeUIView(context: Context) -> MetalDisplaySurfaceView {
         let view = MetalDisplaySurfaceView(frame: .zero)
         view.onFocusChanged = { isFocused in
-            if focusKeyboard != isFocused {
-                focusKeyboard = isFocused
+            DispatchQueue.main.async {
+                if focusKeyboard != isFocused {
+                    focusKeyboard = isFocused
+                }
             }
         }
         view.onCharacterTyped = onCharacterTyped
@@ -637,10 +639,19 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     func updateUIView(_ uiView: MetalDisplaySurfaceView, context: Context) {
         _ = lifecycle.isPaused
         uiView.onCharacterTyped = onCharacterTyped
-        if focusKeyboard && !uiView.isFirstResponder {
-            _ = uiView.becomeFirstResponder()
-        } else if !focusKeyboard && uiView.isFirstResponder {
-            _ = uiView.resignFirstResponder()
+        let wantsFocus = focusKeyboard
+        if wantsFocus && !uiView.isFirstResponder {
+            DispatchQueue.main.async {
+                if !uiView.isFirstResponder {
+                    _ = uiView.becomeFirstResponder()
+                }
+            }
+        } else if !wantsFocus && uiView.isFirstResponder {
+            DispatchQueue.main.async {
+                if uiView.isFirstResponder {
+                    _ = uiView.resignFirstResponder()
+                }
+            }
         }
         if let metalLayer = uiView.metalLayer {
             HengeVMBridge.shared.attachDisplayLayer(metalLayer)
@@ -648,6 +659,6 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: MetalDisplaySurfaceView, coordinator: ()) {
-        HengeVMBridge.shared.attachDisplayLayer(nil)
+        HengeVMBridge.shared.detachDisplayLayer(ifMatching: uiView.metalLayer)
     }
 }

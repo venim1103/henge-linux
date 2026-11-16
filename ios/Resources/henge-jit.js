@@ -24,12 +24,15 @@ if (!attachResponse || attachResponse.startsWith('E')) {
 }
 
 let totalBreakpoints = 0;
+let nextResumeCmd = 'c';
 try {
-    while (!detached) {
+    while (!detached && totalBreakpoints < 256) {
         totalBreakpoints++;
         log(`Handling breakpoint ${totalBreakpoints}`);
 
-        let brkResponse = send_command(`c`);
+        const resumeCmd = nextResumeCmd;
+        nextResumeCmd = 'c';
+        let brkResponse = send_command(resumeCmd);
         log(`brkResponse = ${brkResponse}`);
         if (!brkResponse || brkResponse.startsWith('E') || brkResponse.startsWith('W') || brkResponse.startsWith('X')) {
             log(`Target exited or errored: ${brkResponse}`);
@@ -46,8 +49,13 @@ try {
             break;
         }
 
-        // Ignore non-SIGTRAP stops (e.g., benign signals or thread events) by continuing.
+        // Forward non-SIGTRAP signals instead of dropping them or spinning on fatal faults.
         if (stopSig !== 0 && stopSig !== 5) {
+            if (stopSig === 4 || stopSig === 6 || stopSig === 10 || stopSig === 11) {
+                log(`Fatal signal 0x${stopSigMatch[1]} during JIT handshake; detaching`);
+                break;
+            }
+            nextResumeCmd = `C${stopSigMatch[1]}`;
             continue;
         }
 

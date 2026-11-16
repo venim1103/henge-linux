@@ -92,7 +92,10 @@ static void henge_on_vm_exit(int reason) {
 }
 
 - (BOOL)isVirgl3DActive {
-    return _running && _gpuDevice != nullptr && henge_virtio_gpu_supports_virgl(&_gpuConfig);
+    return _running &&
+           _gpuDevice != nullptr &&
+           henge_virtio_gpu_supports_virgl(&_gpuConfig) &&
+           henge_virtio_gpu_has_virglrenderer();
 }
 
 - (BOOL)hasSavedBackgroundSnapshot {
@@ -131,6 +134,82 @@ static void henge_on_vm_exit(int reason) {
         hv_winvm_set_display_layer(layer != nil ? (__bridge void *)layer : nullptr);
     }
 #endif
+}
+
+- (void)detachDisplayLayerIfMatching:(nullable CAMetalLayer *)layer {
+    if (layer == nil || _displayLayer == layer) {
+        [self attachDisplayLayer:nil];
+    }
+}
+
+- (void)prepareDiskImageWithCompletion:(void (^)(BOOL success, NSError * _Nullable error))completion {
+    NSURL *docsURL = [self documentsDirectoryURL];
+    NSURL *machineDir = [[docsURL URLByAppendingPathComponent:@"Machines" isDirectory:YES]
+                         URLByAppendingPathComponent:@"ArchLinux" isDirectory:YES];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    [fm createDirectoryAtURL:machineDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    NSURL *codeURL = [machineDir URLByAppendingPathComponent:@"code.fd"];
+    NSURL *varsURL = [machineDir URLByAppendingPathComponent:@"vars.fd"];
+    NSURL *sparseURL = [machineDir URLByAppendingPathComponent:@"archlinux.hvsparse"];
+    NSURL *rawDiskURL = [machineDir URLByAppendingPathComponent:@"archlinux.img"];
+
+    BOOL hasSparse = [fm fileExistsAtPath:sparseURL.path];
+    BOOL hasRaw = [fm fileExistsAtPath:rawDiskURL.path];
+
+    if (![fm fileExistsAtPath:codeURL.path] ||
+        ![fm fileExistsAtPath:varsURL.path] ||
+        (!hasSparse && !hasRaw)) {
+        NSString *msg = @"Missing guest files in Files -> HengeLinux -> Machines/ArchLinux/ (need code.fd, vars.fd, and archlinux.hvsparse).";
+        _statusText = msg;
+        NSError *err = [NSError errorWithDomain:HengeVMErrorDomain
+                                           code:1001
+                                       userInfo:@{NSLocalizedDescriptionKey: msg}];
+        completion(NO, err);
+        return;
+    }
+
+#if HENGE_HAS_UPSTREAM_ENGINE
+    if (hasSparse) {
+        BOOL needsUnpack = !hasRaw;
+        if (hasRaw) {
+            NSDictionary *sparseAttrs = [fm attributesOfItemAtPath:sparseURL.path error:nil];
+            NSDictionary *rawAttrs = [fm attributesOfItemAtPath:rawDiskURL.path error:nil];
+            NSDate *sparseMod = sparseAttrs[NSFileModificationDate];
+            NSDate *rawMod = rawAttrs[NSFileModificationDate];
+            unsigned long long rawSize = [rawAttrs[NSFileSize] unsignedLongLongValue];
+            if (rawSize == 0ULL || (sparseMod != nil && rawMod != nil && [sparseMod compare:rawMod] == NSOrderedDescending)) {
+                needsUnpack = YES;
+            }
+        }
+        if (needsUnpack) {
+            _statusText = @"Unpacking archlinux.hvsparse disk image...";
+            std::string sparseStr = sparseURL.path.fileSystemRepresentation;
+            std::string rawStr = rawDiskURL.path.fileSystemRepresentation;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                std::remove(rawStr.c_str());
+                int rc = hv_sparse_unpack(sparseStr.c_str(), rawStr.c_str(), nullptr, nullptr);
+                if (rc != 0) {
+                    std::remove(rawStr.c_str());
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (rc != 0) {
+                        NSString *msg = @"Failed to unpack archlinux.hvsparse into sparse raw NVMe disk image.";
+                        self->_statusText = msg;
+                        NSError *err = [NSError errorWithDomain:HengeVMErrorDomain
+                                                           code:1007
+                                                       userInfo:@{NSLocalizedDescriptionKey: msg}];
+                        completion(NO, err);
+                    } else {
+                        completion(YES, nil);
+                    }
+                });
+            });
+            return;
+        }
+    }
+#endif
+    completion(YES, nil);
 }
 
 - (NSURL *)documentsDirectoryURL {
@@ -180,6 +259,11 @@ static void henge_on_vm_exit(int reason) {
     NSURL *rawDiskURL = [machineDir URLByAppendingPathComponent:@"archlinux.img"];
     NSURL *snapURL = [machineDir URLByAppendingPathComponent:@"suspend.state"];
     _snapshotPathStr = snapURL.path.fileSystemRepresentation;
+
+    HengeVmSnapshotInfo prevSnapshot;
+    std::memset(&prevSnapshot, 0, sizeof(prevSnapshot));
+    BOOL hadPriorSnapshot = (henge_vm_snapshot_read(_snapshotPathStr.c_str(), &prevSnapshot, nullptr, 0U) == 0);
+    (void)hadPriorSnapshot;
 
     BOOL hasSparse = [fm fileExistsAtPath:sparseURL.path];
     BOOL hasRaw = [fm fileExistsAtPath:rawDiskURL.path];
@@ -333,9 +417,12 @@ static void henge_on_vm_exit(int reason) {
     _activeCpuCount = cfg.ncpus;
     _vmCreated = YES;
     _running = YES;
-    NSString *gpuLabel = henge_virtio_gpu_supports_virgl(&_gpuConfig)
-        ? @"VirGL 3D"
-        : @"2D GOP";
+    NSString *gpuLabel = @"2D GOP";
+    if (_gpuConfig.mode == HENGE_GPU_BACKEND_VIRGL_3D) {
+        gpuLabel = henge_virtio_gpu_has_virglrenderer()
+            ? @"VirGL 3D"
+            : @"2D GOP (VirGL 3D staged)";
+    }
     _statusText = [NSString stringWithFormat:@"Running · %llu MiB · %@ (%@)",
                    cfg.ram_mb,
                    gpuLabel,
