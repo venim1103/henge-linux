@@ -33,11 +33,22 @@ if command -v update-desktop-database >/dev/null 2>&1; then
 fi
 
 install -d /etc/xdg
-cat <<'EOF' > /etc/xdg/mimeapps.list
-[Default Applications]
-x-scheme-handler/http=henge-safari-bridge.desktop
-x-scheme-handler/https=henge-safari-bridge.desktop
-EOF
+python3 - <<'PY'
+from configparser import RawConfigParser
+from pathlib import Path
+
+path = Path("/etc/xdg/mimeapps.list")
+cfg = RawConfigParser()
+cfg.optionxform = str
+if path.exists():
+    cfg.read(path, encoding="utf-8")
+if not cfg.has_section("Default Applications"):
+    cfg.add_section("Default Applications")
+cfg.set("Default Applications", "x-scheme-handler/http", "henge-safari-bridge.desktop")
+cfg.set("Default Applications", "x-scheme-handler/https", "henge-safari-bridge.desktop")
+with path.open("w", encoding="utf-8") as fh:
+    cfg.write(fh, space_around_delimiters=False)
+PY
 
 install -d /etc/systemd/network
 cat <<'EOF' > /etc/systemd/network/20-henge-virtio.network
@@ -50,6 +61,9 @@ DNS=10.0.2.3
 EOF
 
 systemctl enable systemd-networkd systemd-resolved >/dev/null 2>&1 || true
+if [ -e /run/systemd/resolve/stub-resolv.conf ] && [ ! -L /etc/resolv.conf ]; then
+    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+fi
 
 install -d /mnt/ios-share
 echo "[guest-setup] Installed henge-xdg-open, VirtIO-Net DHCP config, and /mnt/ios-share."

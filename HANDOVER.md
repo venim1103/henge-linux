@@ -1,6 +1,6 @@
 # `henge-linux` Project Handover Document
 
-**Last Updated:** 2026-11-15
+**Last Updated:** 2026-11-16
 **Repository:** `venim1103/henge-linux` (branch: `main`)
 **License:** `GPL-3.0-or-later` (`LICENSE`)
 
@@ -34,7 +34,8 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `ee0c18b` | Implemented `ios/Sources/HengeVMBridge.{h,mm}` and wired `SessionView.swift` + `HengeLinuxApp.swift` to `CAMetalLayer`, xHCI HID, and `10.0.2.4/.henge/` OAuth sheet polling |
 | `c7c0374` | Fixed Swift `attachDisplayLayer` signature and `fb_metal.m` patch anchor |
 | `7e765a0` | Milestone 5.3: wired cached `libffi`/`glib`/`libslirp` static deps in `scripts/build_ios_deps.sh`, `ios/project.yml`, and `.github/workflows/ci.yml`, and added `CNTVCT_EL0` background-suspend offset compensation |
-| *(HEAD)* | Audit hardening pass: resolved P0/P1 VM exit RAM lifecycle (`_vmCreated`), `SFSafariViewController` HTTP(S)-only URL validation, `MetalDisplaySurfaceView` (`CAMetalLayer` without `MTKView` drawable contention), `fb_metal.m` outer `g_render_mutex` lock ordering, pinned upstream SHA `0071d697`, `REQUIRE_UPSTREAM=1` CI enforcement, concurrent `henge-xdg-open` OAuth relay + `EADDRINUSE` auto-dismiss, and sparse `hvsparse unpack` |
+| `e1c3e3f`–`65aec93` | First audit pass + TXM dual-mapped RX/RW pool acquisition (`henge_jit_acquire_pool` + `ios/Resources/henge-jit.js`) |
+| `97da5b2`–*(HEAD)* | Second 35-file audit pass: wrapped `winvm.h`/`share.h` in `extern "C"` for ObjC++ linkage, fixed 64-bit LE hex + `P0=690000e000000000` in `henge-jit.js`, zeroed `x0` before `brk #0x69`, added full `UIKeyInput`/`pressesBegan` HID keyboard + relative trackpad in `SessionView.swift`, added CAS monotonic `CNTVCT_EL0` clamp, parallelized `Makefile` `ios-lib`, pinned CI action SHAs, and hardened `henge-xdg-open`/`hvsparse.c` |
 
 ---
 
@@ -57,9 +58,9 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `ios/project.yml` | Complete (Phase 5.3) | XcodeGen spec (`iOS 26.0`, `Swift 6.0`, `C++20`) linking `libhengelinux.a` + `libslirp`/`libglib-2.0`/`libintl`/`libpcre2-8`/`libffi`, enabling Files app sharing, audio background mode, and `HengeLinuxJITExtension` |
 | `ios/JITExtension/Info.plist` | Complete | Explicit `Info.plist` with nested `NSExtension` dictionary (`com.apple.ar.viewer`) for PlugInKit / SideStore validation |
 | `ios/HengeLinux.entitlements` | Complete | Requests `com.apple.developer.kernel.increased-memory-limit` |
-| `ios/Sources/HengeVMBridge.{h,mm}` | Complete (Phase 5.2) | ObjC++/C++20 bridge connecting `HvWinVmConfig`, `CAMetalLayer`, xHCI HID keyboard/tablet, `LEDGER_NO_FOOTPRINT` RAM, and `10.0.2.4/.henge/` OAuth/clipboard APIs |
-| `ios/Sources/HengeLinuxApp.swift` | Complete (Phase 5.2) | Launcher UI with `ProcessInfo.physicalMemory` RAM cap, async JIT boot, `HengeVMBridge.startGuest`, and `10.0.2.4/.henge/open-url` `SafariSheetView` polling |
-| `ios/Sources/SessionView.swift` | Complete (Phase 5.2) | Hosts `MTKView` framebuffer attached to `HengeVMBridge`, clamshell trackpad gesture relay, and HID key modifier/function bar (`Esc`, `Tab`, `Ctrl`, `Alt`, `Super`, `F1/F2/F12`, `Ctrl+Alt+Del`) |
+| `ios/Sources/HengeVMBridge.{h,mm}` | Complete (Phase 5.3) | `NS_SWIFT_UI_ACTOR` ObjC++/C++20 bridge (`extern "C"` `winvm.h`/`share.h`), acquiring TXM RX/RW pool before RAM, cleaning up on VM exit, and detaching `CAMetalLayer` safely |
+| `ios/Sources/HengeLinuxApp.swift` | Complete (Phase 5.3) | Launcher UI with `ProcessInfo.physicalMemory` RAM cap, async JIT boot, VM exit return-to-launcher polling, `changeCount`-guarded clipboard sync, and HTTP(S)-only `SafariSheetView` |
+| `ios/Sources/SessionView.swift` | Complete (Phase 5.3) | Hosts `MetalDisplaySurfaceView` (`CAMetalLayer` + `UIKeyInput` on-screen keyboard + `pressesBegan` hardware HID keyboard + direct touch gestures), relative clamshell trackpad, and HID modifier/arrow/function bar |
 | `ios/Sources/HingeSensorView.swift` | Complete | Runtime `NSClassFromString("UIHingeInteraction")` check so single-screen iPhones boot straight into full-screen canvas while offering a manual Split Deck toggle |
 | `ios/Sources/MetalLifecycleGuard.swift` | Complete (P1 hardened) | Synchronous `NotificationCenter` `willResignActive`/`didBecomeActive` observers + `withRenderLock` serializing Metal drawables against UIKit suspension |
 | `ios/Sources/SelfDebugJITClient.swift` | Complete (P1 hardened) | Async activation state machine checking `henge_txm_is_ptraced()` + `henge_txm_is_cs_debugged()` and preserving blessed pool across VM reboots |
@@ -89,8 +90,9 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 1. **iPhoneOS SDK `<mach/mach_vm.h>`:** Public `iPhoneOS.sdk` headers fail compilation with `#error mach_vm.h unsupported.` Always use `<mach/mach.h>` instead.
 2. **macOS `_POSIX_C_SOURCE`:** Defining `_POSIX_C_SOURCE` on `__APPLE__` hides BSD `u_int`/`u_char`/`u_short` types required by `<sys/sysctl.h>` and `MAP_ANON`. Gate `_POSIX_C_SOURCE` with `#if !defined(__APPLE__)`.
 3. **XcodeGen `Info.plist`:** Always keep `GENERATE_INFOPLIST_FILE: YES` in `ios/project.yml` so `HengeLinux.app` and `HengeLinuxJITExtension.appex` emit valid `Info.plist` files.
-4. **`CAMetalLayer` Ownership & `fb_metal.m` Lock Order:** Host the guest display in `MetalDisplaySurfaceView` (`layerClass = CAMetalLayer.self`), never an unpaused `MTKView` (which steals drawables via its own 60 Hz `CADisplayLink`). In `fb_metal.m`, acquire `hengelinux_render_lock()` *outside* `os_unfair_lock` to preserve strict lock hierarchy.
-5. **SFSafariViewController & `xdg-open` URL Scheme Guard:** `SFSafariViewController(url:)` throws an uncatchable `NSInvalidArgumentException` for non-HTTP(S) schemes; enforce `http`/`https` + non-empty host in both `guest/henge-xdg-open` and `HengeVMBridge.mm` / `HengeLinuxApp.swift`.
+4. **`CAMetalLayer` Ownership & `fb_metal.m` Lock Order:** Host the guest display in `MetalDisplaySurfaceView` (`layerClass = CAMetalLayer.self`), never an unpaused `MTKView` (which steals drawables via its own 60 Hz `CADisplayLink`). In `fb_metal.m`, wrap `(void)tick` via method renaming to `_hengeUnlockedTick` so `hengelinux_render_lock()` is always acquired *outside* `os_unfair_lock` and released on every return path.
+5. **SFSafariViewController & `xdg-open` URL Scheme Guard:** `SFSafariViewController(url:)` throws an uncatchable `NSInvalidArgumentException` for non-HTTP(S) schemes; enforce `http`/`https` + non-empty host in `HengeVMBridge.mm` / `HengeLinuxApp.swift` and delegate non-HTTP(S) URIs/files in `guest/henge-xdg-open` to `/usr/bin/xdg-open`.
+6. **ObjC++ (`HengeVMBridge.mm`) C Header Linkage:** Upstream `winvm.h` and `share.h` omit `extern "C"`; always wrap them inside `extern "C" { ... }` when including from `.mm` files so linker symbols do not get C++-mangled.
 
 ---
 
@@ -106,9 +108,10 @@ We inspected `ammaarreshi/WindowsiOS` (`0071d6975287fd720b9046dfd3bd80b6f2aa765e
 
 ### Remaining Open Items (Tracked Until Resolved)
 - **[OPEN / Milestone 5.3 Hardware Check] Guest Image Provisioning & `HV_TLB_PAGE_BITS=12` vs `14`:** Run `make hvsparse && bash scripts/provision_archlinux_arm64.sh` on a Mac or Linux host, install Arch Linux onto `/dev/nvme0n1` with `console=tty0 console=ttyAMA0,115200`, run `sudo bash /path/to/guest/setup-arch-bridge.sh`, and verify on physical iPhone/iPad (`Files -> On My iPhone -> HengeLinux -> Machines/ArchLinux/`).
-- **[OPEN / Milestone 5.4] In-App `StikJIT` (`MPL-2.0`) + `idevice` (`MIT`) XPC Blessing:** `ios/JITExtension/JITExtensionHandler.swift` currently validates `pairing.plist` and returns `blessing_armed`; link `StikJIT.xcframework` + `idevice` to stream GDB RSP `brk #0xf00d` page blessing over `10.7.0.1` (`LocalDevVPN`) inside the `com.apple.ar.viewer` memory ceiling (~50–120 MB) without a tethered Mac.
+- **[OPEN / Milestone 5.4] In-App `StikJIT` (`MPL-2.0`) + `idevice` (`MIT`) XPC Blessing:** `ios/JITExtension/JITExtensionHandler.swift` currently validates `pairing.plist` and returns `blessing_armed`; link `StikJIT.xcframework` + `idevice` (using App Group `com.apple.security.application-groups` file access rather than large `NSExtensionItem` plist payloads) to stream GDB RSP `brk #0xf00d` page blessing over `10.7.0.1` (`LocalDevVPN`) inside the `com.apple.ar.viewer` memory ceiling (~50–120 MB) without a tethered Mac.
 - **[OPEN / Milestone 5.4] 3D VirtIO-GPU (`virtio-gpu-gl-pci`, `0x1af4:0x1050`):** Wire `virglrenderer` + `ANGLE (Metal)` behind `host/henge_virtio_gpu.{h,c}` for hardware-accelerated Wayland compositors (`Hyprland`, `Wayfire`, `Sway`) and `tctiSH`-style background VM state serialization.
-- **[OPEN / Release Hygiene] Free Apple ID Provisioning Profile Stripping:** SideStore/AltStore free-account signing automatically strips `com.apple.developer.kernel.increased-memory-limit` from the mobileprovision profile; `HengeVMBridge` already enforces a `2,048 MiB` RAM safety cap whenever `CS_DEBUGGED` / `LEDGER_NO_FOOTPRINT` is inactive.
+- **[OPEN / Performance & UX Polish] Inline JIT `CNTVCT_EL0` Offset & Live `UIHingeInteraction` Angle Delegate:** Optimize `translate_counter` in `core/translate.c` to subtract a `HvCpu`-resident suspend offset inline in ARM64 JIT (eliminating `hv_sysreg_mrs` helper exits on VDSO `clock_gettime`), and bind live `UIHingeInteraction` angle updates on foldable hardware.
+- **[OPEN / Upstream & Release Hygiene] Upstream `hvsparse.c` Bounds & SPDX Audit:** Audit `.upstream/WindowsiOS/host/hvsparse.c` for identical `virtual_size`/`block_count` overflow bounds as `tools/hvsparse.c`, confirm `GPL-2.0-or-later` SPDX headers across all upstream files, and verify SideStore/AltStore free-account signing (`2,048 MiB` untethered Jetsam cap).
 
 When continuing in a new chat window, **Milestone 5.3 engine, CI caching, and P0/P1 audit hardening are landed**. Start immediately with **Guest Provisioning & Milestone 5.4**:
 

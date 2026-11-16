@@ -23,25 +23,25 @@ import urllib.parse
 import urllib.request
 
 GATEWAY = "http://10.0.2.4/.henge"
-GUEST_NIC_IP = "10.0.2.15"
-OAUTH_DONE_PREFIXES = (
-    b"HTTP/1.0 200",
-    b"HTTP/1.1 200",
-    b"HTTP/1.0 201",
-    b"HTTP/1.1 201",
-    b"HTTP/1.0 204",
-    b"HTTP/1.1 204",
-    b"HTTP/1.0 301",
-    b"HTTP/1.1 301",
-    b"HTTP/1.0 302",
-    b"HTTP/1.1 302",
-    b"HTTP/1.0 303",
-    b"HTTP/1.1 303",
-    b"HTTP/1.0 307",
-    b"HTTP/1.1 307",
-    b"HTTP/1.0 308",
-    b"HTTP/1.1 308",
+DEFAULT_GUEST_NIC_IP = "10.0.2.15"
+OAUTH_DONE_RE = re.compile(
+    rb"^HTTP/(?:1\.[01]|2(?:\.0)?)\s+(?:200|201|202|204|301|302|303|307|308)\b",
+    re.IGNORECASE,
 )
+
+
+def resolve_guest_nic_ip() -> str:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("10.0.2.4", 80))
+        ip = probe.getsockname()[0]
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        pass
+    finally:
+        probe.close()
+    return DEFAULT_GUEST_NIC_IP
 
 
 def gateway_put(endpoint: str, payload: str = "") -> None:
@@ -85,16 +85,21 @@ def extract_loopback_port(target_url: str) -> int | None:
     return None
 
 
-def connect_loopback(port: int) -> socket.socket:
-    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-        sock = socket.socket(family, socket.SOCK_STREAM)
-        try:
-            sock.settimeout(2.0)
-            sock.connect((host, port))
-            sock.settimeout(None)
-            return sock
-        except OSError:
-            sock.close()
+def connect_loopback(port: int, wait_seconds: float = 3.0) -> socket.socket:
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            try:
+                sock.settimeout(1.0)
+                sock.connect((host, port))
+                sock.settimeout(None)
+                return sock
+            except OSError:
+                sock.close()
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
     raise ConnectionRefusedError(f"No loopback listener on port {port}")
 
 
@@ -112,10 +117,10 @@ def relay_stream(
             if not chunk:
                 break
             if is_response and not header_checked:
-                header_buf.extend(chunk[:32])
-                if len(header_buf) >= 12 or b"\n" in header_buf:
+                header_buf.extend(chunk[:48])
+                if len(header_buf) >= 16 or b"\n" in header_buf:
                     header_checked = True
-                    if bytes(header_buf).startswith(OAUTH_DONE_PREFIXES):
+                    if OAUTH_DONE_RE.match(bytes(header_buf)):
                         done_event.set()
             dst.sendall(chunk)
     except OSError:
@@ -175,6 +180,15 @@ def is_port_listening(port: int) -> bool:
     return False
 
 
+def wait_for_port_listener(port: int, timeout: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if is_port_listening(port):
+            return True
+        time.sleep(0.1)
+    return is_port_listening(port)
+
+
 def daemonize_background() -> None:
     """Double-fork and detach stdio so CLI callers (gh, gcloud, xdg-open) return 0 immediately."""
     pid = os.fork()
@@ -195,12 +209,19 @@ def daemonize_background() -> None:
 
 
 def run_oauth_bridge(port: int, url: str) -> None:
+    bind_ip = resolve_guest_nic_ip()
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.settimeout(180.0)
+    listener.settimeout(0.5)
     try:
-        listener.bind((GUEST_NIC_IP, port))
-        listener.listen(4)
+        try:
+            listener.bind((bind_ip, port))
+        except OSError as bind_exc:
+            if bind_exc.errno == errno.EADDRNOTAVAIL and bind_ip != "0.0.0.0":
+                listener.bind(("0.0.0.0", port))
+            else:
+                raise
+        listener.listen(8)
     except OSError as exc:
         listener.close()
         if exc.errno == errno.EADDRINUSE:
@@ -209,6 +230,7 @@ def run_oauth_bridge(port: int, url: str) -> None:
             gateway_put("expose-port", str(port))
             gateway_put("open-url", url)
             daemonize_background()
+            wait_for_port_listener(port, timeout=3.0)
             deadline = time.monotonic() + 180.0
             while time.monotonic() < deadline and is_port_listening(port):
                 time.sleep(0.4)
@@ -225,12 +247,13 @@ def run_oauth_bridge(port: int, url: str) -> None:
 
     done_event = threading.Event()
     workers: list[threading.Thread] = []
+    overall_deadline = time.monotonic() + 180.0
     try:
-        while not done_event.is_set():
+        while not done_event.is_set() and time.monotonic() < overall_deadline:
             try:
                 client, _ = listener.accept()
             except TimeoutError:
-                break
+                continue
             worker = threading.Thread(
                 target=handle_relay_client,
                 args=(client, port, done_event),
@@ -254,6 +277,8 @@ def main() -> int:
 
     target = sys.argv[1]
     if not is_allowed_http_url(target):
+        if os.path.isfile("/usr/bin/xdg-open") and os.access("/usr/bin/xdg-open", os.X_OK):
+            os.execv("/usr/bin/xdg-open", ["/usr/bin/xdg-open", *sys.argv[1:]])
         print(f"henge-xdg-open: ignoring unsupported non-HTTP(S) URI: {target}", file=sys.stderr)
         return 1
 
