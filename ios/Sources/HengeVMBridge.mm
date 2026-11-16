@@ -189,7 +189,9 @@ static void henge_on_vm_exit(int reason) {
         if (needsUnpack) {
             [fm removeItemAtURL:rawDiskURL error:nil];
             if (hv_sparse_unpack(sparseURL.path.fileSystemRepresentation,
-                                 rawDiskURL.path.fileSystemRepresentation) != 0) {
+                                 rawDiskURL.path.fileSystemRepresentation,
+                                 nullptr,
+                                 nullptr) != 0) {
                 [fm removeItemAtURL:rawDiskURL error:nil];
                 NSString *msg = @"Failed to unpack archlinux.hvsparse into sparse raw NVMe disk image.";
                 _statusText = msg;
