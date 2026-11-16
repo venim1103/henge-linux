@@ -55,7 +55,9 @@ final class SelfDebugJITClient: ObservableObject {
             return
         }
 
-        let status = String(cString: henge_jit_status_message())
+        var statusBuf = [CChar](repeating: 0, count: 256)
+        henge_jit_copy_status(&statusBuf, statusBuf.count)
+        let status = String(cString: statusBuf)
         if hasPairingFile {
             state = .fallbackUntethered(
                 reason: "\(status) · pairing.plist found (attach StikDebug with henge-jit.js; in-app XPC lands in Milestone 5.4)."

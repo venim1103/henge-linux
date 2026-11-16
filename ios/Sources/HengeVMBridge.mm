@@ -10,8 +10,10 @@
 
 #if __has_include("winvm.h") && __has_include("share.h")
 #define HENGE_HAS_UPSTREAM_ENGINE 1
+extern "C" {
 #include "share.h"
 #include "winvm.h"
+}
 #else
 #define HENGE_HAS_UPSTREAM_ENGINE 0
 #endif
@@ -21,6 +23,7 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
 @interface HengeVMBridge () {
     BOOL _running;
     BOOL _vmCreated;
+    uint32_t _activeRamMiB;
     NSString *_statusText;
     CAMetalLayer *__weak _displayLayer;
     void *_guestRam;
@@ -54,6 +57,7 @@ static void henge_on_vm_exit(int reason) {
     if (self) {
         _running = NO;
         _vmCreated = NO;
+        _activeRamMiB = 0;
         _statusText = self.isEngineLinked
             ? @"Engine linked · Ready"
             : @"Host substrate ready (run sync_upstream.sh + build_ios_deps.sh for full VM)";
@@ -75,6 +79,10 @@ static void henge_on_vm_exit(int reason) {
     return _running;
 }
 
+- (uint32_t)activeRamMiB {
+    return _activeRamMiB;
+}
+
 - (NSString *)statusText {
     return _statusText;
 }
@@ -90,8 +98,8 @@ static void henge_on_vm_exit(int reason) {
 - (void)attachDisplayLayer:(nullable CAMetalLayer *)layer {
     _displayLayer = layer;
 #if HENGE_HAS_UPSTREAM_ENGINE
-    if (_running && layer != nil) {
-        hv_winvm_set_display_layer((__bridge void *)layer);
+    if (_vmCreated) {
+        hv_winvm_set_display_layer(layer != nil ? (__bridge void *)layer : nullptr);
     }
 #endif
 }
@@ -152,6 +160,26 @@ static void henge_on_vm_exit(int reason) {
         return NO;
     }
 
+#if HENGE_HAS_UPSTREAM_ENGINE
+    /* Acquire TXM dual-mapped RX/RW JIT pool BEFORE mapping multi-GB guest RAM
+     * so virtual address space around RX remains uncrowded for vm_remap. */
+    HengeJitPool jitPool;
+    std::memset(&jitPool, 0, sizeof(jitPool));
+    if (!henge_jit_acquire_pool((size_t)HENGE_DEFAULT_JIT_POOL_BYTES, true, &jitPool)) {
+        char jitErr[256] = {0};
+        henge_jit_copy_status(jitErr, sizeof(jitErr));
+        NSString *msg = (jitErr[0] != '\0')
+            ? [NSString stringWithFormat:@"TXM JIT pool not active (%s). Attach StikDebug (henge-jit.js) or LLDB, then tap Boot.", jitErr]
+            : @"TXM JIT pool not active. Attach StikDebug (henge-jit.js) or LLDB, then tap Boot.";
+        _statusText = msg;
+        if (error) {
+            *error = [NSError errorWithDomain:HengeVMErrorDomain
+                                         code:1006
+                                     userInfo:@{NSLocalizedDescriptionKey: msg}];
+        }
+        return NO;
+    }
+
     uint32_t cappedRequestMiB = ramMiB;
     if (!henge_txm_is_cs_debugged() && cappedRequestMiB > 2048U) {
         cappedRequestMiB = 2048U;
@@ -192,24 +220,6 @@ static void henge_on_vm_exit(int reason) {
         return NO;
     }
 
-#if HENGE_HAS_UPSTREAM_ENGINE
-    HengeJitPool jitPool;
-    std::memset(&jitPool, 0, sizeof(jitPool));
-    if (!henge_jit_acquire_pool((size_t)HENGE_DEFAULT_JIT_POOL_BYTES, true, &jitPool)) {
-        henge_free_ledger_exempt_ram(ramPtr, (size_t)alignedBytes);
-        const char *jitErr = henge_jit_status_message();
-        NSString *msg = (jitErr && jitErr[0] != '\0')
-            ? [NSString stringWithFormat:@"TXM JIT pool not active (%s). Attach StikDebug (henge-jit.js) or LLDB, then tap Boot.", jitErr]
-            : @"TXM JIT pool not active. Attach StikDebug (henge-jit.js) or LLDB, then tap Boot.";
-        _statusText = msg;
-        if (error) {
-            *error = [NSError errorWithDomain:HengeVMErrorDomain
-                                         code:1006
-                                     userInfo:@{NSLocalizedDescriptionKey: msg}];
-        }
-        return NO;
-    }
-
     HvWinVmConfig cfg;
     std::memset(&cfg, 0, sizeof(cfg));
     cfg.code_fd = codeURL.path.UTF8String;
@@ -243,6 +253,7 @@ static void henge_on_vm_exit(int reason) {
 
     _guestRam = ramPtr;
     _guestRamBytes = (size_t)alignedBytes;
+    _activeRamMiB = (uint32_t)cfg.ram_mb;
     _vmCreated = YES;
     _running = YES;
     _statusText = [NSString stringWithFormat:@"Running · %llu MiB (%@)",
@@ -256,7 +267,6 @@ static void henge_on_vm_exit(int reason) {
     hv_winvm_start(1, henge_on_vm_exit);
     return YES;
 #else
-    henge_free_ledger_exempt_ram(ramPtr, (size_t)alignedBytes);
     NSString *msg = @"Upstream WindowsiOS engine not compiled into libhengelinux.a yet (run sync_upstream.sh + build_ios_deps.sh).";
     _statusText = msg;
     if (error) {
@@ -271,12 +281,14 @@ static void henge_on_vm_exit(int reason) {
 - (void)stopGuest {
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_vmCreated) {
+        hv_winvm_set_display_layer(nullptr);
         hv_winvm_stop();
         hv_winvm_flush_disks();
     }
 #endif
     _running = NO;
     _vmCreated = NO;
+    _activeRamMiB = 0;
     if (_guestRam != nullptr && _guestRamBytes > 0) {
         henge_free_ledger_exempt_ram(_guestRam, _guestRamBytes);
         _guestRam = nullptr;
@@ -286,14 +298,15 @@ static void henge_on_vm_exit(int reason) {
 }
 
 - (void)handleEngineExitReason:(int)reason {
-    _running = NO;
 #if HENGE_HAS_UPSTREAM_ENGINE
     const char *name = hv_winvm_reason_name(reason);
-    _statusText = [NSString stringWithFormat:@"Guest halted (%s)", name ? name : "exit"];
+    NSString *exitMsg = [NSString stringWithFormat:@"Guest halted (%s)", name ? name : "exit"];
 #else
     (void)reason;
-    _statusText = @"Guest halted";
+    NSString *exitMsg = @"Guest halted";
 #endif
+    [self stopGuest];
+    _statusText = exitMsg;
 }
 
 - (void)sendHidKeyUsage:(uint8_t)usage pressed:(BOOL)pressed {

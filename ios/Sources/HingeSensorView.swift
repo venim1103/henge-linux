@@ -20,14 +20,16 @@ struct HingeSensorView: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
 
-            if !Self.hasHardwareHingeSensor {
-                Toggle("Split Deck", isOn: $forceClamshellPreview)
-                    .toggleStyle(.button)
-                    .controlSize(.mini)
-                    .onChange(of: forceClamshellPreview) { _, enabled in
-                        posture = enabled ? .clamshell(angleDegrees: 115.0) : .singleScreen
+            Toggle("Split Deck", isOn: $forceClamshellPreview)
+                .toggleStyle(.button)
+                .controlSize(.mini)
+                .onChange(of: forceClamshellPreview) { _, enabled in
+                    if enabled {
+                        posture = .clamshell(angleDegrees: 115.0)
+                    } else {
+                        posture = Self.hasHardwareHingeSensor ? .openStudio : .singleScreen
                     }
-            }
+                }
         }
         .onAppear {
             if Self.hasHardwareHingeSensor {

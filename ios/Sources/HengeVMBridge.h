@@ -12,16 +12,18 @@ NS_ASSUME_NONNULL_BEGIN
 /// Objective-C/C++ runtime bridge connecting SwiftUI (`HengeLinuxApp`,
 /// `SessionView`) to the `HengeVM` / `WindowsiOS` engine, `hvsparse` block
 /// device, Metal presenter, xHCI HID input, and `10.0.2.4/.henge/` gateway.
+NS_SWIFT_UI_ACTOR
 @interface HengeVMBridge : NSObject
 
 @property (class, nonatomic, readonly) HengeVMBridge *shared;
 
 @property (nonatomic, readonly) BOOL isEngineLinked;
 @property (nonatomic, readonly) BOOL isRunning;
+@property (nonatomic, readonly) uint32_t activeRamMiB;
 @property (nonatomic, readonly, copy) NSString *statusText;
 @property (nonatomic, readonly) uint64_t framesPresented;
 
-/// Attach or detach the `MTKView`'s `CAMetalLayer` for UEFI GOP / framebuffer output.
+/// Attach or detach the `MetalDisplaySurfaceView` `CAMetalLayer` for UEFI GOP / framebuffer output.
 - (void)attachDisplayLayer:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(attachDisplayLayer(_:));
 
 /// Start the Arch Linux AArch64 VM with `ramMiB` and `cpuCount` using guest

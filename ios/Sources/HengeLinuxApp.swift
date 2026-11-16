@@ -46,6 +46,7 @@ struct HengeLinuxApp: App {
     @State private var posture: DevicePosture = .singleScreen
     @State private var safariURL: IdentifiableURL?
     @State private var lastPushedClipboard: String = ""
+    @State private var lastPasteboardChangeCount: Int = -1
 
     private let bridgePollTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
@@ -74,6 +75,12 @@ struct HengeLinuxApp: App {
             }
             .onReceive(bridgePollTimer) { _ in
                 guard isRunning else { return }
+                if !HengeVMBridge.shared.isRunning {
+                    isRunning = false
+                    safariURL = nil
+                    jitClient.prepareForReboot()
+                    return
+                }
                 if let pending = HengeVMBridge.shared.takePendingOpenURL(),
                    let url = URL(string: pending),
                    let scheme = url.scheme?.lowercased(),
@@ -87,10 +94,17 @@ struct HengeLinuxApp: App {
                 if let guestClip = HengeVMBridge.shared.takeGuestClipboard(), !guestClip.isEmpty {
                     lastPushedClipboard = guestClip
                     UIPasteboard.general.string = guestClip
+                    lastPasteboardChangeCount = UIPasteboard.general.changeCount
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-                guard isRunning, let hostClip = UIPasteboard.general.string, !hostClip.isEmpty, hostClip != lastPushedClipboard else {
+                guard isRunning else { return }
+                let pb = UIPasteboard.general
+                guard pb.changeCount != lastPasteboardChangeCount, pb.hasStrings else {
+                    return
+                }
+                lastPasteboardChangeCount = pb.changeCount
+                guard let hostClip = pb.string, !hostClip.isEmpty, hostClip != lastPushedClipboard else {
                     return
                 }
                 lastPushedClipboard = hostClip
@@ -166,7 +180,12 @@ struct HengeLinuxApp: App {
                                     cpuCount: Int32(selectedProfile.cpuCount),
                                     gpuBackend: gpuMode
                                 )
-                                bootWarning = nil
+                                let actualMiB = HengeVMBridge.shared.activeRamMiB
+                                if actualMiB > 0 && actualMiB < effectiveRamMiB {
+                                    bootWarning = "Untethered Jetsam guard clamped RAM from \(effectiveRamMiB) MiB to \(actualMiB) MiB."
+                                } else {
+                                    bootWarning = nil
+                                }
                                 bootErrorAlert = nil
                                 isRunning = true
                             } catch {
