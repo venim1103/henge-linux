@@ -240,7 +240,14 @@ static void test_txm_jit_bounds_and_blessing(void) {
     char status_buf[128] = {0};
     henge_jit_copy_status(status_buf, sizeof(status_buf));
     HENGE_CHECK(status_buf[0] != '\0');
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     HENGE_CHECK(henge_jit_status_message() != NULL);
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
     HengeJitPool queried_pool;
     HENGE_CHECK(henge_jit_current_pool(&queried_pool) == false);
     HENGE_CHECK(henge_jit_acquire_pool(0U, true, &queried_pool) == false);
