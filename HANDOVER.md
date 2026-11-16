@@ -33,7 +33,8 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `9ec1bf9` | Added `scripts/apply_upstream_patches.py`, updated `scripts/sync_upstream.sh`, and wired upstream `WindowsiOS` `core/host/devices` compilation into `Makefile` (`ios-lib`) |
 | `ee0c18b` | Implemented `ios/Sources/HengeVMBridge.{h,mm}` and wired `SessionView.swift` + `HengeLinuxApp.swift` to `CAMetalLayer`, xHCI HID, and `10.0.2.4/.henge/` OAuth sheet polling |
 | `c7c0374` | Fixed Swift `attachDisplayLayer` signature and `fb_metal.m` patch anchor |
-| *(HEAD)* | Milestone 5.3: wired cached `libffi`/`glib`/`libslirp` static deps in `scripts/build_ios_deps.sh`, `ios/project.yml`, and `.github/workflows/ci.yml` so `latest-ipa` embeds the live `HengeVM` engine, and added `CNTVCT_EL0` background-suspend offset compensation (`henge_platform.{h,c}` + `apply_upstream_patches.py`) |
+| `7e765a0` | Milestone 5.3: wired cached `libffi`/`glib`/`libslirp` static deps in `scripts/build_ios_deps.sh`, `ios/project.yml`, and `.github/workflows/ci.yml`, and added `CNTVCT_EL0` background-suspend offset compensation |
+| *(HEAD)* | Audit hardening pass: resolved P0/P1 VM exit RAM lifecycle (`_vmCreated`), `SFSafariViewController` HTTP(S)-only URL validation, `MetalDisplaySurfaceView` (`CAMetalLayer` without `MTKView` drawable contention), `fb_metal.m` outer `g_render_mutex` lock ordering, pinned upstream SHA `0071d697`, `REQUIRE_UPSTREAM=1` CI enforcement, concurrent `henge-xdg-open` OAuth relay + `EADDRINUSE` auto-dismiss, and sparse `hvsparse unpack` |
 
 ---
 
@@ -88,19 +89,28 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 1. **iPhoneOS SDK `<mach/mach_vm.h>`:** Public `iPhoneOS.sdk` headers fail compilation with `#error mach_vm.h unsupported.` Always use `<mach/mach.h>` instead.
 2. **macOS `_POSIX_C_SOURCE`:** Defining `_POSIX_C_SOURCE` on `__APPLE__` hides BSD `u_int`/`u_char`/`u_short` types required by `<sys/sysctl.h>` and `MAP_ANON`. Gate `_POSIX_C_SOURCE` with `#if !defined(__APPLE__)`.
 3. **XcodeGen `Info.plist`:** Always keep `GENERATE_INFOPLIST_FILE: YES` in `ios/project.yml` so `HengeLinux.app` and `HengeLinuxJITExtension.appex` emit valid `Info.plist` files.
+4. **`CAMetalLayer` Ownership & `fb_metal.m` Lock Order:** Host the guest display in `MetalDisplaySurfaceView` (`layerClass = CAMetalLayer.self`), never an unpaused `MTKView` (which steals drawables via its own 60 Hz `CADisplayLink`). In `fb_metal.m`, acquire `hengelinux_render_lock()` *outside* `os_unfair_lock` to preserve strict lock hierarchy.
+5. **SFSafariViewController & `xdg-open` URL Scheme Guard:** `SFSafariViewController(url:)` throws an uncatchable `NSInvalidArgumentException` for non-HTTP(S) schemes; enforce `http`/`https` + non-empty host in both `guest/henge-xdg-open` and `HengeVMBridge.mm` / `HengeLinuxApp.swift`.
 
 ---
 
-## 4. Verified Upstream `WindowsiOS` Layout & Next Steps (Phase 5 Bring-Up)
+## 4. Verified Upstream `WindowsiOS` Layout & Open Audit / Milestone 5.4 Tracker
 
-We inspected `ammaarreshi/WindowsiOS` in CI (`#43729534994`–`#43770680469`) and confirmed its exact module layout, Linux `arm64` MMU/ID-register compatibility, and patch coordinates:
+We inspected `ammaarreshi/WindowsiOS` (`0071d6975287fd720b9046dfd3bd80b6f2aa765e`) and confirmed its exact module layout, Linux `arm64` MMU/ID-register compatibility, and patch coordinates:
 - **Core DBT & MMU (`core/`):** `classify.c`, `operands.c`, `translate.c`, `dispatch.c`, `mmu.c` (compiled with `-mgeneral-regs-only`), `memop.c`, `exception.c`, `sysreg.c`, `machine.c`.
   - *Verified in `core/mmu.c:169-187`:* `current_asid()` and `hv_mmu_ukey()` already inspect `TCR_EL1.A1` (bit 22) and `TCR_EL1.AS` (bit 36) dynamically, so Linux `A1=0` (`TTBR0_EL1`) ASIDs and `ASID=0` KPTI transitions work without modification.
   - *Verified in `core/sysreg.c:18-25`:* `ID_AA64ISAR1` (`0x0000001100211001ull`) and `ID_AA64PFR0` (`0x1100000001110011ull`) already mask out PAuth (`APA`/`API`/`GPA`), SVE, and MTE, preventing `APIAKeyLo_EL1` MSR trap storms on Linux context switches.
+  - *Verified in `devices/timer.c:14`:* `hv_timer_update()` reads `hv_counter()` from `core/sysreg.c`, which automatically inherits `hengelinux_compensated_counter(mach_absolute_time())` so virtual/physical timer deadlines stay synchronized across iOS background suspends.
 - **Host Primitives (`host/`):** `jit_region.c`, `enter.S`, `disk.c`, `winvm.c`, `net_slirp.c`, `share.c`, `audio_mac.c`, `hvsparse.c`.
 - **Virtual Devices (`devices/`):** `fb_metal.m`, `nvme.c`, `pcie.c`, `gicv3.c`, `xhci.c`, `hda.c`, `virtio_net.c`, `acpi.c`, `fdt.c`, `fw_cfg.c`, `pflash.c`, `pl011.c`, `pl031.c`, `pl061.c`, `timer.c`, `virtio.c`, `virtio_blk.c`, `virtio_input.c`, `virtio_snd.c`, `winvirt.c`.
 
-When continuing in a new chat window, **Milestone 5.3 engine & CI wiring is landed** (`libffi`/`glib`/`libslirp` cached in CI, full `HengeVM` engine embedded in `latest-ipa`, and `CNTVCT_EL0` background-suspend offset compensation active). Start immediately with **Guest Provisioning & Milestone 5.4**:
+### Remaining Open Items (Tracked Until Resolved)
+- **[OPEN / Milestone 5.3 Hardware Check] Guest Image Provisioning & `HV_TLB_PAGE_BITS=12` vs `14`:** Run `make hvsparse && bash scripts/provision_archlinux_arm64.sh` on a Mac or Linux host, install Arch Linux onto `/dev/nvme0n1` with `console=tty0 console=ttyAMA0,115200`, run `sudo bash /path/to/guest/setup-arch-bridge.sh`, and verify on physical iPhone/iPad (`Files -> On My iPhone -> HengeLinux -> Machines/ArchLinux/`).
+- **[OPEN / Milestone 5.4] In-App `StikJIT` (`MPL-2.0`) + `idevice` (`MIT`) XPC Blessing:** `ios/JITExtension/JITExtensionHandler.swift` currently validates `pairing.plist` and returns `blessing_armed`; link `StikJIT.xcframework` + `idevice` to stream GDB RSP `brk #0xf00d` page blessing over `10.7.0.1` (`LocalDevVPN`) inside the `com.apple.ar.viewer` memory ceiling (~50–120 MB) without a tethered Mac.
+- **[OPEN / Milestone 5.4] 3D VirtIO-GPU (`virtio-gpu-gl-pci`, `0x1af4:0x1050`):** Wire `virglrenderer` + `ANGLE (Metal)` behind `host/henge_virtio_gpu.{h,c}` for hardware-accelerated Wayland compositors (`Hyprland`, `Wayfire`, `Sway`) and `tctiSH`-style background VM state serialization.
+- **[OPEN / Release Hygiene] Free Apple ID Provisioning Profile Stripping:** SideStore/AltStore free-account signing automatically strips `com.apple.developer.kernel.increased-memory-limit` from the mobileprovision profile; `HengeVMBridge` already enforces a `2,048 MiB` RAM safety cap whenever `CS_DEBUGGED` / `LEDGER_NO_FOOTPRINT` is inactive.
+
+When continuing in a new chat window, **Milestone 5.3 engine, CI caching, and P0/P1 audit hardening are landed**. Start immediately with **Guest Provisioning & Milestone 5.4**:
 
 1. **Provision & Boot Arch Linux AArch64 Image (Milestone 5.3 Hardware/Guest Validation):**
    - Run `make hvsparse && bash scripts/provision_archlinux_arm64.sh` on a Mac or Linux host, install Arch Linux via Archboot setup onto `/dev/nvme0n1`, run `sudo bash /path/to/guest/setup-arch-bridge.sh` inside the guest, and copy `archlinux.hvsparse`, `code.fd`, and `vars.fd` into **Files -> On My iPhone -> HengeLinux -> Machines/ArchLinux/**.

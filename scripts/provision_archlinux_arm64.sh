@@ -64,20 +64,37 @@ if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
     exit 1
 fi
 
+create_sparse_raw_file() {
+    local dst="$1"
+    local size_spec="$2"
+    if command -v qemu-img >/dev/null 2>&1; then
+        qemu-img create -f raw "$dst" "$size_spec" >/dev/null
+    elif command -v truncate >/dev/null 2>&1; then
+        truncate -s "$size_spec" "$dst"
+    else
+        echo "[provision] Neither qemu-img nor truncate found to create $dst" >&2
+        exit 1
+    fi
+}
+
 mkdir -p "$WORK_DIR"
 
 if [ ! -f "$WORK_DIR/code.fd" ]; then
     cp "$EDK2_CODE" "$WORK_DIR/code.fd"
-    truncate -s 64M "$WORK_DIR/code.fd"
+    if command -v qemu-img >/dev/null 2>&1; then
+        qemu-img resize -f raw "$WORK_DIR/code.fd" 64M >/dev/null
+    else
+        truncate -s 64M "$WORK_DIR/code.fd"
+    fi
 fi
 
 if [ ! -f "$WORK_DIR/vars.fd" ]; then
-    truncate -s 64M "$WORK_DIR/vars.fd"
+    create_sparse_raw_file "$WORK_DIR/vars.fd" 64M
 fi
 
 if [ ! -f "$WORK_DIR/archlinux.img" ]; then
     echo "[provision] Creating ${DISK_SIZE_GB} GiB raw NVMe image at $WORK_DIR/archlinux.img"
-    truncate -s "${DISK_SIZE_GB}G" "$WORK_DIR/archlinux.img"
+    create_sparse_raw_file "$WORK_DIR/archlinux.img" "${DISK_SIZE_GB}G"
 fi
 
 ISO_PATH="$WORK_DIR/archboot-latest-aarch64.iso"
@@ -92,7 +109,8 @@ if [ ! -f "$ISO_PATH" ]; then
         exit 1
     fi
     echo "[provision] Downloading $ARCHBOOT_BASE_URL/$ISO_NAME -> $ISO_PATH"
-    curl -fL "$ARCHBOOT_BASE_URL/$ISO_NAME" -o "$ISO_PATH"
+    curl -fL "$ARCHBOOT_BASE_URL/$ISO_NAME" -o "$ISO_PATH.part"
+    mv "$ISO_PATH.part" "$ISO_PATH"
 fi
 
 ACCEL_FLAG="-accel tcg"
@@ -104,7 +122,7 @@ else
     ACCEL_FLAG="-accel tcg -cpu cortex-a76"
 fi
 
-echo "[provision] Booting Archboot installer (run 'setup' inside guest to install to /dev/nvme0n1, then poweroff)..."
+echo "[provision] Booting Archboot installer over serial console (run 'setup' inside guest to install to /dev/nvme0n1, ensure kernel cmdline includes 'console=tty0 console=ttyAMA0,115200', then poweroff)..."
 qemu-system-aarch64 \
     -M virt,gic-version=3,acpi=on \
     $ACCEL_FLAG \
@@ -119,10 +137,6 @@ qemu-system-aarch64 \
     -device scsi-cd,drive=cdrom \
     -device virtio-net-pci,netdev=net0 \
     -netdev user,id=net0 \
-    -device qemu-xhci \
-    -device usb-kbd \
-    -device usb-tablet \
-    -device ramfb \
     -nographic
 
 if [ -x "./build/hvsparse" ]; then

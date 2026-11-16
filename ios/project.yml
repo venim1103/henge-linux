@@ -14,9 +14,10 @@ settings:
     CLANG_C_LANGUAGE_STANDARD: c11
     CLANG_CXX_LANGUAGE_STANDARD: c++20
     GENERATE_INFOPLIST_FILE: YES
+    HV_TLB_PAGE_BITS: "12"
     GCC_PREPROCESSOR_DEFINITIONS:
       - "$(inherited)"
-      - "HV_TLB_PAGE_BITS=12"
+      - "HV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS)"
     HEADER_SEARCH_PATHS:
       - "$(inherited)"
       - "$(SRCROOT)/../host"

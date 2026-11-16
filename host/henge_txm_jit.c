@@ -165,11 +165,14 @@ void *henge_alloc_ledger_exempt_ram(size_t size, bool *out_ledger_exempt) {
         }
 
         vm_address_t mapped_addr = 0;
+        vm_address_t align_mask = ((size & ((2ULL * 1024ULL * 1024ULL) - 1ULL)) == 0U)
+            ? (vm_address_t)((2ULL * 1024ULL * 1024ULL) - 1ULL)
+            : (vm_address_t)(HENGE_HOST_PAGE_SIZE - 1ULL);
         kern_return_t map_kr = vm_map(
             mach_task_self(),
             &mapped_addr,
             (vm_size_t)size,
-            (vm_address_t)(HENGE_HOST_PAGE_SIZE - 1ULL),
+            align_mask,
             VM_FLAGS_ANYWHERE,
             mem_entry,
             0,
@@ -196,7 +199,7 @@ void *henge_alloc_ledger_exempt_ram(size_t size, bool *out_ledger_exempt) {
 }
 
 void henge_free_ledger_exempt_ram(void *ptr, size_t size) {
-    if (ptr == NULL || size == 0U) {
+    if (ptr == NULL || size == 0U || (size & (HENGE_HOST_PAGE_SIZE - 1ULL)) != 0U) {
         return;
     }
 #if defined(__APPLE__)

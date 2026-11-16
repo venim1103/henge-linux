@@ -52,6 +52,8 @@ if [ -x ".upstream/WindowsiOS/scripts/build_ios_deps.sh" ]; then
     echo "[deps] Delegating to .upstream/WindowsiOS/scripts/build_ios_deps.sh (python3=$PYTHON3_BIN)"
     (
         cd .upstream/WindowsiOS
+        PATCHED_SCRIPT="scripts/.build_ios_deps.patched.sh"
+        trap 'rm -f "$PATCHED_SCRIPT"' EXIT
         python3 -c '
 from pathlib import Path
 import sys
@@ -59,9 +61,10 @@ p = Path("scripts/build_ios_deps.sh")
 txt = p.read_text(encoding="utf-8")
 txt = txt.replace("/opt/homebrew/bin/python3", sys.argv[1])
 txt = txt.replace("export PATH=\"/opt/homebrew/bin:", f"export PATH=\"{sys.argv[2]}:/opt/homebrew/bin:")
-p.write_text(txt, encoding="utf-8")
-' "$PYTHON3_BIN" "$BREW_PREFIX/bin"
-        BREW_PREFIX="$BREW_PREFIX" ./scripts/build_ios_deps.sh
+Path(sys.argv[3]).write_text(txt, encoding="utf-8")
+' "$PYTHON3_BIN" "$BREW_PREFIX/bin" "$PATCHED_SCRIPT"
+        chmod +x "$PATCHED_SCRIPT"
+        BREW_PREFIX="$BREW_PREFIX" "./$PATCHED_SCRIPT"
 
         # Ensure GLib headers (if built in sysroot) are staged alongside slirp headers
         if [ -d "work/ios_deps_build/sysroot/include/glib-2.0" ]; then

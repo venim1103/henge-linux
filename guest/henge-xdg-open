@@ -57,20 +57,31 @@ def gateway_put(endpoint: str, payload: str = "") -> None:
         pass
 
 
+def is_allowed_http_url(target_url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(target_url)
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in ("http", "https") and bool(parsed.hostname)
+
+
 def extract_loopback_port(target_url: str) -> int | None:
     parsed = urllib.parse.urlparse(target_url)
     if parsed.hostname in ("localhost", "127.0.0.1", "::1") and parsed.port is not None:
-        return int(parsed.port)
+        port = int(parsed.port)
+        return port if 1 <= port <= 65535 else None
 
     params = urllib.parse.parse_qs(parsed.query)
-    for key in ("redirect_uri", "redirect_url", "callback", "state"):
+    for key in ("redirect_uri", "redirect_url", "callback"):
         for val in params.get(key, []):
             match = re.search(
                 r"https?://(?:localhost|127\.0\.0\.1|\[::1\]):(\d{2,5})",
                 urllib.parse.unquote(val),
             )
             if match:
-                return int(match.group(1))
+                port = int(match.group(1))
+                if 1 <= port <= 65535:
+                    return port
     return None
 
 
@@ -93,15 +104,19 @@ def relay_stream(
     done_event: threading.Event,
     is_response: bool = False,
 ) -> None:
-    first_chunk = True
+    header_buf = bytearray()
+    header_checked = False
     try:
         while True:
             chunk = src.recv(4096)
             if not chunk:
                 break
-            if is_response and first_chunk and chunk.startswith(OAUTH_DONE_PREFIXES):
-                done_event.set()
-            first_chunk = False
+            if is_response and not header_checked:
+                header_buf.extend(chunk[:32])
+                if len(header_buf) >= 12 or b"\n" in header_buf:
+                    header_checked = True
+                    if bytes(header_buf).startswith(OAUTH_DONE_PREFIXES):
+                        done_event.set()
             dst.sendall(chunk)
     except OSError:
         pass
@@ -110,6 +125,54 @@ def relay_stream(
             dst.shutdown(socket.SHUT_WR)
         except OSError:
             pass
+
+
+def handle_relay_client(client: socket.socket, port: int, done_event: threading.Event) -> None:
+    upstream: socket.socket | None = None
+    try:
+        client.settimeout(30.0)
+        upstream = connect_loopback(port)
+        upstream.settimeout(30.0)
+        t1 = threading.Thread(
+            target=relay_stream,
+            args=(client, upstream, done_event, False),
+            daemon=True,
+        )
+        t2 = threading.Thread(
+            target=relay_stream,
+            args=(upstream, client, done_event, True),
+            daemon=True,
+        )
+        t1.start()
+        t2.start()
+        t1.join(timeout=30.0)
+        t2.join(timeout=30.0)
+    except OSError:
+        pass
+    finally:
+        try:
+            client.close()
+        except OSError:
+            pass
+        if upstream is not None:
+            try:
+                upstream.close()
+            except OSError:
+                pass
+
+
+def is_port_listening(port: int) -> bool:
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        probe = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(0.25)
+            if probe.connect_ex((host, port)) == 0:
+                return True
+        except OSError:
+            pass
+        finally:
+            probe.close()
+    return False
 
 
 def daemonize_background() -> None:
@@ -141,8 +204,16 @@ def run_oauth_bridge(port: int, url: str) -> None:
     except OSError as exc:
         listener.close()
         if exc.errno == errno.EADDRINUSE:
-            # Guest listener already bound 0.0.0.0/[::] on this port; expose via libslirp.
+            # Guest listener already bound 0.0.0.0/[::] on this port; expose via libslirp
+            # and wait in background until the one-shot OAuth listener closes to dismiss Safari.
             gateway_put("expose-port", str(port))
+            gateway_put("open-url", url)
+            daemonize_background()
+            deadline = time.monotonic() + 180.0
+            while time.monotonic() < deadline and is_port_listening(port):
+                time.sleep(0.4)
+            gateway_put("oauth-done", str(port))
+            return
         gateway_put("open-url", url)
         return
 
@@ -153,33 +224,22 @@ def run_oauth_bridge(port: int, url: str) -> None:
     daemonize_background()
 
     done_event = threading.Event()
+    workers: list[threading.Thread] = []
     try:
         while not done_event.is_set():
             try:
                 client, _ = listener.accept()
             except TimeoutError:
                 break
-            try:
-                upstream = connect_loopback(port)
-            except OSError:
-                client.close()
-                continue
-            t1 = threading.Thread(
-                target=relay_stream,
-                args=(client, upstream, done_event, False),
+            worker = threading.Thread(
+                target=handle_relay_client,
+                args=(client, port, done_event),
                 daemon=True,
             )
-            t2 = threading.Thread(
-                target=relay_stream,
-                args=(upstream, client, done_event, True),
-                daemon=True,
-            )
-            t1.start()
-            t2.start()
-            t1.join(timeout=5.0)
-            t2.join(timeout=5.0)
-            client.close()
-            upstream.close()
+            worker.start()
+            workers.append(worker)
+        for worker in workers:
+            worker.join(timeout=2.0)
     finally:
         listener.close()
         if done_event.is_set():
@@ -193,6 +253,10 @@ def main() -> int:
         return 2
 
     target = sys.argv[1]
+    if not is_allowed_http_url(target):
+        print(f"henge-xdg-open: ignoring unsupported non-HTTP(S) URI: {target}", file=sys.stderr)
+        return 1
+
     port = extract_loopback_port(target)
     if port is not None:
         run_oauth_bridge(port, target)

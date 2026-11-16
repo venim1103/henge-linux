@@ -20,6 +20,7 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
 
 @interface HengeVMBridge () {
     BOOL _running;
+    BOOL _vmCreated;
     NSString *_statusText;
     CAMetalLayer *__weak _displayLayer;
     void *_guestRam;
@@ -52,6 +53,7 @@ static void henge_on_vm_exit(int reason) {
     self = [super init];
     if (self) {
         _running = NO;
+        _vmCreated = NO;
         _statusText = self.isEngineLinked
             ? @"Engine linked · Ready"
             : @"Host substrate ready (run sync_upstream.sh + build_ios_deps.sh for full VM)";
@@ -110,6 +112,9 @@ static void henge_on_vm_exit(int reason) {
     if (_running) {
         return YES;
     }
+    if (_vmCreated || _guestRam != nullptr) {
+        [self stopGuest];
+    }
 
     hengelinux_reset_suspend_counter();
 
@@ -147,7 +152,12 @@ static void henge_on_vm_exit(int reason) {
         return NO;
     }
 
-    uint64_t alignedBytes = henge_align_guest_ram_bytes(ramMiB, 8192U);
+    uint32_t cappedRequestMiB = ramMiB;
+    if (!henge_txm_is_cs_debugged() && cappedRequestMiB > 2048U) {
+        cappedRequestMiB = 2048U;
+    }
+
+    uint64_t alignedBytes = henge_align_guest_ram_bytes(cappedRequestMiB, 8192U);
     bool ledgerExempt = false;
     void *ramPtr = henge_alloc_ledger_exempt_ram((size_t)alignedBytes, &ledgerExempt);
     if (!ramPtr) {
@@ -160,6 +170,11 @@ static void henge_on_vm_exit(int reason) {
         }
         return NO;
     }
+
+    [fm createDirectoryAtPath:NSTemporaryDirectory()
+  withIntermediateDirectories:YES
+                   attributes:nil
+                        error:nil];
 
     char shareSockPath[HENGE_DARWIN_SUN_PATH_MAX];
     if (henge_format_unix_socket_path(machineDir.path.UTF8String,
@@ -209,6 +224,7 @@ static void henge_on_vm_exit(int reason) {
 
     _guestRam = ramPtr;
     _guestRamBytes = (size_t)alignedBytes;
+    _vmCreated = YES;
     _running = YES;
     _statusText = [NSString stringWithFormat:@"Running · %llu MiB (%@)",
                    cfg.ram_mb,
@@ -235,12 +251,13 @@ static void henge_on_vm_exit(int reason) {
 
 - (void)stopGuest {
 #if HENGE_HAS_UPSTREAM_ENGINE
-    if (_running) {
+    if (_vmCreated) {
         hv_winvm_stop();
         hv_winvm_flush_disks();
     }
 #endif
     _running = NO;
+    _vmCreated = NO;
     if (_guestRam != nullptr && _guestRamBytes > 0) {
         henge_free_ledger_exempt_ram(_guestRam, _guestRamBytes);
         _guestRam = nullptr;
@@ -312,9 +329,17 @@ static void henge_on_vm_exit(int reason) {
     if (!raw) {
         return nil;
     }
-    NSString *url = [NSString stringWithUTF8String:raw];
+    NSString *urlStr = [NSString stringWithUTF8String:raw];
     std::free(raw);
-    return url;
+    if (!urlStr) {
+        return nil;
+    }
+    NSURL *parsed = [NSURL URLWithString:urlStr];
+    NSString *scheme = parsed.scheme.lowercaseString;
+    if (!parsed.host.length || (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"])) {
+        return nil;
+    }
+    return urlStr;
 #else
     return nil;
 #endif

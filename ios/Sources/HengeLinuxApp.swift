@@ -42,8 +42,10 @@ struct HengeLinuxApp: App {
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
     @State private var isRunning: Bool = false
     @State private var bootWarning: String?
+    @State private var bootErrorAlert: String?
     @State private var posture: DevicePosture = .singleScreen
     @State private var safariURL: IdentifiableURL?
+    @State private var lastPushedClipboard: String = ""
 
     private let bridgePollTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
@@ -73,12 +75,36 @@ struct HengeLinuxApp: App {
             .onReceive(bridgePollTimer) { _ in
                 guard isRunning else { return }
                 if let pending = HengeVMBridge.shared.takePendingOpenURL(),
-                   let url = URL(string: pending) {
+                   let url = URL(string: pending),
+                   let scheme = url.scheme?.lowercased(),
+                   (scheme == "http" || scheme == "https"),
+                   url.host != nil {
                     safariURL = IdentifiableURL(url: url)
                 }
                 if HengeVMBridge.shared.takePendingOAuthDone() {
                     safariURL = nil
                 }
+                if let guestClip = HengeVMBridge.shared.takeGuestClipboard(), !guestClip.isEmpty {
+                    lastPushedClipboard = guestClip
+                    UIPasteboard.general.string = guestClip
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                guard isRunning, let hostClip = UIPasteboard.general.string, !hostClip.isEmpty, hostClip != lastPushedClipboard else {
+                    return
+                }
+                lastPushedClipboard = hostClip
+                HengeVMBridge.shared.pushHostClipboard(hostClip)
+            }
+            .alert("Unable to Start VM", isPresented: Binding(
+                get: { bootErrorAlert != nil },
+                set: { if !$0 { bootErrorAlert = nil } }
+            )) {
+                Button("OK", role: .cancel) {
+                    bootErrorAlert = nil
+                }
+            } message: {
+                Text(bootErrorAlert ?? "")
             }
         }
     }
@@ -141,10 +167,13 @@ struct HengeLinuxApp: App {
                                     gpuBackend: gpuMode
                                 )
                                 bootWarning = nil
+                                bootErrorAlert = nil
+                                isRunning = true
                             } catch {
                                 bootWarning = error.localizedDescription
+                                bootErrorAlert = error.localizedDescription
+                                isRunning = false
                             }
-                            isRunning = true
                         }
                     } label: {
                         Label("Boot Arch Linux (\(effectiveRamMiB) MiB)", systemImage: "play.fill")

@@ -6,7 +6,7 @@
 set -euo pipefail
 
 UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/ammaarreshi/WindowsiOS.git}"
-UPSTREAM_REF="${UPSTREAM_REF:-main}"
+UPSTREAM_REF="${UPSTREAM_REF:-0071d6975287fd720b9046dfd3bd80b6f2aa765e}"
 DEST_DIR=".upstream/WindowsiOS"
 
 mkdir -p .upstream
@@ -19,7 +19,7 @@ fi
 
 echo "[sync] Fetching $UPSTREAM_URL ($UPSTREAM_REF)"
 git -C "$DEST_DIR" fetch --depth 1 origin "$UPSTREAM_REF"
-git -C "$DEST_DIR" checkout -q FETCH_HEAD
+git -C "$DEST_DIR" checkout -f -q FETCH_HEAD
 
 echo "[sync] Applying henge-linux iOS/Linux patches"
 python3 ./scripts/apply_upstream_patches.py "$DEST_DIR"

@@ -47,7 +47,9 @@ final class SelfDebugJITClient: ObservableObject {
         }
 
         if hasPairingFile {
-            state = .blessed(poolMiB: Self.defaultJitPoolMiB, ledgerExempt: true)
+            state = .fallbackUntethered(
+                reason: "pairing.plist present — attach StikDebug/LLDB (in-app XPC lands in Milestone 5.4)."
+            )
         } else {
             state = .fallbackUntethered(
                 reason: "Place pairing.plist in Documents or attach StikDebug / LLDB for TXM JIT."

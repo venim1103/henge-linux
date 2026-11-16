@@ -32,6 +32,13 @@ if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/local/share/applications || true
 fi
 
+install -d /etc/xdg
+cat <<'EOF' > /etc/xdg/mimeapps.list
+[Default Applications]
+x-scheme-handler/http=henge-safari-bridge.desktop
+x-scheme-handler/https=henge-safari-bridge.desktop
+EOF
+
 install -d /etc/systemd/network
 cat <<'EOF' > /etc/systemd/network/20-henge-virtio.network
 [Match]

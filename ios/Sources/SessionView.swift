@@ -44,6 +44,24 @@ struct SessionView: View {
                 }
             }
             .background(Color.black.ignoresSafeArea())
+            .onDisappear {
+                releaseActiveModifiers()
+            }
+        }
+    }
+
+    private func releaseActiveModifiers() {
+        if ctrlActive {
+            ctrlActive = false
+            HengeVMBridge.shared.sendHidKeyUsage(0xE0, pressed: false)
+        }
+        if altActive {
+            altActive = false
+            HengeVMBridge.shared.sendHidKeyUsage(0xE2, pressed: false)
+        }
+        if superActive {
+            superActive = false
+            HengeVMBridge.shared.sendHidKeyUsage(0xE3, pressed: false)
         }
     }
 
@@ -66,6 +84,7 @@ struct SessionView: View {
             .controlSize(.mini)
 
             Button("Stop", role: .destructive) {
+                releaseActiveModifiers()
                 HengeVMBridge.shared.stopGuest()
                 onStopSession()
             }
@@ -109,21 +128,33 @@ struct SessionView: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(Color(white: 0.14))
                     .overlay(
-                        Text("Multi-Touch Trackpad & HID Deck")
-                            .font(.footnote.weight(.medium))
-                            .foregroundStyle(.secondary)
+                        VStack(spacing: 4) {
+                            Text("Multi-Touch Trackpad & HID Deck")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Text("Drag to move cursor · Tap to click")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
                     )
+                    .contentShape(Rectangle())
                     .gesture(
-                        DragGesture(minimumDistance: 0)
+                        DragGesture(minimumDistance: 2)
                             .onChanged { value in
                                 let nx = min(max(value.location.x / max(padGeo.size.width, 1), 0), 1)
                                 let ny = min(max(value.location.y / max(padGeo.size.height, 1), 0), 1)
-                                HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 1, wheel: 0)
+                                HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 0, wheel: 0)
                             }
+                    )
+                    .simultaneousGesture(
+                        SpatialTapGesture()
                             .onEnded { value in
                                 let nx = min(max(value.location.x / max(padGeo.size.width, 1), 0), 1)
                                 let ny = min(max(value.location.y / max(padGeo.size.height, 1), 0), 1)
-                                HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 0, wheel: 0)
+                                HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 1, wheel: 0)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+                                    HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 0, wheel: 0)
+                                }
                             }
                     )
             }
@@ -153,30 +184,49 @@ struct SessionView: View {
     }
 }
 
+final class MetalDisplaySurfaceView: UIView {
+    override class var layerClass: AnyClass {
+        CAMetalLayer.self
+    }
+
+    var metalLayer: CAMetalLayer? {
+        layer as? CAMetalLayer
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard let metalLayer else { return }
+        let scale = window?.screen.scale ?? UIScreen.main.scale
+        metalLayer.contentsScale = scale
+        metalLayer.drawableSize = CGSize(
+            width: max(bounds.width * scale, 1),
+            height: max(bounds.height * scale, 1)
+        )
+    }
+}
+
 struct MetalFramebufferRepresentable: UIViewRepresentable {
     @ObservedObject var lifecycle: MetalLifecycleGuard
 
-    func makeUIView(context: Context) -> MTKView {
-        let view = MTKView(frame: .zero, device: MTLCreateSystemDefaultDevice())
-        view.colorPixelFormat = .bgra8Unorm
-        view.framebufferOnly = true
-        view.preferredFramesPerSecond = 60
-        view.enableSetNeedsDisplay = false
-        view.isPaused = lifecycle.isPaused
-        if let metalLayer = view.layer as? CAMetalLayer {
+    func makeUIView(context: Context) -> MetalDisplaySurfaceView {
+        let view = MetalDisplaySurfaceView(frame: .zero)
+        view.backgroundColor = .black
+        if let metalLayer = view.metalLayer {
+            metalLayer.pixelFormat = .bgra8Unorm
+            metalLayer.framebufferOnly = true
             HengeVMBridge.shared.attachDisplayLayer(metalLayer)
         }
         return view
     }
 
-    func updateUIView(_ uiView: MTKView, context: Context) {
-        uiView.isPaused = lifecycle.isPaused
-        if let metalLayer = uiView.layer as? CAMetalLayer {
+    func updateUIView(_ uiView: MetalDisplaySurfaceView, context: Context) {
+        _ = lifecycle.isPaused
+        if let metalLayer = uiView.metalLayer {
             HengeVMBridge.shared.attachDisplayLayer(metalLayer)
         }
     }
 
-    static func dismantleUIView(_ uiView: MTKView, coordinator: ()) {
+    static func dismantleUIView(_ uiView: MetalDisplaySurfaceView, coordinator: ()) {
         HengeVMBridge.shared.attachDisplayLayer(nil)
     }
 }

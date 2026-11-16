@@ -11,6 +11,7 @@ BREW_PREFIX := $(shell if [ -d /opt/homebrew ]; then echo /opt/homebrew; elif [ 
 #   12 = 4 KiB compatibility mode (boots both 4 KiB and 16 KiB Linux kernels)
 #   14 = 16 KiB fast-path mode (4x TLB reach for CONFIG_ARM64_16K_PAGES=y kernels)
 HV_TLB_PAGE_BITS ?= 12
+REQUIRE_UPSTREAM ?= 0
 
 CC ?= cc
 CFLAGS_COMMON := -std=c11 -O2 -Wall -Wextra -Werror -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost
@@ -85,7 +86,7 @@ ios-lib: $(HOST_SRCS) $(HOST_HDRS) host/henge_brk.S | $(BUILD_DIR)
 	@if [ "$(UNAME_S)" = "Darwin" ]; then \
 		set -euo pipefail; \
 		IOS_SDK=$$(xcrun --sdk iphoneos --show-sdk-path); \
-		IOS_BASE="-O2 -arch arm64 -mios-version-min=26.0 -isysroot $$IOS_SDK -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost"; \
+		IOS_BASE="-O2 -arch arm64 -mios-version-min=26.0 -isysroot $$IOS_SDK -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost -Werror=implicit-function-declaration -Werror=incompatible-pointer-types"; \
 		IOS_CFLAGS="-std=c11 -Wall -Wextra -Werror $$IOS_BASE"; \
 		xcrun --sdk iphoneos clang $$IOS_CFLAGS -c host/henge_platform.c -o $(BUILD_DIR)/ios/henge_platform.o; \
 		xcrun --sdk iphoneos clang $$IOS_CFLAGS -c host/henge_txm_jit.c -o $(BUILD_DIR)/ios/henge_txm_jit.o; \
@@ -95,15 +96,28 @@ ios-lib: $(HOST_SRCS) $(HOST_HDRS) host/henge_brk.S | $(BUILD_DIR)
 		if [ -f "$(UPSTREAM_DIR)/core/translate.c" ] && [ -f "$(UPSTREAM_DIR)/ios/deps/include/slirp/libslirp.h" ]; then \
 			echo "[ios-lib] Compiling upstream WindowsiOS core/host/devices into libhengelinux.a"; \
 			ENG_INC="-I$(UPSTREAM_DIR)/core -I$(UPSTREAM_DIR)/host -I$(UPSTREAM_DIR)/devices -I$(UPSTREAM_DIR)/ios/deps/include -I$(UPSTREAM_DIR)/ios/deps/include/slirp -I$(UPSTREAM_DIR)/ios/deps/include/glib-2.0 -I$(UPSTREAM_DIR)/ios/deps/lib/glib-2.0/include"; \
-			xcrun --sdk iphoneos clang -std=c11 $$IOS_BASE $$ENG_INC -mgeneral-regs-only -c $(UPSTREAM_DIR)/core/mmu.c -o $(BUILD_DIR)/ios/up_mmu.o; \
-			xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$$IOS_SDK" -c $(UPSTREAM_DIR)/host/enter.S -o $(BUILD_DIR)/ios/up_enter.o; \
-			xcrun --sdk iphoneos clang -fobjc-arc $$IOS_BASE $$ENG_INC -c $(UPSTREAM_DIR)/devices/fb_metal.m -o $(BUILD_DIR)/ios/up_fb_metal.o; \
-			OBJS="$$OBJS $(BUILD_DIR)/ios/up_mmu.o $(BUILD_DIR)/ios/up_enter.o $(BUILD_DIR)/ios/up_fb_metal.o"; \
-			for src in $(UPSTREAM_CORE_SRCS) $(UPSTREAM_HOST_SRCS) $(UPSTREAM_DEV_SRCS); do \
-				obj="$(BUILD_DIR)/ios/up_$$(basename "$$src" .c).o"; \
+			xcrun --sdk iphoneos clang -std=c11 $$IOS_BASE $$ENG_INC -mgeneral-regs-only -c $(UPSTREAM_DIR)/core/mmu.c -o $(BUILD_DIR)/ios/up_core_mmu.o; \
+			xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$$IOS_SDK" -c $(UPSTREAM_DIR)/host/enter.S -o $(BUILD_DIR)/ios/up_host_enter.o; \
+			xcrun --sdk iphoneos clang -fobjc-arc $$IOS_BASE $$ENG_INC -c $(UPSTREAM_DIR)/devices/fb_metal.m -o $(BUILD_DIR)/ios/up_dev_fb_metal.o; \
+			OBJS="$$OBJS $(BUILD_DIR)/ios/up_core_mmu.o $(BUILD_DIR)/ios/up_host_enter.o $(BUILD_DIR)/ios/up_dev_fb_metal.o"; \
+			for src in $(UPSTREAM_CORE_SRCS); do \
+				obj="$(BUILD_DIR)/ios/up_core_$$(basename "$$src" .c).o"; \
 				xcrun --sdk iphoneos clang -std=c11 $$IOS_BASE $$ENG_INC -c "$$src" -o "$$obj"; \
 				OBJS="$$OBJS $$obj"; \
 			done; \
+			for src in $(UPSTREAM_HOST_SRCS); do \
+				obj="$(BUILD_DIR)/ios/up_host_$$(basename "$$src" .c).o"; \
+				xcrun --sdk iphoneos clang -std=c11 $$IOS_BASE $$ENG_INC -c "$$src" -o "$$obj"; \
+				OBJS="$$OBJS $$obj"; \
+			done; \
+			for src in $(UPSTREAM_DEV_SRCS); do \
+				obj="$(BUILD_DIR)/ios/up_dev_$$(basename "$$src" .c).o"; \
+				xcrun --sdk iphoneos clang -std=c11 $$IOS_BASE $$ENG_INC -c "$$src" -o "$$obj"; \
+				OBJS="$$OBJS $$obj"; \
+			done; \
+		elif [ "$(REQUIRE_UPSTREAM)" = "1" ]; then \
+			echo "[ios-lib] ERROR: REQUIRE_UPSTREAM=1 but upstream engine or ios/deps is missing!" >&2; \
+			exit 1; \
 		else \
 			echo "[ios-lib] Upstream engine or ios/deps not present; archiving host substrate only"; \
 		fi; \
