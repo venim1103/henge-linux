@@ -83,12 +83,27 @@ def main() -> int:
 
     # 2. devices/fb_metal.m: serialize Metal drawable acquisition/commit on willResignActive
     fb_metal_m = upstream / "devices/fb_metal.m"
-    patch_file(
-        fb_metal_m,
-        '#include "henge_platform.h"',
-        '#include "fb_metal.h"\n',
-        '#include "fb_metal.h"\n#include "henge_platform.h"\n',
-    )
+    fb_text = fb_metal_m.read_text(encoding="utf-8")
+    if '#include "henge_platform.h"' not in fb_text:
+        if '#import "fb_metal.h"\n' in fb_text:
+            patch_file(
+                fb_metal_m,
+                '#include "henge_platform.h"',
+                '#import "fb_metal.h"\n',
+                '#import "fb_metal.h"\n#include "henge_platform.h"\n',
+            )
+        elif '#include "fb_metal.h"\n' in fb_text:
+            patch_file(
+                fb_metal_m,
+                '#include "henge_platform.h"',
+                '#include "fb_metal.h"\n',
+                '#include "fb_metal.h"\n#include "henge_platform.h"\n',
+            )
+        else:
+            fb_metal_m.write_text('#include "henge_platform.h"\n' + fb_text, encoding="utf-8")
+            print(f"[patch] {fb_metal_m}: prepended henge_platform.h")
+    else:
+        print(f"[patch] {fb_metal_m}: header already applied")
     patch_file(
         fb_metal_m,
         "hengelinux_render_lock()",

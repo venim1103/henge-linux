@@ -36,7 +36,7 @@ jobs:
           cmp build/raw.bin build/unpacked.bin
       - name: Run 16 KiB TLB fast-path tests
         run: make clean && make HV_TLB_PAGE_BITS=14 test-core hvsparse
-      - name: Validate guest bridge & Archboot provisioning scripts
+      - name: Validate guest bridge, upstream patcher, & provisioning scripts
         run: |
           python3 -m py_compile guest/henge-xdg-open scripts/apply_upstream_patches.py
           bash -n guest/setup-arch-bridge.sh
@@ -44,6 +44,7 @@ jobs:
           bash -n scripts/build_ios_deps.sh
           bash -n scripts/provision_archlinux_arm64.sh
           bash scripts/provision_archlinux_arm64.sh --dry-run
+          bash scripts/sync_upstream.sh
 
   ios-build:
     name: iOS Unsigned IPA Build (macOS)

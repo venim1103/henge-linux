@@ -22,7 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) uint64_t framesPresented;
 
 /// Attach or detach the `MTKView`'s `CAMetalLayer` for UEFI GOP / framebuffer output.
-- (void)attachDisplayLayer:(nullable CAMetalLayer *)layer;
+- (void)attachDisplayLayer:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(attachDisplayLayer(_:));
 
 /// Start the Arch Linux AArch64 VM with `ramMiB` and `cpuCount` using guest
 /// artifacts in `Documents/Machines/ArchLinux/{archlinux.hvsparse,code.fd,vars.fd}`.
