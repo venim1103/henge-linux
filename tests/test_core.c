@@ -144,6 +144,7 @@ static void test_txm_jit_bounds_and_blessing(void) {
     HENGE_CHECK(henge_jit_status_message() != NULL);
     HengeJitPool queried_pool;
     HENGE_CHECK(henge_jit_current_pool(&queried_pool) == false);
+    HENGE_CHECK(henge_jit_acquire_pool(0U, true, &queried_pool) == false);
     (void)henge_txm_is_ptraced();
     (void)henge_txm_is_cs_debugged();
 }

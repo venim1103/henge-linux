@@ -64,8 +64,10 @@ henge_jit26_detach:
     brk     #0xf00d
     ret
     .cfi_endproc
-
-.section .note.GNU-stack,"",%progbits
 #endif
 
 #endif /* __aarch64__ || __arm64__ */
+
+#if defined(__linux__)
+.section .note.GNU-stack,"",%progbits
+#endif
