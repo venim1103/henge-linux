@@ -6,13 +6,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
+#include <mach/mach_time.h>
 #endif
 
 static atomic_bool g_render_paused = false;
 static pthread_mutex_t g_render_mutex = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_pause_start_ticks = 0ULL;
+static atomic_uint_fast64_t g_suspend_offset_ticks = 0ULL;
+
+static uint64_t platform_raw_ticks_24mhz(void) {
+#if defined(__APPLE__)
+    return mach_absolute_time();
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0ULL;
+    }
+    return (uint64_t)ts.tv_sec * 24000000ULL + ((uint64_t)ts.tv_nsec * 24ULL) / 1000ULL;
+#endif
+}
 
 #if !(defined(__APPLE__) && TARGET_OS_IPHONE)
 static uint64_t fnv1a_64(const char *str) {
@@ -180,7 +196,20 @@ uint64_t henge_align_guest_ram_bytes(uint32_t requested_mib, uint32_t device_cap
 
 void hengelinux_set_render_paused(bool paused) {
     pthread_mutex_lock(&g_render_mutex);
-    atomic_store_explicit(&g_render_paused, paused, memory_order_release);
+    bool was_paused = atomic_load_explicit(&g_render_paused, memory_order_relaxed);
+    if (paused && !was_paused) {
+        g_pause_start_ticks = platform_raw_ticks_24mhz();
+        atomic_store_explicit(&g_render_paused, true, memory_order_release);
+    } else if (!paused && was_paused) {
+        uint64_t now = platform_raw_ticks_24mhz();
+        if (now > g_pause_start_ticks && g_pause_start_ticks > 0ULL) {
+            atomic_fetch_add_explicit(&g_suspend_offset_ticks,
+                                      now - g_pause_start_ticks,
+                                      memory_order_acq_rel);
+        }
+        g_pause_start_ticks = 0ULL;
+        atomic_store_explicit(&g_render_paused, false, memory_order_release);
+    }
     pthread_mutex_unlock(&g_render_mutex);
 }
 
@@ -193,5 +222,35 @@ void hengelinux_render_lock(void) {
 }
 
 void hengelinux_render_unlock(void) {
+    pthread_mutex_unlock(&g_render_mutex);
+}
+
+uint64_t hengelinux_suspend_counter_offset(void) {
+    uint64_t base_offset = atomic_load_explicit(&g_suspend_offset_ticks, memory_order_acquire);
+    if (!atomic_load_explicit(&g_render_paused, memory_order_acquire)) {
+        return base_offset;
+    }
+    pthread_mutex_lock(&g_render_mutex);
+    uint64_t total = atomic_load_explicit(&g_suspend_offset_ticks, memory_order_acquire);
+    if (atomic_load_explicit(&g_render_paused, memory_order_acquire) && g_pause_start_ticks > 0ULL) {
+        uint64_t now = platform_raw_ticks_24mhz();
+        if (now > g_pause_start_ticks) {
+            total += (now - g_pause_start_ticks);
+        }
+    }
+    pthread_mutex_unlock(&g_render_mutex);
+    return total;
+}
+
+uint64_t hengelinux_compensated_counter(uint64_t raw_ticks) {
+    uint64_t offset = hengelinux_suspend_counter_offset();
+    return (raw_ticks > offset) ? (raw_ticks - offset) : 0ULL;
+}
+
+void hengelinux_reset_suspend_counter(void) {
+    pthread_mutex_lock(&g_render_mutex);
+    g_pause_start_ticks = 0ULL;
+    atomic_store_explicit(&g_suspend_offset_ticks, 0ULL, memory_order_release);
+    atomic_store_explicit(&g_render_paused, false, memory_order_release);
     pthread_mutex_unlock(&g_render_mutex);
 }

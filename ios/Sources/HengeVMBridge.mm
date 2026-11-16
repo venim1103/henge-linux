@@ -111,6 +111,8 @@ static void henge_on_vm_exit(int reason) {
         return YES;
     }
 
+    hengelinux_reset_suspend_counter();
+
     HengeGpuBackendMode mode = (gpuBackend == 1)
         ? HENGE_GPU_BACKEND_VIRGL_3D
         : HENGE_GPU_BACKEND_GOP_2D;

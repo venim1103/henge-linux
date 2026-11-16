@@ -109,14 +109,15 @@ Every code change in `henge-linux` must preserve these verified platform invaria
 - [x] `ios/JITExtension/JITExtensionHandler.swift` + nested `ios/JITExtension/Info.plist` (`com.apple.ar.viewer` extension target in `ios/project.yml`), Files app sharing keys (`UIFileSharingEnabled` / `LSSupportsOpeningDocumentsInPlace`), single-source-of-truth `libhengelinux.a` linking, and synchronous `MetalLifecycleGuard` render fence.
 - [x] `host/henge_virtio_gpu.{h,c}` defining `2D UEFI GOP` and `3D VirtIO-GPU VirGL (ANGLE Metal)` configuration descriptors, plus non-blocking double-fork `guest/henge-xdg-open` and 64 KiB aligned `tools/hvsparse.c`.
 
-### Phase 5: Upstream Engine Integration, Live VM Runtime & 3D VirGL Bring-Up — **IN PROGRESS (5.1 & 5.2 Landed)**
+### Phase 5: Upstream Engine Integration, Live VM Runtime & 3D VirGL Bring-Up — **IN PROGRESS (5.1–5.3 Landed)**
 - [x] **Milestone 5.1 — Upstream `HengeVM` / `WindowsiOS` Engine Linkage & Patcher:**
   - Implemented `scripts/apply_upstream_patches.py` (invoked by `scripts/sync_upstream.sh`) to patch `host/share.c` (`henge_format_unix_socket_path()`), `devices/fb_metal.m` (`hengelinux_render_lock()` + `hengelinux_is_render_paused()`), `host/audio_mac.c`, and `host/jit_region.c` (`henge_txm_is_valid_jit_range()`).
   - Updated `Makefile` (`ios-lib`) to compile upstream `core/*.c` (`-mgeneral-regs-only` on `mmu.c`), `host/*.c`/`enter.S`, and `devices/*.{c,m}` into `build/ios/libhengelinux.a` whenever `.upstream/WindowsiOS` + `ios/deps` (`libffi`, `glib`, `libslirp`) are present.
 - [x] **Milestone 5.2 — Live VM Runner Bridge (`HengeVMBridge.{h,mm}`):**
   - Implemented `HengeVMBridge.{h,mm}` and wired `SessionView.swift` (`CAMetalLayer`, HID modifier & function keys, trackpad gestures) and `HengeLinuxApp.swift` (`SafariSheetView` polling on `10.0.2.4/.henge/open-url` + `/.henge/oauth-done`, `henge_alloc_ledger_exempt_ram()`).
-- [ ] **Milestone 5.3 — End-to-End Arch Linux Boot, `CNTVCT_EL0` Suspend Offset & 16 KiB Validation:**
-  - Build iOS static deps (`libffi`, `glib`, `libslirp`) in CI/local Mac, provision a bootable `archlinux.hvsparse` image with `scripts/provision_archlinux_arm64.sh` + `guest/setup-arch-bridge.sh`, add background-suspend `CNTVCT_EL0` offset compensation in `core/sysreg.c`, and verify boot on physical iPhone/iPad (`HV_TLB_PAGE_BITS=12` vs. `14`).
+- [x] **Milestone 5.3 — Cached iOS Static Deps (`libffi`, `glib`, `libslirp`), Live Engine Packaging & `CNTVCT_EL0` Suspend Offset:**
+  - Wired cached iOS `arm64` static deps (`libffi`, `glib`, `libslirp`, `libintl`, `libpcre2-8`) in `scripts/build_ios_deps.sh`, `ios/project.yml`, and `.github/workflows/ci.yml` so `latest-ipa` embeds the full live `HengeVM` engine (`HENGE_HAS_UPSTREAM_ENGINE == 1`).
+  - Implemented background-suspend `CNTVCT_EL0` / `CNTPCT_EL0` offset compensation in `host/henge_platform.{h,c}` and patched `core/sysreg.c` + `core/translate.c` in `scripts/apply_upstream_patches.py` to prevent Linux softlockup watchdogs after iOS background suspension. *(Remaining: end-user guest disk provisioning with `scripts/provision_archlinux_arm64.sh` and on-device `HV_TLB_PAGE_BITS=12` vs `14` benchmark).*
 - [ ] **Milestone 5.4 — Embedded `StikJIT` XPC Handshake, 3D VirGL & Background Suspend:**
   - Link `StikJIT.xcframework` (`MPL-2.0`) and `idevice` (`MIT`) into `HengeLinuxJITExtension` (`JITExtensionHandler.swift`) to execute live `brk #0xf00d` blessing over `10.7.0.1` (`LocalDevVPN`) using `Documents/pairing.plist` (or iOS 27 on-device pairing).
   - Implement PCIe `virtio-gpu-gl-pci` (`0x1af4:0x1050`) backed by `virglrenderer` + `ANGLE (Metal)` for hardware-accelerated Wayland compositors (`Hyprland`, `Wayfire`, `Sway`), plus `tctiSH`-style background state serialization.

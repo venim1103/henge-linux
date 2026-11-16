@@ -92,9 +92,9 @@ ios-lib: $(HOST_SRCS) $(HOST_HDRS) host/henge_brk.S | $(BUILD_DIR)
 		xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$$IOS_SDK" -c host/henge_brk.S -o $(BUILD_DIR)/ios/henge_brk.o; \
 		xcrun --sdk iphoneos clang $$IOS_CFLAGS -c host/henge_virtio_gpu.c -o $(BUILD_DIR)/ios/henge_virtio_gpu.o; \
 		OBJS="$(BUILD_DIR)/ios/henge_platform.o $(BUILD_DIR)/ios/henge_txm_jit.o $(BUILD_DIR)/ios/henge_brk.o $(BUILD_DIR)/ios/henge_virtio_gpu.o"; \
-		if [ -f "$(UPSTREAM_DIR)/core/translate.c" ] && [ -f "$(UPSTREAM_DIR)/ios/deps/include/libslirp.h" ]; then \
+		if [ -f "$(UPSTREAM_DIR)/core/translate.c" ] && [ -f "$(UPSTREAM_DIR)/ios/deps/include/slirp/libslirp.h" ]; then \
 			echo "[ios-lib] Compiling upstream WindowsiOS core/host/devices into libhengelinux.a"; \
-			ENG_INC="-I$(UPSTREAM_DIR)/core -I$(UPSTREAM_DIR)/host -I$(UPSTREAM_DIR)/devices -I$(UPSTREAM_DIR)/ios/deps/include -I$(UPSTREAM_DIR)/ios/deps/include/glib-2.0 -I$(UPSTREAM_DIR)/ios/deps/lib/glib-2.0/include"; \
+			ENG_INC="-I$(UPSTREAM_DIR)/core -I$(UPSTREAM_DIR)/host -I$(UPSTREAM_DIR)/devices -I$(UPSTREAM_DIR)/ios/deps/include -I$(UPSTREAM_DIR)/ios/deps/include/slirp -I$(UPSTREAM_DIR)/ios/deps/include/glib-2.0 -I$(UPSTREAM_DIR)/ios/deps/lib/glib-2.0/include"; \
 			xcrun --sdk iphoneos clang -std=c11 $$IOS_BASE $$ENG_INC -mgeneral-regs-only -c $(UPSTREAM_DIR)/core/mmu.c -o $(BUILD_DIR)/ios/up_mmu.o; \
 			xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$$IOS_SDK" -c $(UPSTREAM_DIR)/host/enter.S -o $(BUILD_DIR)/ios/up_enter.o; \
 			xcrun --sdk iphoneos clang -fobjc-arc $$IOS_BASE $$ENG_INC -c $(UPSTREAM_DIR)/devices/fb_metal.m -o $(BUILD_DIR)/ios/up_fb_metal.o; \

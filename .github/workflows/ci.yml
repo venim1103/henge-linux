@@ -59,9 +59,18 @@ jobs:
             sudo xcode-select -s /Applications/Xcode_26.6.app
           fi
           xcodebuild -version
-      - name: Install XcodeGen
-        run: brew install xcodegen
-      - name: Run macOS platform tests & build ios-lib
+      - name: Install XcodeGen & iOS static dependency build tools
+        run: brew install xcodegen meson ninja pkg-config
+      - name: Sync & patch upstream WindowsiOS engine
+        run: bash scripts/sync_upstream.sh
+      - name: Restore cached iOS static dependencies (libffi, glib, libslirp)
+        uses: actions/cache@v4
+        with:
+          path: .upstream/WindowsiOS/ios/deps
+          key: ios-arm64-deps-${{ runner.os }}-${{ hashFiles('scripts/build_ios_deps.sh', '.upstream/WindowsiOS/scripts/build_ios_deps.sh') }}
+      - name: Build or validate iOS static dependencies (libffi, glib, libslirp)
+        run: bash scripts/build_ios_deps.sh
+      - name: Run macOS platform tests & build full ios-lib
         run: make test-core hvsparse ios-lib
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/project.yml

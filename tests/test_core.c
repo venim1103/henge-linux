@@ -81,6 +81,23 @@ static void test_render_pause_lifecycle_gate(void) {
     assert(hengelinux_is_render_paused() == true);
     hengelinux_set_render_paused(false);
     assert(hengelinux_is_render_paused() == false);
+
+    /* Verify CNTVCT_EL0 suspend offset compensation across pause/resume cycles. */
+    hengelinux_reset_suspend_counter();
+    assert(hengelinux_suspend_counter_offset() == 0ULL);
+    assert(hengelinux_compensated_counter(50000000ULL) == 50000000ULL);
+
+    hengelinux_set_render_paused(true);
+    uint64_t frozen = hengelinux_compensated_counter(80000000ULL);
+    uint64_t frozen_later = hengelinux_compensated_counter(120000000ULL);
+    assert(frozen == frozen_later);
+    hengelinux_set_render_paused(false);
+
+    uint64_t offset_after = hengelinux_suspend_counter_offset();
+    assert(hengelinux_compensated_counter(offset_after + 12345ULL) == 12345ULL);
+    assert(hengelinux_compensated_counter(0ULL) == 0ULL);
+    hengelinux_reset_suspend_counter();
+    assert(hengelinux_suspend_counter_offset() == 0ULL);
 }
 
 static void test_txm_jit_bounds_and_blessing(void) {

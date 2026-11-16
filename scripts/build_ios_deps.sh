@@ -30,11 +30,62 @@ for tool in meson ninja pkg-config xcodegen; do
 done
 
 if [ -x ".upstream/WindowsiOS/scripts/build_ios_deps.sh" ]; then
-    echo "[deps] Delegating to .upstream/WindowsiOS/scripts/build_ios_deps.sh"
+    UPSTREAM_DEPS=".upstream/WindowsiOS/ios/deps"
+    REQUIRED_LIBS=(libffi.a libglib-2.0.a libintl.a libpcre2-8.a libslirp.a)
+    HAVE_ALL_CACHED=1
+    if [ ! -f "$UPSTREAM_DEPS/include/slirp/libslirp.h" ]; then
+        HAVE_ALL_CACHED=0
+    fi
+    for lib in "${REQUIRED_LIBS[@]}"; do
+        if [ ! -s "$UPSTREAM_DEPS/lib/$lib" ]; then
+            HAVE_ALL_CACHED=0
+        fi
+    done
+
+    if [ "$HAVE_ALL_CACHED" -eq 1 ] && [ "${FORCE_REBUILD_DEPS:-0}" != "1" ]; then
+        echo "[deps] Using cached iOS static dependencies in $UPSTREAM_DEPS"
+        ls -lh "$UPSTREAM_DEPS/lib"
+        exit 0
+    fi
+
+    PYTHON3_BIN="$(command -v python3)"
+    echo "[deps] Delegating to .upstream/WindowsiOS/scripts/build_ios_deps.sh (python3=$PYTHON3_BIN)"
     (
         cd .upstream/WindowsiOS
+        python3 -c '
+from pathlib import Path
+import sys
+p = Path("scripts/build_ios_deps.sh")
+txt = p.read_text(encoding="utf-8")
+txt = txt.replace("/opt/homebrew/bin/python3", sys.argv[1])
+txt = txt.replace("export PATH=\"/opt/homebrew/bin:", f"export PATH=\"{sys.argv[2]}:/opt/homebrew/bin:")
+p.write_text(txt, encoding="utf-8")
+' "$PYTHON3_BIN" "$BREW_PREFIX/bin"
         BREW_PREFIX="$BREW_PREFIX" ./scripts/build_ios_deps.sh
+
+        # Ensure GLib headers (if built in sysroot) are staged alongside slirp headers
+        if [ -d "work/ios_deps_build/sysroot/include/glib-2.0" ]; then
+            rm -rf "ios/deps/include/glib-2.0"
+            cp -R "work/ios_deps_build/sysroot/include/glib-2.0" "ios/deps/include/glib-2.0"
+        fi
+        if [ -d "work/ios_deps_build/sysroot/lib/glib-2.0/include" ]; then
+            mkdir -p "ios/deps/lib/glib-2.0"
+            rm -rf "ios/deps/lib/glib-2.0/include"
+            cp -R "work/ios_deps_build/sysroot/lib/glib-2.0/include" "ios/deps/lib/glib-2.0/include"
+        fi
     )
+
+    for lib in "${REQUIRED_LIBS[@]}"; do
+        if [ ! -s "$UPSTREAM_DEPS/lib/$lib" ]; then
+            echo "[deps] Missing expected static archive after build: $UPSTREAM_DEPS/lib/$lib" >&2
+            exit 1
+        fi
+    done
+    if [ ! -f "$UPSTREAM_DEPS/include/slirp/libslirp.h" ]; then
+        echo "[deps] Missing expected header after build: $UPSTREAM_DEPS/include/slirp/libslirp.h" >&2
+        exit 1
+    fi
 else
     echo "[deps] Upstream not yet synced; run ./scripts/sync_upstream.sh first."
+    exit 1
 fi

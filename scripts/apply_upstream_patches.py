@@ -11,6 +11,9 @@ ammaarreshi/WindowsiOS sources inside .upstream/WindowsiOS:
   3. host/audio_mac.c: silence/re-prime CoreAudio callbacks when render-paused.
   4. host/jit_region.c: validate RX JIT mapping ranges against TXM's safe
      low-VA window [4 GiB, 64 GiB) via henge_txm_is_valid_jit_range().
+  5. core/sysreg.c & core/translate.c: apply background-suspend CNTVCT_EL0 /
+     CNTPCT_EL0 offset compensation via hengelinux_compensated_counter() so
+     Linux softlockup watchdogs do not fire after iOS background suspension.
 """
 
 from pathlib import Path
@@ -181,6 +184,41 @@ def main() -> int:
         fprintf(stderr, "hengevm: jit: rx range %p (+0x%zx) outside TXM low-VA bounds\\n", rx, bytes);
         return -1;
     }""",
+    )
+
+    # 5. core/sysreg.c & core/translate.c: background-suspend CNTVCT_EL0 offset compensation
+    sysreg_c = upstream / "core/sysreg.c"
+    patch_file(
+        sysreg_c,
+        '#include "henge_platform.h"',
+        '#include "sysreg.h"\n',
+        '#include "sysreg.h"\n#include "henge_platform.h"\n',
+    )
+    patch_file(
+        sysreg_c,
+        "hengelinux_compensated_counter",
+        """static uint64_t counter(void) {
+    return mach_absolute_time(); /* 24 MHz on Apple silicon */
+}""",
+        """static uint64_t counter(void) {
+    return hengelinux_compensated_counter(mach_absolute_time()); /* 24 MHz on Apple silicon, suspend-compensated */
+}""",
+    )
+
+    translate_c = upstream / "core/translate.c"
+    patch_file(
+        translate_c,
+        "suspend-compensated counter via hv_sysreg_mrs",
+        """static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) {
+    static int type = -1;
+    if (type < 0) type = *(volatile uint8_t *)(uintptr_t)COMMPAGE_TIMEBASE_TYPE;
+    if (type == 0) return 0; /* the kernel's own path: leave it to the helper */""",
+        """static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) {
+    (void)e;
+    (void)insn;
+    (void)pc;
+    (void)physical;
+    return 0; /* route CNTVCT_EL0/CNTPCT_EL0 through suspend-compensated counter via hv_sysreg_mrs */""",
     )
 
     return 0
