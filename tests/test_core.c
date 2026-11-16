@@ -139,14 +139,34 @@ static void test_render_pause_lifecycle_gate(void) {
 }
 
 typedef struct {
-    pthread_barrier_t *barrier;
-    uint64_t           raw_ticks;
-    uint64_t           observed_ticks;
+    pthread_mutex_t lock;
+    pthread_cond_t  cond;
+    size_t          arrived;
+    size_t          target;
+} PortableBarrier;
+
+typedef struct {
+    PortableBarrier *barrier;
+    uint64_t         raw_ticks;
+    uint64_t         observed_ticks;
 } CounterRaceWorkerArg;
+
+static void portable_barrier_wait(PortableBarrier *b) {
+    pthread_mutex_lock(&b->lock);
+    b->arrived++;
+    if (b->arrived >= b->target) {
+        pthread_cond_broadcast(&b->cond);
+    } else {
+        while (b->arrived < b->target) {
+            pthread_cond_wait(&b->cond, &b->lock);
+        }
+    }
+    pthread_mutex_unlock(&b->lock);
+}
 
 static void *counter_race_worker(void *opaque) {
     CounterRaceWorkerArg *arg = (CounterRaceWorkerArg *)opaque;
-    pthread_barrier_wait(arg->barrier);
+    portable_barrier_wait(arg->barrier);
     arg->observed_ticks = hengelinux_compensated_counter(arg->raw_ticks);
     return NULL;
 }
@@ -158,8 +178,12 @@ static void test_multivcpu_counter_jump_atomicity(void) {
 
     /* Four vCPU threads wake concurrently across a +2.0 s (48,000,000 tick) XNU freeze jump. */
     uint64_t jump_raw = base_raw + 48000000ULL;
-    pthread_barrier_t barrier;
-    HENGE_CHECK(pthread_barrier_init(&barrier, NULL, 4U) == 0);
+    PortableBarrier barrier = {
+        .lock = PTHREAD_MUTEX_INITIALIZER,
+        .cond = PTHREAD_COND_INITIALIZER,
+        .arrived = 0U,
+        .target = 4U,
+    };
 
     pthread_t threads[4];
     CounterRaceWorkerArg args[4];
@@ -176,7 +200,8 @@ static void test_multivcpu_counter_jump_atomicity(void) {
         HENGE_CHECK(args[i].observed_ticks >= expected_min);
         HENGE_CHECK(args[i].observed_ticks <= expected_max);
     }
-    pthread_barrier_destroy(&barrier);
+    pthread_mutex_destroy(&barrier.lock);
+    pthread_cond_destroy(&barrier.cond);
     hengelinux_reset_suspend_counter();
 }
 
