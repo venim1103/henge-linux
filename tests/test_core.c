@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include <time.h>
 
 #define HENGE_CHECK(expr)                                                                 \
     do {                                                                                  \
@@ -101,7 +101,8 @@ static void test_render_pause_lifecycle_gate(void) {
 
     hengelinux_set_render_paused(true);
     uint64_t frozen = hengelinux_compensated_counter(80000000ULL);
-    usleep(2000);
+    struct timespec pause_ts = {0, 2000000L};
+    nanosleep(&pause_ts, NULL);
     uint64_t frozen_later = hengelinux_compensated_counter(120000000ULL);
     HENGE_CHECK(frozen == frozen_later);
     hengelinux_set_render_paused(false);

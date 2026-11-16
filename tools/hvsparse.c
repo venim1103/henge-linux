@@ -33,14 +33,15 @@ typedef struct __attribute__((packed)) {
 } HvSparseHeader;
 
 static bool is_zero_block(const uint8_t *buf, size_t len) {
-    const uint64_t *words = (const uint64_t *)(const void *)buf;
-    size_t nwords = len / sizeof(uint64_t);
-    for (size_t i = 0; i < nwords; i++) {
-        if (words[i] != 0ULL) {
+    size_t i = 0;
+    for (; i + sizeof(uint64_t) <= len; i += sizeof(uint64_t)) {
+        uint64_t word = 0ULL;
+        memcpy(&word, buf + i, sizeof(word));
+        if (word != 0ULL) {
             return false;
         }
     }
-    for (size_t i = nwords * sizeof(uint64_t); i < len; i++) {
+    for (; i < len; i++) {
         if (buf[i] != 0U) {
             return false;
         }
