@@ -39,6 +39,7 @@ targets:
       - path: JITExtension
         excludes:
           - Info.plist
+          - HengeLinuxJITExtension.entitlements
     info:
       path: JITExtension/Info.plist
       properties:
@@ -48,11 +49,19 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.ar.viewer
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).JITExtensionHandler
+    entitlements:
+      path: JITExtension/HengeLinuxJITExtension.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.io.hengelinux.shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.hengelinux.app.jit-extension
         GENERATE_INFOPLIST_FILE: NO
         APPLICATION_EXTENSION_API_ONLY: YES
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/Frameworks"
 
   HengeLinux:
     type: application
@@ -65,6 +74,8 @@ targets:
       path: HengeLinux.entitlements
       properties:
         com.apple.developer.kernel.increased-memory-limit: true
+        com.apple.security.application-groups:
+          - group.io.hengelinux.shared
     dependencies:
       - target: HengeLinuxJITExtension
         embed: true

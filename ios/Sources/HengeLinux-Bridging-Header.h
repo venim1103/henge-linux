@@ -5,6 +5,7 @@
 #include "henge_platform.h"
 #include "henge_txm_jit.h"
 #include "henge_virtio_gpu.h"
+#import "HengeJITExtensionBridge.h"
 #import "HengeVMBridge.h"
 
 #endif /* HENGE_LINUX_BRIDGING_HEADER_H */

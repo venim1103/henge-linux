@@ -157,8 +157,13 @@ struct HengeLinuxApp: App {
                         }
                     }
                     LabeledContent("TXM JIT Pool", value: "\(SelfDebugJITClient.defaultJitPoolMiB) MiB (< 0x7000000000)")
-                    LabeledContent("Pairing File", value: jitClient.hasPairingFile ? "Documents/pairing.plist" : "Missing (Optional)")
+                    LabeledContent("Pairing File", value: jitClient.hasPairingFile ? "pairing.plist (Synced)" : "Missing (Optional)")
                     LabeledContent("JIT Status", value: jitStatusLabel)
+                    if let diag = jitClient.extensionDiagnostic, !diag.isEmpty {
+                        Text(diag)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Guest Image (`Documents/Machines/ArchLinux`)") {
