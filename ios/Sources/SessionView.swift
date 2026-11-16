@@ -9,6 +9,7 @@ struct SessionView: View {
     let profile: MachineProfile
     @ObservedObject var lifecycle: MetalLifecycleGuard
     @Binding var posture: DevicePosture
+    let bootWarning: String?
     let onStopSession: () -> Void
 
     @State private var showModifierBar: Bool = true
@@ -20,6 +21,16 @@ struct SessionView: View {
         GeometryReader { geo in
             VStack(spacing: 0) {
                 topStatusBar
+
+                if let bootWarning {
+                    Text(bootWarning)
+                        .font(.caption)
+                        .foregroundStyle(.yellow)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(white: 0.12))
+                }
 
                 MetalFramebufferRepresentable(lifecycle: lifecycle)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -54,9 +65,12 @@ struct SessionView: View {
             .buttonStyle(.bordered)
             .controlSize(.mini)
 
-            Button("Stop", role: .destructive, action: onStopSession)
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
+            Button("Stop", role: .destructive) {
+                HengeVMBridge.shared.stopGuest()
+                onStopSession()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -66,14 +80,20 @@ struct SessionView: View {
     private var compactModifierStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                modifierToggle("Esc", isOn: .constant(false))
-                modifierToggle("Tab", isOn: .constant(false))
-                modifierToggle("Ctrl", isOn: $ctrlActive)
-                modifierToggle("Alt", isOn: $altActive)
-                modifierToggle("Super", isOn: $superActive)
-                modifierToggle("F1", isOn: .constant(false))
-                modifierToggle("F2", isOn: .constant(false))
-                modifierToggle("F12", isOn: .constant(false))
+                hidPulseButton("Esc", usage: 0x29)
+                hidPulseButton("Tab", usage: 0x2B)
+                modifierToggle("Ctrl", usage: 0xE0, isOn: $ctrlActive)
+                modifierToggle("Alt", usage: 0xE2, isOn: $altActive)
+                modifierToggle("Super", usage: 0xE3, isOn: $superActive)
+                hidPulseButton("F1", usage: 0x3A)
+                hidPulseButton("F2", usage: 0x3B)
+                hidPulseButton("F12", usage: 0x45)
+                Button("Ctrl+Alt+Del") {
+                    HengeVMBridge.shared.sendCtrlAltDel()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .font(.caption.monospaced())
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -85,24 +105,51 @@ struct SessionView: View {
         VStack(spacing: 10) {
             compactModifierStrip
 
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(white: 0.14))
-                .overlay(
-                    Text("Multi-Touch Trackpad & HID Deck")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.secondary)
-                )
-                .padding(.horizontal, 14)
-                .padding(.bottom, 12)
+            GeometryReader { padGeo in
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(white: 0.14))
+                    .overlay(
+                        Text("Multi-Touch Trackpad & HID Deck")
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    )
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let nx = min(max(value.location.x / max(padGeo.size.width, 1), 0), 1)
+                                let ny = min(max(value.location.y / max(padGeo.size.height, 1), 0), 1)
+                                HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 1, wheel: 0)
+                            }
+                            .onEnded { value in
+                                let nx = min(max(value.location.x / max(padGeo.size.width, 1), 0), 1)
+                                let ny = min(max(value.location.y / max(padGeo.size.height, 1), 0), 1)
+                                HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 0, wheel: 0)
+                            }
+                    )
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
         }
         .background(Color(white: 0.08))
     }
 
-    private func modifierToggle(_ label: String, isOn: Binding<Bool>) -> some View {
+    private func hidPulseButton(_ label: String, usage: UInt8) -> some View {
+        Button(label) {
+            HengeVMBridge.shared.tapHidKeyUsage(usage)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .font(.caption.monospaced())
+    }
+
+    private func modifierToggle(_ label: String, usage: UInt8, isOn: Binding<Bool>) -> some View {
         Toggle(label, isOn: isOn)
             .toggleStyle(.button)
             .controlSize(.small)
             .font(.caption.monospaced())
+            .onChange(of: isOn.wrappedValue) { _, pressed in
+                HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: pressed)
+            }
     }
 }
 
@@ -116,10 +163,20 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
         view.preferredFramesPerSecond = 60
         view.enableSetNeedsDisplay = false
         view.isPaused = lifecycle.isPaused
+        if let metalLayer = view.layer as? CAMetalLayer {
+            HengeVMBridge.shared.attachDisplayLayer(metalLayer)
+        }
         return view
     }
 
     func updateUIView(_ uiView: MTKView, context: Context) {
         uiView.isPaused = lifecycle.isPaused
+        if let metalLayer = uiView.layer as? CAMetalLayer {
+            HengeVMBridge.shared.attachDisplayLayer(metalLayer)
+        }
+    }
+
+    static func dismantleUIView(_ uiView: MTKView, coordinator: ()) {
+        HengeVMBridge.shared.attachDisplayLayer(nil)
     }
 }

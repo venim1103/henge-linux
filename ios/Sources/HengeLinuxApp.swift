@@ -41,8 +41,11 @@ struct HengeLinuxApp: App {
     @StateObject private var jitClient = SelfDebugJITClient()
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
     @State private var isRunning: Bool = false
+    @State private var bootWarning: String?
     @State private var posture: DevicePosture = .singleScreen
     @State private var safariURL: IdentifiableURL?
+
+    private let bridgePollTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
     var body: some Scene {
         WindowGroup {
@@ -52,8 +55,10 @@ struct HengeLinuxApp: App {
                         profile: selectedProfile,
                         lifecycle: lifecycle,
                         posture: $posture,
+                        bootWarning: bootWarning,
                         onStopSession: {
                             isRunning = false
+                            bootWarning = nil
                             jitClient.prepareForReboot()
                         }
                     )
@@ -64,6 +69,16 @@ struct HengeLinuxApp: App {
             .sheet(item: $safariURL) { item in
                 SafariSheetView(url: item.url)
                     .ignoresSafeArea()
+            }
+            .onReceive(bridgePollTimer) { _ in
+                guard isRunning else { return }
+                if let pending = HengeVMBridge.shared.takePendingOpenURL(),
+                   let url = URL(string: pending) {
+                    safariURL = IdentifiableURL(url: url)
+                }
+                if HengeVMBridge.shared.takePendingOAuthDone() {
+                    safariURL = nil
+                }
             }
         }
     }
@@ -111,12 +126,24 @@ struct HengeLinuxApp: App {
                     LabeledContent("UEFI Firmware", value: "code.fd / vars.fd")
                     LabeledContent("Aligned Guest Bytes", value: "\(alignedBytes) B")
                     LabeledContent("Host Bridge", value: "http://10.0.2.4/.henge/")
+                    LabeledContent("VM Engine", value: HengeVMBridge.shared.isEngineLinked ? "Linked (HengeVM)" : "Host Substrate Only")
                 }
 
                 Section {
                     Button {
                         Task {
                             await jitClient.prepareSession()
+                            let gpuMode: Int32 = (jitClient.gpuBackend == .virgl3D) ? 1 : 0
+                            do {
+                                try HengeVMBridge.shared.startGuest(
+                                    withRamMiB: effectiveRamMiB,
+                                    cpuCount: Int32(selectedProfile.cpuCount),
+                                    gpuBackend: gpuMode
+                                )
+                                bootWarning = nil
+                            } catch {
+                                bootWarning = error.localizedDescription
+                            }
                             isRunning = true
                         }
                     } label: {

@@ -12,6 +12,7 @@ settings:
     ONLY_ACTIVE_ARCH: YES
     SWIFT_VERSION: "6.0"
     CLANG_C_LANGUAGE_STANDARD: c11
+    CLANG_CXX_LANGUAGE_STANDARD: c++20
     GENERATE_INFOPLIST_FILE: YES
     GCC_PREPROCESSOR_DEFINITIONS:
       - "$(inherited)"
@@ -19,6 +20,10 @@ settings:
     HEADER_SEARCH_PATHS:
       - "$(inherited)"
       - "$(SRCROOT)/../host"
+      - "$(SRCROOT)/../.upstream/WindowsiOS/core"
+      - "$(SRCROOT)/../.upstream/WindowsiOS/host"
+      - "$(SRCROOT)/../.upstream/WindowsiOS/devices"
+      - "$(SRCROOT)/../.upstream/WindowsiOS/ios/deps/include"
 
 targets:
   HengeLinuxJITExtension:
@@ -52,11 +57,15 @@ targets:
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
           - "$(SRCROOT)/../build/ios"
+          - "$(SRCROOT)/../.upstream/WindowsiOS/ios/deps/lib"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-lhengelinux"
         INFOPLIST_KEY_UIFileSharingEnabled: YES
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        INFOPLIST_KEY_UIBackgroundModes:
+          - audio
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Arch Linux guest audio capture uses the iOS microphone when requested by guest applications."
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone:
