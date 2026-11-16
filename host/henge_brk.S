@@ -7,14 +7,16 @@
 #if defined(__aarch64__) || defined(__arm64__)
 
 #if defined(__APPLE__)
+#define HENGE_ASM_GLUE(a, b) a##b
+#define HENGE_ASM_SYM(name) HENGE_ASM_GLUE(_, name)
 #define HENGE_ASM_FUNC(name) \
-    .globl _##name; \
-    _##name:
+    .globl HENGE_ASM_SYM(name) ; \
+    HENGE_ASM_SYM(name):
 #define HENGE_ASM_END(name)
 #else
 #define HENGE_ASM_FUNC(name) \
-    .globl name; \
-    .type name, %function; \
+    .globl name ; \
+    .type name, %function ; \
     name:
 #define HENGE_ASM_END(name) \
     .size name, .-name
