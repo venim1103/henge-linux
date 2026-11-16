@@ -60,9 +60,12 @@ void hengelinux_render_unlock(void);
 
 /*
  * Background-suspend virtual/physical counter (CNTVCT_EL0 / CNTPCT_EL0) offset
- * compensation (in 24 MHz host ticks). Prevents Linux softlockup watchdogs
- * from firing when iOS backgrounds/suspends the VM while monotonic time advances.
+ * compensation (in 24 MHz host ticks). Decoupled from GPU render pause so
+ * overlays (SafariSheetView, Control Center) and background audio never freeze
+ * guest timers while vCPU threads remain active; compensates only when vCPU
+ * execution is explicitly paused or an unscheduled host wall-clock jump occurs.
  */
+void hengelinux_set_vm_clock_paused(bool paused);
 uint64_t hengelinux_suspend_counter_offset(void);
 uint64_t hengelinux_compensated_counter(uint64_t raw_ticks);
 void hengelinux_reset_suspend_counter(void);

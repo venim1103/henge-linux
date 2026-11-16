@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Run 4 KiB TLB compatibility tests & build hvsparse
         run: make HV_TLB_PAGE_BITS=12 test-core hvsparse
-      - name: Verify hvsparse pack/unpack round-trip and 64 KiB alignment
+      - name: Verify hvsparse pack/unpack round-trip and HVSPARSE stream format
         run: |
           python3 -c '
           import struct
@@ -32,10 +32,11 @@ jobs:
           ./build/hvsparse pack build/raw.bin build/test.hvsparse
           python3 -c '
           import struct
-          hdr = open("build/test.hvsparse", "rb").read(32)
-          magic, ver, bsize, bcount, vsize, doff = struct.unpack("<IIIIQQ", hdr)
-          assert magic == 0x50535648 and ver == 1 and bsize == 65536
-          assert doff % 65536 == 0, f"unaligned data_offset: {doff}"
+          blob = open("build/test.hvsparse", "rb").read()
+          magic, vsize = struct.unpack("<8sQ", blob[:16])
+          assert magic == b"HVSPARSE", f"unexpected magic: {magic!r}"
+          assert vsize == 65536 + 131072 + 4096, f"unexpected vsize: {vsize}"
+          assert blob.endswith(b"\x00" * 16), "missing {0,0} extent terminator"
           '
           ./build/hvsparse unpack build/test.hvsparse build/unpacked.bin
           cmp build/raw.bin build/unpacked.bin

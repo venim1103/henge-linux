@@ -7,10 +7,12 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #if __has_include("winvm.h") && __has_include("share.h")
 #define HENGE_HAS_UPSTREAM_ENGINE 1
 extern "C" {
+#include "hvsparse.h"
 #include "share.h"
 #include "winvm.h"
 }
@@ -29,6 +31,11 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
     void *_guestRam;
     size_t _guestRamBytes;
     HengeVirtioGpuConfig _gpuConfig;
+    std::string _codePathStr;
+    std::string _varsPathStr;
+    std::string _diskPathStr;
+    std::string _shareDirStr;
+    std::string _shareSockStr;
 }
 - (void)handleEngineExitReason:(int)reason;
 @end
@@ -96,6 +103,9 @@ static void henge_on_vm_exit(int reason) {
 }
 
 - (void)attachDisplayLayer:(nullable CAMetalLayer *)layer {
+    if (_displayLayer == layer) {
+        return;
+    }
     _displayLayer = layer;
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_vmCreated) {
@@ -145,11 +155,12 @@ static void henge_on_vm_exit(int reason) {
     NSURL *sparseURL = [machineDir URLByAppendingPathComponent:@"archlinux.hvsparse"];
     NSURL *rawDiskURL = [machineDir URLByAppendingPathComponent:@"archlinux.img"];
 
-    NSURL *diskURL = [fm fileExistsAtPath:sparseURL.path] ? sparseURL : rawDiskURL;
+    BOOL hasSparse = [fm fileExistsAtPath:sparseURL.path];
+    BOOL hasRaw = [fm fileExistsAtPath:rawDiskURL.path];
 
     if (![fm fileExistsAtPath:codeURL.path] ||
         ![fm fileExistsAtPath:varsURL.path] ||
-        ![fm fileExistsAtPath:diskURL.path]) {
+        (!hasSparse && !hasRaw)) {
         NSString *msg = @"Missing guest files in Files -> HengeLinux -> Machines/ArchLinux/ (need code.fd, vars.fd, and archlinux.hvsparse).";
         _statusText = msg;
         if (error) {
@@ -161,6 +172,37 @@ static void henge_on_vm_exit(int reason) {
     }
 
 #if HENGE_HAS_UPSTREAM_ENGINE
+    /* Unpack HVSPARSE archive into an APFS sparse raw image on first boot or
+     * whenever archlinux.hvsparse is newer than archlinux.img. */
+    if (hasSparse) {
+        BOOL needsUnpack = !hasRaw;
+        if (hasRaw) {
+            NSDictionary *sparseAttrs = [fm attributesOfItemAtPath:sparseURL.path error:nil];
+            NSDictionary *rawAttrs = [fm attributesOfItemAtPath:rawDiskURL.path error:nil];
+            NSDate *sparseMod = sparseAttrs[NSFileModificationDate];
+            NSDate *rawMod = rawAttrs[NSFileModificationDate];
+            unsigned long long rawSize = [rawAttrs[NSFileSize] unsignedLongLongValue];
+            if (rawSize == 0ULL || (sparseMod != nil && rawMod != nil && [sparseMod compare:rawMod] == NSOrderedDescending)) {
+                needsUnpack = YES;
+            }
+        }
+        if (needsUnpack) {
+            [fm removeItemAtURL:rawDiskURL error:nil];
+            if (hv_sparse_unpack(sparseURL.path.fileSystemRepresentation,
+                                 rawDiskURL.path.fileSystemRepresentation) != 0) {
+                [fm removeItemAtURL:rawDiskURL error:nil];
+                NSString *msg = @"Failed to unpack archlinux.hvsparse into sparse raw NVMe disk image.";
+                _statusText = msg;
+                if (error) {
+                    *error = [NSError errorWithDomain:HengeVMErrorDomain
+                                                 code:1007
+                                             userInfo:@{NSLocalizedDescriptionKey: msg}];
+                }
+                return NO;
+            }
+        }
+    }
+
     /* Acquire TXM dual-mapped RX/RW JIT pool BEFORE mapping multi-GB guest RAM
      * so virtual address space around RX remains uncrowded for vm_remap. */
     HengeJitPool jitPool;
@@ -181,8 +223,8 @@ static void henge_on_vm_exit(int reason) {
     }
 
     uint32_t cappedRequestMiB = ramMiB;
-    if (!henge_txm_is_cs_debugged() && cappedRequestMiB > 2048U) {
-        cappedRequestMiB = 2048U;
+    if (!henge_txm_is_cs_debugged() && cappedRequestMiB > 1536U) {
+        cappedRequestMiB = 1536U;
     }
 
     uint64_t alignedBytes = henge_align_guest_ram_bytes(cappedRequestMiB, 8192U);
@@ -205,7 +247,7 @@ static void henge_on_vm_exit(int reason) {
                         error:nil];
 
     char shareSockPath[HENGE_DARWIN_SUN_PATH_MAX];
-    if (henge_format_unix_socket_path(machineDir.path.UTF8String,
+    if (henge_format_unix_socket_path(machineDir.path.fileSystemRepresentation,
                                       "share.sock",
                                       shareSockPath,
                                       sizeof(shareSockPath)) != 0) {
@@ -220,13 +262,19 @@ static void henge_on_vm_exit(int reason) {
         return NO;
     }
 
+    _codePathStr = codeURL.path.fileSystemRepresentation;
+    _varsPathStr = varsURL.path.fileSystemRepresentation;
+    _diskPathStr = rawDiskURL.path.fileSystemRepresentation;
+    _shareDirStr = sharedDir.path.fileSystemRepresentation;
+    _shareSockStr = shareSockPath;
+
     HvWinVmConfig cfg;
     std::memset(&cfg, 0, sizeof(cfg));
-    cfg.code_fd = codeURL.path.UTF8String;
-    cfg.vars_fd = varsURL.path.UTF8String;
-    cfg.disk0 = diskURL.path.UTF8String;
-    cfg.share_dir = sharedDir.path.UTF8String;
-    cfg.share_sock = shareSockPath;
+    cfg.code_fd = _codePathStr.c_str();
+    cfg.vars_fd = _varsPathStr.c_str();
+    cfg.disk0 = _diskPathStr.c_str();
+    cfg.share_dir = _shareDirStr.c_str();
+    cfg.share_sock = _shareSockStr.c_str();
     cfg.ncpus = (cpuCount > 0) ? cpuCount : 4;
     cfg.ram_mb = alignedBytes / (1024ULL * 1024ULL);
     cfg.jit_rx = (void *)jitPool.rx_base;

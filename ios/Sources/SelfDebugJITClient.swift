@@ -45,19 +45,30 @@ final class SelfDebugJITClient: ObservableObject {
 
         state = .requestingExtension
 
-        var pool = HengeJitPool()
         let poolBytes = Int(Self.defaultJitPoolMiB) * 1024 * 1024
-        if henge_jit_acquire_pool(poolBytes, true, &pool) {
+        let result = await Task.detached(priority: .userInitiated) { () -> (Bool, Int, Bool, String) in
+            var pool = HengeJitPool()
+            let acquired = henge_jit_acquire_pool(poolBytes, true, &pool)
+            var statusBuf = [CChar](repeating: 0, count: 256)
+            henge_jit_copy_status(&statusBuf, statusBuf.count)
+            let status = String(cString: statusBuf)
+            return (
+                acquired,
+                Int(pool.size / (1024 * 1024)),
+                henge_txm_is_cs_debugged(),
+                status
+            )
+        }.value
+
+        if result.0 {
             state = .blessed(
-                poolMiB: Int(pool.size / (1024 * 1024)),
-                ledgerExempt: henge_txm_is_cs_debugged()
+                poolMiB: result.1,
+                ledgerExempt: result.2
             )
             return
         }
 
-        var statusBuf = [CChar](repeating: 0, count: 256)
-        henge_jit_copy_status(&statusBuf, statusBuf.count)
-        let status = String(cString: statusBuf)
+        let status = result.3
         if hasPairingFile {
             state = .fallbackUntethered(
                 reason: "\(status) · pairing.plist found (attach StikDebug with henge-jit.js; in-app XPC lands in Milestone 5.4)."

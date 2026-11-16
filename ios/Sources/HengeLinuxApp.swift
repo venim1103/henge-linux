@@ -173,6 +173,13 @@ struct HengeLinuxApp: App {
                     Button {
                         Task {
                             await jitClient.prepareSession()
+                            if HengeVMBridge.shared.isEngineLinked,
+                               case .fallbackUntethered(let reason) = jitClient.state {
+                                bootWarning = reason
+                                bootErrorAlert = reason
+                                isRunning = false
+                                return
+                            }
                             let gpuMode: Int32 = (jitClient.gpuBackend == .virgl3D) ? 1 : 0
                             do {
                                 try HengeVMBridge.shared.startGuest(

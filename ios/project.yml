@@ -86,6 +86,16 @@ targets:
           - "-lffi"
           - "-lresolv"
           - "-liconv"
+          - "-framework"
+          - "AudioToolbox"
+          - "-framework"
+          - "Metal"
+          - "-framework"
+          - "QuartzCore"
+          - "-framework"
+          - "SafariServices"
+          - "-framework"
+          - "GameController"
         INFOPLIST_KEY_UIFileSharingEnabled: YES
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
         INFOPLIST_KEY_UIBackgroundModes:

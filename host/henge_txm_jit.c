@@ -158,21 +158,21 @@ static void set_jit_status(const char *fmt, ...) {
 
 #if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
 /*
- * Reserve a 384 MiB + 16 KiB zero-fill block in __DATA at launch so a contiguous
- * hole below 0x7000000000 (< 64 GiB) is guaranteed, then vm_deallocate it right
- * before debugserver's _M<size>,rx allocation claims the first-fit low-VA range.
+ * Reserve a 384 MiB + 16 KiB zero-fill block in a dedicated Mach-O section
+ * below 0x7000000000 (< 64 GiB) at launch so a contiguous low-VA hole is
+ * guaranteed without touching standard __DATA.__bss globals.
  */
-__attribute__((used, aligned(16384)))
+__attribute__((used, aligned(16384), section("__DATA,__jit_hold")))
 static uint8_t g_jit_low_hold[HENGE_DEFAULT_JIT_POOL_BYTES + (16U << 10)];
 static bool g_jit_low_hold_released = false;
 
-static _Thread_local bool g_expecting_jit_trap = false;
+static _Thread_local volatile sig_atomic_t g_expecting_jit_trap = 0;
 static struct sigaction g_prev_sigtrap;
 static struct sigaction g_prev_sigbus;
 static pthread_once_t g_trap_once = PTHREAD_ONCE_INIT;
 
 static void henge_jit_trap_handler(int sig, siginfo_t *info, void *ctx) {
-    if (g_expecting_jit_trap && ctx != NULL) {
+    if (g_expecting_jit_trap != 0 && ctx != NULL) {
         ucontext_t *uc = (ucontext_t *)ctx;
         uc->uc_mcontext->__ss.__pc += 4;
         uc->uc_mcontext->__ss.__x[0] = 0;
@@ -266,15 +266,17 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
 
     henge_jit_install_trap_guard();
 
-    if (!henge_txm_is_cs_debugged() && !henge_txm_is_ptraced()) {
-        set_jit_status("Waiting for debugger (StikDebug or LLDB)");
+    if (!henge_txm_is_ptraced()) {
+        set_jit_status("Waiting for active debugger (P_TRACED)");
         pthread_mutex_unlock(&g_pool_mutex);
         return false;
     }
 
-    g_expecting_jit_trap = true;
+    g_expecting_jit_trap = 1;
+    atomic_signal_fence(memory_order_seq_cst);
     uint64_t probe = henge_jit26_probe();
-    g_expecting_jit_trap = false;
+    atomic_signal_fence(memory_order_seq_cst);
+    g_expecting_jit_trap = 0;
 
     if ((probe & 0xFFFFFFFFULL) != 0xE0000069ULL) {
         set_jit_status("Debugger attached; waiting for brk #0x69 trap handler");
@@ -286,9 +288,11 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
 
     uintptr_t rx = 0U;
     for (int attempt = 0; attempt < 3; attempt++) {
-        g_expecting_jit_trap = true;
+        g_expecting_jit_trap = 1;
+        atomic_signal_fence(memory_order_seq_cst);
         rx = henge_jit26_prepare_region(0U, bytes);
-        g_expecting_jit_trap = false;
+        atomic_signal_fence(memory_order_seq_cst);
+        g_expecting_jit_trap = 0;
         if (rx != 0U) {
             break;
         }
@@ -318,10 +322,10 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
     const uintptr_t reach = 2ULL << 30;
     for (uintptr_t off = 0; off <= reach && kr != KERN_SUCCESS; off += step) {
         for (int side = 0; side < 2 && kr != KERN_SUCCESS; side++) {
-            uintptr_t want = (side == 0) ? (rx + bytes + off) : (rx - bytes - off);
-            if (side == 1 && rx < bytes + off + step) {
+            if (side == 1 && rx < HENGE_TXM_MIN_VA + bytes + off + step) {
                 continue;
             }
+            uintptr_t want = (side == 0) ? (rx + bytes + off) : (rx - bytes - off);
             rw = (vm_address_t)want;
             kr = vm_remap(mach_task_self(), &rw, (vm_size_t)bytes, 0, VM_FLAGS_FIXED,
                           mach_task_self(), (vm_address_t)rx, FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
@@ -334,6 +338,7 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
     }
     if (kr != KERN_SUCCESS) {
         vm_deallocate(mach_task_self(), (vm_address_t)rx, (vm_size_t)bytes);
+        restore_low_va_hold(bytes);
         set_jit_status("Failed: vm_remap RW alias (%s)", mach_error_string(kr));
         pthread_mutex_unlock(&g_pool_mutex);
         return false;
@@ -343,6 +348,7 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
     if (kr != KERN_SUCCESS) {
         vm_deallocate(mach_task_self(), rw, (vm_size_t)bytes);
         vm_deallocate(mach_task_self(), (vm_address_t)rx, (vm_size_t)bytes);
+        restore_low_va_hold(bytes);
         set_jit_status("Failed: vm_protect RW (%s)", mach_error_string(kr));
         pthread_mutex_unlock(&g_pool_mutex);
         return false;
@@ -351,6 +357,7 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
     if (!verify_rx_rw_selftest((uint8_t *)(uintptr_t)rx, (uint8_t *)(uintptr_t)rw, bytes)) {
         vm_deallocate(mach_task_self(), rw, (vm_size_t)bytes);
         vm_deallocate(mach_task_self(), (vm_address_t)rx, (vm_size_t)bytes);
+        restore_low_va_hold(bytes);
         set_jit_status("Failed: TXM selftest rejected RX execution");
         pthread_mutex_unlock(&g_pool_mutex);
         return false;
@@ -364,9 +371,11 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
     atomic_store_explicit(&g_pool_live, true, memory_order_release);
 
     if (detach_after && henge_txm_is_ptraced()) {
-        g_expecting_jit_trap = true;
+        g_expecting_jit_trap = 1;
+        atomic_signal_fence(memory_order_seq_cst);
         henge_jit26_detach();
-        g_expecting_jit_trap = false;
+        atomic_signal_fence(memory_order_seq_cst);
+        g_expecting_jit_trap = 0;
     }
 
     set_jit_status("Blessed (%zu MiB TXM RX/RW)", bytes >> 20);
@@ -476,13 +485,20 @@ void *henge_alloc_ledger_exempt_ram(size_t size, bool *out_ledger_exempt) {
             return (void *)(uintptr_t)mapped_addr;
         }
     }
-#endif
 
+    vm_address_t fallback_addr = 0;
+    if (vm_allocate(mach_task_self(), &fallback_addr, (vm_size_t)size, VM_FLAGS_ANYWHERE) == KERN_SUCCESS &&
+        fallback_addr != 0) {
+        return (void *)(uintptr_t)fallback_addr;
+    }
+    return NULL;
+#else
     void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ptr == MAP_FAILED) {
         return NULL;
     }
     return ptr;
+#endif
 }
 
 void henge_free_ledger_exempt_ram(void *ptr, size_t size) {

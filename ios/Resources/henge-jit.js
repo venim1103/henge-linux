@@ -24,57 +24,96 @@ if (!attachResponse || attachResponse.startsWith('E')) {
 }
 
 let totalBreakpoints = 0;
-while (!detached) {
-    totalBreakpoints++;
-    log(`Handling breakpoint ${totalBreakpoints}`);
+try {
+    while (!detached) {
+        totalBreakpoints++;
+        log(`Handling breakpoint ${totalBreakpoints}`);
 
-    let brkResponse = send_command(`c`);
-    log(`brkResponse = ${brkResponse}`);
-    if (!brkResponse || brkResponse.startsWith('E') || brkResponse.startsWith('W') || brkResponse.startsWith('X')) {
-        log(`Target exited or errored: ${brkResponse}`);
-        break;
-    }
-
-    let tmpMatch = /T[0-9a-fA-F]+thread:(?<tid>[0-9a-fA-F]+);/.exec(brkResponse);
-    tid = tmpMatch ? tmpMatch.groups['tid'] : null;
-    tmpMatch = /20:(?<reg>[0-9a-fA-F]{16});/.exec(brkResponse);
-    pc = tmpMatch ? tmpMatch.groups['reg'] : null;
-    tmpMatch = /10:(?<reg>[0-9a-fA-F]{16});/.exec(brkResponse);
-    x16 = tmpMatch ? tmpMatch.groups['reg'] : null;
-    if (!tid || !pc || !x16) {
-        log(`Failed to extract registers: tid=${tid}, pc=${pc}, x16=${x16}`);
-        break;
-    }
-    pc = littleEndianHexStringToNumber(pc);
-    x16 = littleEndianHexStringToNumber(x16);
-
-    let instructionResponse = send_command(`m${pc.toString(16)},4`);
-    if (!instructionResponse || instructionResponse.startsWith('E') || instructionResponse.length < 8) {
-        log(`Failed to read instruction at 0x${pc.toString(16)}: ${instructionResponse}`);
-        break;
-    }
-    let instrU32 = littleEndianHexToU32(instructionResponse);
-    let brkImmediate = extractBrkImmediate(instrU32);
-    if (legacyCommands[brkImmediate] !== undefined) {
-        tmpMatch = /00:(?<reg>[0-9a-fA-F]{16});/.exec(brkResponse);
-        x0 = tmpMatch ? tmpMatch.groups['reg'] : null;
-        tmpMatch = /01:(?<reg>[0-9a-fA-F]{16});/.exec(brkResponse);
-        x1 = tmpMatch ? tmpMatch.groups['reg'] : null;
-        if (!x0 || !x1) {
+        let brkResponse = send_command(`c`);
+        log(`brkResponse = ${brkResponse}`);
+        if (!brkResponse || brkResponse.startsWith('E') || brkResponse.startsWith('W') || brkResponse.startsWith('X')) {
+            log(`Target exited or errored: ${brkResponse}`);
             break;
         }
-        x0 = littleEndianHexStringToNumber(x0);
-        x1 = littleEndianHexStringToNumber(x1);
 
-        let pcPlus4 = numberToLittleEndianHexString(pc + 4n);
-        send_command(`P20=${pcPlus4};thread:${tid};`);
+        let stopSigMatch = /^T([0-9a-fA-F]{2})/.exec(brkResponse);
+        let stopSig = stopSigMatch ? parseInt(stopSigMatch[1], 16) : 0;
 
-        const command = legacyCommands[brkImmediate];
-        command();
-    } else {
-        log(`Unhandled brk immediate 0x${brkImmediate.toString(16)}; detaching`);
-        break;
+        let tmpMatch = /T[0-9a-fA-F]+thread:(?<tid>[0-9a-fA-F]+);/.exec(brkResponse);
+        tid = tmpMatch ? tmpMatch.groups['tid'] : null;
+        if (!tid) {
+            log(`Failed to extract thread id from stop packet: ${brkResponse}`);
+            break;
+        }
+
+        // Ignore non-SIGTRAP stops (e.g., benign signals or thread events) by continuing.
+        if (stopSig !== 0 && stopSig !== 5) {
+            continue;
+        }
+
+        pc = readReg(brkResponse, '20', tid);
+        x16 = readReg(brkResponse, '10', tid);
+        if (!pc || !x16) {
+            log(`Failed to extract registers: tid=${tid}, pc=${pc}, x16=${x16}`);
+            break;
+        }
+        pc = littleEndianHexStringToNumber(pc);
+        x16 = littleEndianHexStringToNumber(x16);
+
+        let instructionResponse = send_command(`m${pc.toString(16)},4`);
+        if (!instructionResponse || instructionResponse.startsWith('E') || instructionResponse.length < 8) {
+            log(`Failed to read instruction at 0x${pc.toString(16)}: ${instructionResponse}`);
+            break;
+        }
+        let instrU32 = littleEndianHexToU32(instructionResponse);
+        if (!isArm64BrkInstruction(instrU32)) {
+            log(`Non-BRK stop at 0x${pc.toString(16)} (insn=0x${instrU32.toString(16)}); continuing`);
+            continue;
+        }
+
+        let brkImmediate = extractBrkImmediate(instrU32);
+        if (legacyCommands[brkImmediate] !== undefined) {
+            x0 = readReg(brkResponse, '00', tid);
+            x1 = readReg(brkResponse, '01', tid);
+            if (!x0 || !x1) {
+                log(`Failed to read x0/x1 for brk #0x${brkImmediate.toString(16)}`);
+                break;
+            }
+            x0 = littleEndianHexStringToNumber(x0);
+            x1 = littleEndianHexStringToNumber(x1);
+
+            let pcPlus4 = numberToLittleEndianHexString(pc + 4n);
+            send_command(`P20=${pcPlus4};thread:${tid};`);
+
+            const command = legacyCommands[brkImmediate];
+            command();
+        } else {
+            log(`Unhandled brk immediate 0x${brkImmediate.toString(16)}; detaching`);
+            break;
+        }
     }
+} finally {
+    if (!detached) {
+        try {
+            send_command(`D`);
+        } catch (err) {
+            log(`Detach cleanup error: ${err}`);
+        }
+        detached = true;
+    }
+}
+
+function readReg(stopPacket, regHex, threadId) {
+    const rx = new RegExp(`(?:^|[;:])${regHex}:(?<reg>[0-9a-fA-F]{16});`);
+    const match = rx.exec(stopPacket);
+    if (match && match.groups && match.groups['reg']) {
+        return match.groups['reg'];
+    }
+    const fallback = send_command(`p${regHex};thread:${threadId};`);
+    if (fallback && /^[0-9a-fA-F]{16}$/.test(fallback)) {
+        return fallback;
+    }
+    return null;
 }
 
 function JIT26Detach() {
@@ -135,9 +174,13 @@ function numberToLittleEndianHexString(num) {
 }
 
 function littleEndianHexToU32(hexStr) {
-    return parseInt(hexStr.substr(0, 8).match(/../g).reverse().join(''), 16);
+    return parseInt(hexStr.substr(0, 8).match(/../g).reverse().join(''), 16) >>> 0;
+}
+
+function isArm64BrkInstruction(u32) {
+    return ((u32 & 0xFFE0001F) >>> 0) === 0xD4200000;
 }
 
 function extractBrkImmediate(u32) {
-    return (u32 >> 5) & 0xFFFF;
+    return (u32 >>> 5) & 0xFFFF;
 }

@@ -26,6 +26,10 @@ int pipe2(int fds[2], int flags) {
         errno = EFAULT;
         return -1;
     }
+    if ((flags & ~(O_CLOEXEC | O_NONBLOCK)) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
     if (pipe(fds) < 0) {
         return -1;
     }
@@ -57,22 +61,37 @@ int pipe2(int fds[2], int flags) {
 
 static atomic_bool g_render_paused = false;
 static pthread_mutex_t g_render_mutex = PTHREAD_MUTEX_INITIALIZER;
-static atomic_uint_fast64_t g_pause_start_ticks = 0ULL;
+static pthread_mutex_t g_clock_mutex = PTHREAD_MUTEX_INITIALIZER;
+static atomic_bool g_vm_clock_paused = false;
+static atomic_uint_fast64_t g_clock_pause_start_ticks = 0ULL;
 static atomic_uint_fast64_t g_suspend_offset_ticks = 0ULL;
+static atomic_uint_fast64_t g_last_raw_ticks = 0ULL;
 static atomic_uint_fast64_t g_last_compensated_ticks = 0ULL;
+
+/* Unscheduled XNU freezer jump threshold: 500 ms at 24 MHz (12,000,000 ticks). */
+#define HENGE_SUSPEND_JUMP_THRESHOLD_TICKS 12000000ULL
+
+#if defined(__APPLE__) && !(defined(__aarch64__) || defined(__arm64__))
+static mach_timebase_info_data_t g_x86_timebase = {0, 0};
+static pthread_once_t g_x86_timebase_once = PTHREAD_ONCE_INIT;
+
+static void init_x86_timebase_once(void) {
+    mach_timebase_info(&g_x86_timebase);
+}
+#endif
 
 static uint64_t platform_raw_ticks_24mhz(void) {
 #if defined(__APPLE__)
 #if defined(__aarch64__) || defined(__arm64__)
     return mach_absolute_time();
 #else
-    static mach_timebase_info_data_t tb = {0, 0};
-    if (tb.denom == 0U) {
-        mach_timebase_info(&tb);
-    }
+    pthread_once(&g_x86_timebase_once, init_x86_timebase_once);
     uint64_t raw = mach_absolute_time();
-    __uint128_t scaled = ((__uint128_t)raw * (uint64_t)tb.numer * 24ULL) /
-                         ((uint64_t)tb.denom * 1000ULL);
+    if (g_x86_timebase.denom == 0U) {
+        return raw;
+    }
+    __uint128_t scaled = ((__uint128_t)raw * (uint64_t)g_x86_timebase.numer * 24ULL) /
+                         ((uint64_t)g_x86_timebase.denom * 1000ULL);
     return (uint64_t)scaled;
 #endif
 #else
@@ -119,6 +138,12 @@ static bool format_ios_sandbox_tmp_socket(const char *container_dir,
             uuid_start++;
         }
         const char *uuid_end = strchr(uuid_start, '/');
+        size_t uuid_len = (uuid_end != NULL)
+            ? (size_t)(uuid_end - uuid_start)
+            : strlen(uuid_start);
+        if (uuid_len == 0U) {
+            return false;
+        }
         size_t root_len = (uuid_end != NULL)
             ? (size_t)(uuid_end - p)
             : strlen(p);
@@ -254,21 +279,7 @@ uint64_t henge_align_guest_ram_bytes(uint32_t requested_mib, uint32_t device_cap
 
 void hengelinux_set_render_paused(bool paused) {
     pthread_mutex_lock(&g_render_mutex);
-    bool was_paused = atomic_load_explicit(&g_render_paused, memory_order_relaxed);
-    if (paused && !was_paused) {
-        atomic_store_explicit(&g_pause_start_ticks, platform_raw_ticks_24mhz(), memory_order_release);
-        atomic_store_explicit(&g_render_paused, true, memory_order_release);
-    } else if (!paused && was_paused) {
-        uint64_t start = atomic_load_explicit(&g_pause_start_ticks, memory_order_acquire);
-        uint64_t now = platform_raw_ticks_24mhz();
-        if (now > start && start > 0ULL) {
-            atomic_fetch_add_explicit(&g_suspend_offset_ticks,
-                                      now - start,
-                                      memory_order_acq_rel);
-        }
-        atomic_store_explicit(&g_pause_start_ticks, 0ULL, memory_order_release);
-        atomic_store_explicit(&g_render_paused, false, memory_order_release);
-    }
+    atomic_store_explicit(&g_render_paused, paused, memory_order_release);
     pthread_mutex_unlock(&g_render_mutex);
 }
 
@@ -284,12 +295,33 @@ void hengelinux_render_unlock(void) {
     pthread_mutex_unlock(&g_render_mutex);
 }
 
+void hengelinux_set_vm_clock_paused(bool paused) {
+    pthread_mutex_lock(&g_clock_mutex);
+    bool was_paused = atomic_load_explicit(&g_vm_clock_paused, memory_order_relaxed);
+    if (paused && !was_paused) {
+        atomic_store_explicit(&g_clock_pause_start_ticks, platform_raw_ticks_24mhz(), memory_order_release);
+        atomic_store_explicit(&g_vm_clock_paused, true, memory_order_release);
+    } else if (!paused && was_paused) {
+        uint64_t start = atomic_load_explicit(&g_clock_pause_start_ticks, memory_order_acquire);
+        uint64_t now = platform_raw_ticks_24mhz();
+        if (now > start && start > 0ULL) {
+            atomic_fetch_add_explicit(&g_suspend_offset_ticks,
+                                      now - start,
+                                      memory_order_acq_rel);
+        }
+        atomic_store_explicit(&g_last_raw_ticks, now, memory_order_release);
+        atomic_store_explicit(&g_clock_pause_start_ticks, 0ULL, memory_order_release);
+        atomic_store_explicit(&g_vm_clock_paused, false, memory_order_release);
+    }
+    pthread_mutex_unlock(&g_clock_mutex);
+}
+
 uint64_t hengelinux_suspend_counter_offset(void) {
     uint64_t base_offset = atomic_load_explicit(&g_suspend_offset_ticks, memory_order_acquire);
-    if (!atomic_load_explicit(&g_render_paused, memory_order_acquire)) {
+    if (!atomic_load_explicit(&g_vm_clock_paused, memory_order_acquire)) {
         return base_offset;
     }
-    uint64_t start = atomic_load_explicit(&g_pause_start_ticks, memory_order_acquire);
+    uint64_t start = atomic_load_explicit(&g_clock_pause_start_ticks, memory_order_acquire);
     if (start == 0ULL) {
         return base_offset;
     }
@@ -314,24 +346,48 @@ static uint64_t clamp_monotonic_ticks(uint64_t candidate) {
 }
 
 uint64_t hengelinux_compensated_counter(uint64_t raw_ticks) {
-    uint64_t base_offset = atomic_load_explicit(&g_suspend_offset_ticks, memory_order_acquire);
-    uint64_t candidate = 0ULL;
-    if (atomic_load_explicit(&g_render_paused, memory_order_acquire)) {
-        uint64_t start = atomic_load_explicit(&g_pause_start_ticks, memory_order_acquire);
+    if (atomic_load_explicit(&g_vm_clock_paused, memory_order_acquire)) {
+        uint64_t base_offset = atomic_load_explicit(&g_suspend_offset_ticks, memory_order_acquire);
+        uint64_t start = atomic_load_explicit(&g_clock_pause_start_ticks, memory_order_acquire);
         if (start > 0ULL) {
-            candidate = (start > base_offset) ? (start - base_offset) : 0ULL;
+            uint64_t candidate = (start > base_offset) ? (start - base_offset) : 0ULL;
             return clamp_monotonic_ticks(candidate);
         }
     }
-    candidate = (raw_ticks > base_offset) ? (raw_ticks - base_offset) : 0ULL;
+
+    uint64_t prev_raw = atomic_load_explicit(&g_last_raw_ticks, memory_order_acquire);
+    while (true) {
+        if (raw_ticks <= prev_raw) {
+            break;
+        }
+        if (atomic_compare_exchange_weak_explicit(&g_last_raw_ticks,
+                                                    &prev_raw,
+                                                    raw_ticks,
+                                                    memory_order_acq_rel,
+                                                    memory_order_acquire)) {
+            if (prev_raw > 0ULL && (raw_ticks - prev_raw) > HENGE_SUSPEND_JUMP_THRESHOLD_TICKS) {
+                uint64_t excess = (raw_ticks - prev_raw) - HENGE_SUSPEND_JUMP_THRESHOLD_TICKS;
+                atomic_fetch_add_explicit(&g_suspend_offset_ticks, excess, memory_order_acq_rel);
+            }
+            break;
+        }
+    }
+
+    uint64_t base_offset = atomic_load_explicit(&g_suspend_offset_ticks, memory_order_acquire);
+    uint64_t candidate = (raw_ticks > base_offset) ? (raw_ticks - base_offset) : 0ULL;
     return clamp_monotonic_ticks(candidate);
 }
 
 void hengelinux_reset_suspend_counter(void) {
-    pthread_mutex_lock(&g_render_mutex);
-    atomic_store_explicit(&g_pause_start_ticks, 0ULL, memory_order_release);
+    pthread_mutex_lock(&g_clock_mutex);
+    atomic_store_explicit(&g_vm_clock_paused, false, memory_order_release);
+    atomic_store_explicit(&g_clock_pause_start_ticks, 0ULL, memory_order_release);
     atomic_store_explicit(&g_suspend_offset_ticks, 0ULL, memory_order_release);
+    atomic_store_explicit(&g_last_raw_ticks, 0ULL, memory_order_release);
     atomic_store_explicit(&g_last_compensated_ticks, 0ULL, memory_order_release);
+    pthread_mutex_unlock(&g_clock_mutex);
+
+    pthread_mutex_lock(&g_render_mutex);
     atomic_store_explicit(&g_render_paused, false, memory_order_release);
     pthread_mutex_unlock(&g_render_mutex);
 }

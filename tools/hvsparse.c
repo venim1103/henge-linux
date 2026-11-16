@@ -1,8 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
- * hvsparse: Zero-skipping sparse disk image container for henge-linux.
- * Compresses raw UEFI/GPT disk images by eliding all-zero 64 KiB chunks
- * so multi-gigabyte Arch Linux images fit comfortably in iOS app containers.
+ * hvsparse: Streaming zero-skipping sparse disk archive packer/unpacker
+ * compatible with upstream WindowsiOS host/hvsparse.c ("HVSPARSE" v1):
+ *   - 8-byte magic: "HVSPARSE"
+ *   - 8-byte little-endian uint64_t virtual disk size
+ *   - Sequence of [uint64_t offset, uint64_t len] (len <= 8 MiB) records
+ *     followed by raw extent payload bytes
+ *   - Terminated by {0ULL, 0ULL}
  */
 
 #if !defined(__APPLE__)
@@ -19,19 +23,21 @@
 #include <string.h>
 #include <unistd.h>
 
-#define HVSPARSE_MAGIC          0x50535648U /* "HVSP" little-endian */
-#define HVSPARSE_VERSION        1U
-#define HVSPARSE_BLOCK_SIZE     (64U * 1024U)
+#define HVSPARSE_MAGIC_STR      "HVSPARSE"
+#define HVSPARSE_MAGIC_LEN      8U
+#define HVSPARSE_SCAN_BLOCK     (64U * 1024U)
+#define HVSPARSE_MAX_EXTENT     (8U * 1024U * 1024U) /* 8 MiB max record size in upstream hvsparse.c */
 #define HVSPARSE_MAX_VIRT_BYTES (8ULL * 1024ULL * 1024ULL * 1024ULL * 1024ULL) /* 8 TiB */
 
 typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t block_size;
-    uint32_t block_count;
+    char magic[8];
     uint64_t virtual_size;
-    uint64_t data_offset;
-} HvSparseHeader;
+} HvSparseStreamHeader;
+
+typedef struct __attribute__((packed)) {
+    uint64_t offset;
+    uint64_t length;
+} HvSparseExtentRecord;
 
 static bool is_zero_block(const uint8_t *buf, size_t len) {
     size_t i = 0;
@@ -48,6 +54,21 @@ static bool is_zero_block(const uint8_t *buf, size_t len) {
         }
     }
     return true;
+}
+
+static bool flush_extent(FILE *out,
+                         uint64_t extent_offset,
+                         const uint8_t *extent_buf,
+                         size_t extent_len) {
+    if (extent_len == 0U) {
+        return true;
+    }
+    HvSparseExtentRecord rec = {
+        .offset = extent_offset,
+        .length = (uint64_t)extent_len,
+    };
+    return fwrite(&rec, sizeof(rec), 1, out) == 1 &&
+           fwrite(extent_buf, 1, extent_len, out) == extent_len;
 }
 
 static int cmd_pack(const char *raw_path, const char *sparse_path) {
@@ -67,27 +88,20 @@ static int cmd_pack(const char *raw_path, const char *sparse_path) {
         return 1;
     }
     uint64_t virtual_size = (uint64_t)end_off;
-    rewind(in);
-
-    uint64_t total_blocks = (virtual_size + HVSPARSE_BLOCK_SIZE - 1ULL) / HVSPARSE_BLOCK_SIZE;
-    if (total_blocks > (uint64_t)UINT32_MAX) {
-        fprintf(stderr, "hvsparse: image exceeds max block count (%llu)\n",
-                (unsigned long long)total_blocks);
+    if (virtual_size > HVSPARSE_MAX_VIRT_BYTES ||
+        virtual_size > (uint64_t)INT64_MAX - HVSPARSE_MAX_EXTENT) {
+        fprintf(stderr, "hvsparse: input size out of safe range (%llu)\n",
+                (unsigned long long)virtual_size);
         fclose(in);
         return 1;
     }
-    uint32_t block_count = (uint32_t)total_blocks;
-    uint64_t table_bytes = (uint64_t)block_count * sizeof(uint64_t);
-    uint64_t raw_header_end = sizeof(HvSparseHeader) + table_bytes;
-    uint64_t data_offset = (raw_header_end + HVSPARSE_BLOCK_SIZE - 1ULL) &
-                           ~((uint64_t)HVSPARSE_BLOCK_SIZE - 1ULL);
-    uint64_t pad_bytes = data_offset - raw_header_end;
+    rewind(in);
 
-    uint64_t *offsets = calloc(block_count > 0 ? block_count : 1U, sizeof(uint64_t));
-    uint8_t *buf = malloc(HVSPARSE_BLOCK_SIZE);
-    if (offsets == NULL || buf == NULL) {
-        free(offsets);
-        free(buf);
+    uint8_t *scan_buf = malloc(HVSPARSE_SCAN_BLOCK);
+    uint8_t *extent_buf = malloc(HVSPARSE_MAX_EXTENT);
+    if (scan_buf == NULL || extent_buf == NULL) {
+        free(scan_buf);
+        free(extent_buf);
         fclose(in);
         return 1;
     }
@@ -95,94 +109,130 @@ static int cmd_pack(const char *raw_path, const char *sparse_path) {
     FILE *out = fopen(sparse_path, "wb");
     if (out == NULL) {
         fprintf(stderr, "hvsparse: cannot open output '%s': %s\n", sparse_path, strerror(errno));
-        free(offsets);
-        free(buf);
+        free(scan_buf);
+        free(extent_buf);
         fclose(in);
         return 1;
     }
 
-    HvSparseHeader hdr = {
-        .magic = HVSPARSE_MAGIC,
-        .version = HVSPARSE_VERSION,
-        .block_size = HVSPARSE_BLOCK_SIZE,
-        .block_count = block_count,
-        .virtual_size = virtual_size,
-        .data_offset = data_offset,
-    };
-
-    memset(buf, 0, HVSPARSE_BLOCK_SIZE);
-    if (fwrite(&hdr, sizeof(hdr), 1, out) != 1 ||
-        (block_count > 0 && fwrite(offsets, sizeof(uint64_t), block_count, out) != block_count) ||
-        (pad_bytes > 0 && fwrite(buf, 1, (size_t)pad_bytes, out) != (size_t)pad_bytes)) {
+    HvSparseStreamHeader hdr;
+    memcpy(hdr.magic, HVSPARSE_MAGIC_STR, HVSPARSE_MAGIC_LEN);
+    hdr.virtual_size = virtual_size;
+    if (fwrite(&hdr, sizeof(hdr), 1, out) != 1) {
         fclose(out);
-        free(offsets);
-        free(buf);
+        unlink(sparse_path);
+        free(scan_buf);
+        free(extent_buf);
         fclose(in);
         return 1;
     }
 
-    uint64_t cursor = data_offset;
-    uint32_t non_zero_blocks = 0U;
+    uint64_t cursor = 0ULL;
+    uint64_t extent_offset = 0ULL;
+    size_t extent_len = 0U;
+    uint64_t non_zero_bytes = 0ULL;
+    uint64_t extent_count = 0ULL;
 
-    for (uint32_t i = 0; i < block_count; i++) {
-        memset(buf, 0, HVSPARSE_BLOCK_SIZE);
+    while (cursor < virtual_size) {
+        uint64_t rem = virtual_size - cursor;
+        size_t chunk_len = rem < HVSPARSE_SCAN_BLOCK ? (size_t)rem : HVSPARSE_SCAN_BLOCK;
         size_t total_read = 0U;
-        while (total_read < HVSPARSE_BLOCK_SIZE) {
-            size_t n = fread(buf + total_read, 1, HVSPARSE_BLOCK_SIZE - total_read, in);
+        while (total_read < chunk_len) {
+            size_t n = fread(scan_buf + total_read, 1, chunk_len - total_read, in);
             if (n == 0U) {
                 break;
             }
             total_read += n;
         }
-        if (total_read == 0U && ferror(in)) {
+        if (total_read != chunk_len) {
+            fprintf(stderr, "hvsparse: short read at offset %llu in '%s'\n",
+                    (unsigned long long)cursor, raw_path);
             fclose(out);
             unlink(sparse_path);
-            free(offsets);
-            free(buf);
+            free(scan_buf);
+            free(extent_buf);
             fclose(in);
             return 1;
         }
-        if (!is_zero_block(buf, HVSPARSE_BLOCK_SIZE)) {
-            if (fwrite(buf, 1, HVSPARSE_BLOCK_SIZE, out) != HVSPARSE_BLOCK_SIZE) {
-                fclose(out);
-                unlink(sparse_path);
-                free(offsets);
-                free(buf);
-                fclose(in);
-                return 1;
+
+        if (is_zero_block(scan_buf, chunk_len)) {
+            if (extent_len > 0U) {
+                if (!flush_extent(out, extent_offset, extent_buf, extent_len)) {
+                    fclose(out);
+                    unlink(sparse_path);
+                    free(scan_buf);
+                    free(extent_buf);
+                    fclose(in);
+                    return 1;
+                }
+                extent_count++;
+                extent_len = 0U;
             }
-            offsets[i] = cursor;
-            cursor += HVSPARSE_BLOCK_SIZE;
-            non_zero_blocks++;
+        } else {
+            if (extent_len > 0U && extent_len + chunk_len > HVSPARSE_MAX_EXTENT) {
+                if (!flush_extent(out, extent_offset, extent_buf, extent_len)) {
+                    fclose(out);
+                    unlink(sparse_path);
+                    free(scan_buf);
+                    free(extent_buf);
+                    fclose(in);
+                    return 1;
+                }
+                extent_count++;
+                extent_len = 0U;
+            }
+            if (extent_len == 0U) {
+                extent_offset = cursor;
+            }
+            memcpy(extent_buf + extent_len, scan_buf, chunk_len);
+            extent_len += chunk_len;
+            non_zero_bytes += (uint64_t)chunk_len;
         }
+
+        cursor += (uint64_t)chunk_len;
     }
 
-    if (fseeko(out, (off_t)sizeof(HvSparseHeader), SEEK_SET) != 0 ||
-        (block_count > 0 && fwrite(offsets, sizeof(uint64_t), block_count, out) != block_count)) {
+    if (extent_len > 0U) {
+        if (!flush_extent(out, extent_offset, extent_buf, extent_len)) {
+            fclose(out);
+            unlink(sparse_path);
+            free(scan_buf);
+            free(extent_buf);
+            fclose(in);
+            return 1;
+        }
+        extent_count++;
+    }
+
+    HvSparseExtentRecord eof_rec = {0ULL, 0ULL};
+    if (fwrite(&eof_rec, sizeof(eof_rec), 1, out) != 1 || fflush(out) != 0) {
         fclose(out);
         unlink(sparse_path);
-        free(offsets);
-        free(buf);
+        free(scan_buf);
+        free(extent_buf);
         fclose(in);
         return 1;
     }
+
+    off_t out_end = ftello(out);
+    uint64_t on_disk_bytes = out_end > 0 ? (uint64_t)out_end : 0ULL;
 
     if (fclose(out) != 0) {
         unlink(sparse_path);
-        free(offsets);
-        free(buf);
+        free(scan_buf);
+        free(extent_buf);
         fclose(in);
         return 1;
     }
-    free(offsets);
-    free(buf);
+    free(scan_buf);
+    free(extent_buf);
     fclose(in);
 
-    printf("[hvsparse] packed %llu bytes -> %u/%u non-zero blocks (%llu bytes on disk)\n",
+    printf("[hvsparse] packed %llu bytes -> %llu extents (%llu non-zero bytes, %llu bytes on disk)\n",
            (unsigned long long)virtual_size,
-           non_zero_blocks,
-           block_count,
-           (unsigned long long)cursor);
+           (unsigned long long)extent_count,
+           (unsigned long long)non_zero_bytes,
+           (unsigned long long)on_disk_bytes);
     return 0;
 }
 
@@ -198,53 +248,30 @@ static int cmd_unpack(const char *sparse_path, const char *raw_path) {
         return 1;
     }
     off_t sparse_end = ftello(in);
-    if (sparse_end < (off_t)sizeof(HvSparseHeader)) {
+    if (sparse_end < (off_t)sizeof(HvSparseStreamHeader)) {
+        fprintf(stderr, "hvsparse: truncated header in '%s'\n", sparse_path);
         fclose(in);
         return 1;
     }
-    uint64_t sparse_file_bytes = (uint64_t)sparse_end;
     rewind(in);
 
-    HvSparseHeader hdr;
+    HvSparseStreamHeader hdr;
     if (fread(&hdr, sizeof(hdr), 1, in) != 1 ||
-        hdr.magic != HVSPARSE_MAGIC ||
-        hdr.version != HVSPARSE_VERSION ||
-        hdr.block_size != HVSPARSE_BLOCK_SIZE) {
-        fprintf(stderr, "hvsparse: invalid header in '%s'\n", sparse_path);
+        memcmp(hdr.magic, HVSPARSE_MAGIC_STR, HVSPARSE_MAGIC_LEN) != 0) {
+        fprintf(stderr, "hvsparse: invalid HVSPARSE magic in '%s'\n", sparse_path);
         fclose(in);
         return 1;
     }
 
     if (hdr.virtual_size > HVSPARSE_MAX_VIRT_BYTES ||
-        hdr.virtual_size > (uint64_t)INT64_MAX - HVSPARSE_BLOCK_SIZE) {
+        hdr.virtual_size > (uint64_t)INT64_MAX - HVSPARSE_MAX_EXTENT) {
         fprintf(stderr, "hvsparse: virtual_size out of safe range in '%s'\n", sparse_path);
         fclose(in);
         return 1;
     }
 
-    uint64_t expected_blocks = (hdr.virtual_size + HVSPARSE_BLOCK_SIZE - 1ULL) / HVSPARSE_BLOCK_SIZE;
-    uint64_t table_bytes = expected_blocks * sizeof(uint64_t);
-    if ((uint64_t)hdr.block_count != expected_blocks ||
-        hdr.data_offset < sizeof(HvSparseHeader) + table_bytes ||
-        hdr.data_offset > sparse_file_bytes) {
-        fprintf(stderr, "hvsparse: corrupt block table bounds in '%s'\n", sparse_path);
-        fclose(in);
-        return 1;
-    }
-
-    uint64_t *offsets = calloc(hdr.block_count > 0 ? hdr.block_count : 1U, sizeof(uint64_t));
-    uint8_t *buf = malloc(HVSPARSE_BLOCK_SIZE);
-    if (offsets == NULL || buf == NULL) {
-        free(offsets);
-        free(buf);
-        fclose(in);
-        return 1;
-    }
-
-    if (hdr.block_count > 0 &&
-        fread(offsets, sizeof(uint64_t), hdr.block_count, in) != hdr.block_count) {
-        free(offsets);
-        free(buf);
+    uint8_t *buf = malloc(HVSPARSE_MAX_EXTENT);
+    if (buf == NULL) {
         fclose(in);
         return 1;
     }
@@ -252,59 +279,87 @@ static int cmd_unpack(const char *sparse_path, const char *raw_path) {
     FILE *out = fopen(raw_path, "wb");
     if (out == NULL) {
         fprintf(stderr, "hvsparse: cannot open output '%s': %s\n", raw_path, strerror(errno));
-        free(offsets);
         free(buf);
         fclose(in);
         return 1;
     }
 
-    uint64_t remaining = hdr.virtual_size;
-    for (uint32_t i = 0; i < hdr.block_count; i++) {
-        size_t to_write = remaining < HVSPARSE_BLOCK_SIZE ? (size_t)remaining : HVSPARSE_BLOCK_SIZE;
-        if (offsets[i] == 0ULL) {
-            if (fseeko(out, (off_t)to_write, SEEK_CUR) != 0) {
-                fclose(out);
-                unlink(raw_path);
-                free(offsets);
-                free(buf);
-                fclose(in);
-                return 1;
-            }
-        } else {
-            if (offsets[i] < hdr.data_offset ||
-                offsets[i] > (uint64_t)INT64_MAX ||
-                offsets[i] + HVSPARSE_BLOCK_SIZE > sparse_file_bytes ||
-                ((offsets[i] - hdr.data_offset) % HVSPARSE_BLOCK_SIZE) != 0ULL) {
-                fprintf(stderr, "hvsparse: invalid block offset at index %u in '%s'\n", i, sparse_path);
-                fclose(out);
-                unlink(raw_path);
-                free(offsets);
-                free(buf);
-                fclose(in);
-                return 1;
-            }
-            if (fseeko(in, (off_t)offsets[i], SEEK_SET) != 0 ||
-                fread(buf, 1, HVSPARSE_BLOCK_SIZE, in) != HVSPARSE_BLOCK_SIZE ||
-                fwrite(buf, 1, to_write, out) != to_write) {
-                fclose(out);
-                unlink(raw_path);
-                free(offsets);
-                free(buf);
-                fclose(in);
-                return 1;
-            }
+    if (ftruncate(fileno(out), (off_t)hdr.virtual_size) != 0) {
+        fprintf(stderr, "hvsparse: ftruncate failed on '%s': %s\n", raw_path, strerror(errno));
+        fclose(out);
+        unlink(raw_path);
+        free(buf);
+        fclose(in);
+        return 1;
+    }
+
+    bool saw_terminator = false;
+    while (true) {
+        HvSparseExtentRecord rec;
+        size_t nrec = fread(&rec, sizeof(rec), 1, in);
+        if (nrec == 0U && feof(in)) {
+            break;
         }
-        remaining -= to_write;
+        if (nrec != 1U) {
+            fprintf(stderr, "hvsparse: truncated extent header in '%s'\n", sparse_path);
+            fclose(out);
+            unlink(raw_path);
+            free(buf);
+            fclose(in);
+            return 1;
+        }
+        if (rec.offset == 0ULL && rec.length == 0ULL) {
+            saw_terminator = true;
+            break;
+        }
+        if (rec.length == 0ULL ||
+            rec.length > (uint64_t)HVSPARSE_MAX_EXTENT ||
+            rec.offset > hdr.virtual_size ||
+            rec.length > hdr.virtual_size - rec.offset) {
+            fprintf(stderr, "hvsparse: invalid extent [offset=%llu, len=%llu] for size %llu in '%s'\n",
+                    (unsigned long long)rec.offset,
+                    (unsigned long long)rec.length,
+                    (unsigned long long)hdr.virtual_size,
+                    sparse_path);
+            fclose(out);
+            unlink(raw_path);
+            free(buf);
+            fclose(in);
+            return 1;
+        }
+
+        size_t len = (size_t)rec.length;
+        size_t got = 0U;
+        while (got < len) {
+            size_t n = fread(buf + got, 1, len - got, in);
+            if (n == 0U) {
+                break;
+            }
+            got += n;
+        }
+        if (got != len ||
+            fseeko(out, (off_t)rec.offset, SEEK_SET) != 0 ||
+            fwrite(buf, 1, len, out) != len) {
+            fprintf(stderr, "hvsparse: failed writing extent at %llu in '%s'\n",
+                    (unsigned long long)rec.offset, raw_path);
+            fclose(out);
+            unlink(raw_path);
+            free(buf);
+            fclose(in);
+            return 1;
+        }
+    }
+
+    if (!saw_terminator && hdr.virtual_size > 0ULL) {
+        fprintf(stderr, "hvsparse: warning: missing {0,0} terminator in '%s'\n", sparse_path);
     }
 
     if (fflush(out) != 0 || ftruncate(fileno(out), (off_t)hdr.virtual_size) != 0 || fclose(out) != 0) {
         unlink(raw_path);
-        free(offsets);
         free(buf);
         fclose(in);
         return 1;
     }
-    free(offsets);
     free(buf);
     fclose(in);
     return 0;
