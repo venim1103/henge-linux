@@ -9,21 +9,27 @@ int henge_virtio_gpu_init_config(HengeGpuBackendMode mode,
     if (out_cfg == NULL) {
         return -1;
     }
+    if (mode != HENGE_GPU_BACKEND_GOP_2D && mode != HENGE_GPU_BACKEND_VIRGL_3D) {
+        return -1;
+    }
     if (vram_mib < 64U || vram_mib > 2048U) {
         return -1;
     }
 
     out_cfg->mode = mode;
-    out_cfg->pci_vendor_id = HENGE_VIRTIO_PCI_VENDOR_ID;
-    out_cfg->pci_device_id = HENGE_VIRTIO_GPU_DEVICE_ID;
     out_cfg->max_scanouts = 2U; /* Primary display + USB-C external monitor */
     out_cfg->vram_mib = vram_mib;
 
     if (mode == HENGE_GPU_BACKEND_VIRGL_3D) {
+        out_cfg->pci_vendor_id = HENGE_VIRTIO_PCI_VENDOR_ID;
+        out_cfg->pci_device_id = HENGE_VIRTIO_GPU_DEVICE_ID;
         out_cfg->capset_mask = (1U << HENGE_VIRTIO_GPU_CAPSET_VIRGL) |
                                (1U << HENGE_VIRTIO_GPU_CAPSET_VIRGL2);
         out_cfg->angle_metal_enabled = true;
     } else {
+        /* 2D UEFI GOP uses simpledrm/efifb platform framebuffer rather than VirtIO PCI. */
+        out_cfg->pci_vendor_id = 0U;
+        out_cfg->pci_device_id = 0U;
         out_cfg->capset_mask = 0U;
         out_cfg->angle_metal_enabled = false;
     }

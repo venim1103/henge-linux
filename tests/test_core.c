@@ -52,6 +52,10 @@ static void test_unix_socket_path_bounds(void) {
     HENGE_CHECK(rc == 0);
     HENGE_CHECK(strlen(out) < HENGE_DARWIN_SUN_PATH_MAX);
     HENGE_CHECK(strncmp(out, "/tmp/hl-", 8) == 0);
+
+    /* Reject path separators and traversal components in socket_name. */
+    HENGE_CHECK(henge_format_unix_socket_path("/var/tmp/henge", "../evil.sock", out, sizeof(out)) == -1);
+    HENGE_CHECK(henge_format_unix_socket_path("/var/tmp/henge", "..", out, sizeof(out)) == -1);
 }
 
 static void test_mmu_granule_decoding(void) {
@@ -94,10 +98,11 @@ static void test_render_pause_lifecycle_gate(void) {
     hengelinux_set_render_paused(false);
     HENGE_CHECK(hengelinux_is_render_paused() == false);
 
-    /* Verify CNTVCT_EL0 suspend offset compensation across pause/resume cycles. */
+    /* Verify CNTVCT_EL0 suspend offset compensation and strict monotonicity across pause/resume. */
     hengelinux_reset_suspend_counter();
     HENGE_CHECK(hengelinux_suspend_counter_offset() == 0ULL);
-    HENGE_CHECK(hengelinux_compensated_counter(50000000ULL) == 50000000ULL);
+    uint64_t t0 = hengelinux_compensated_counter(50000000ULL);
+    HENGE_CHECK(t0 == 50000000ULL);
 
     hengelinux_set_render_paused(true);
     uint64_t frozen = hengelinux_compensated_counter(80000000ULL);
@@ -105,12 +110,16 @@ static void test_render_pause_lifecycle_gate(void) {
     nanosleep(&pause_ts, NULL);
     uint64_t frozen_later = hengelinux_compensated_counter(120000000ULL);
     HENGE_CHECK(frozen == frozen_later);
+    HENGE_CHECK(frozen >= t0);
     hengelinux_set_render_paused(false);
 
     uint64_t offset_after = hengelinux_suspend_counter_offset();
     HENGE_CHECK(offset_after > 0ULL);
-    HENGE_CHECK(hengelinux_compensated_counter(offset_after + 12345ULL) == 12345ULL);
-    HENGE_CHECK(hengelinux_compensated_counter(0ULL) == 0ULL);
+    /* Counter never steps backward even if raw ticks lag behind frozen checkpoint. */
+    uint64_t after_resume_clamped = hengelinux_compensated_counter(offset_after + 12345ULL);
+    HENGE_CHECK(after_resume_clamped >= frozen);
+    uint64_t after_resume_forward = hengelinux_compensated_counter(frozen + offset_after + 50000ULL);
+    HENGE_CHECK(after_resume_forward == frozen + 50000ULL);
     hengelinux_reset_suspend_counter();
     HENGE_CHECK(hengelinux_suspend_counter_offset() == 0ULL);
 }
@@ -141,6 +150,9 @@ static void test_txm_jit_bounds_and_blessing(void) {
     ((uint8_t *)ram)[0] = 0xAAU;
     ((uint8_t *)ram)[test_pool_size - 1U] = 0x55U;
     henge_free_ledger_exempt_ram(ram, test_pool_size);
+    char status_buf[128] = {0};
+    henge_jit_copy_status(status_buf, sizeof(status_buf));
+    HENGE_CHECK(status_buf[0] != '\0');
     HENGE_CHECK(henge_jit_status_message() != NULL);
     HengeJitPool queried_pool;
     HENGE_CHECK(henge_jit_current_pool(&queried_pool) == false);
@@ -151,7 +163,9 @@ static void test_txm_jit_bounds_and_blessing(void) {
 
 static void test_virtio_gpu_backends(void) {
     HengeVirtioGpuConfig cfg;
+    HENGE_CHECK(henge_virtio_gpu_init_config((HengeGpuBackendMode)99, 128U, &cfg) == -1);
     HENGE_CHECK(henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_GOP_2D, 128U, &cfg) == 0);
+    HENGE_CHECK(cfg.pci_vendor_id == 0U);
     HENGE_CHECK(henge_virtio_gpu_supports_virgl(&cfg) == false);
 
     HENGE_CHECK(henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_VIRGL_3D, 512U, &cfg) == 0);

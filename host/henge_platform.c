@@ -59,6 +59,7 @@ static atomic_bool g_render_paused = false;
 static pthread_mutex_t g_render_mutex = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint_fast64_t g_pause_start_ticks = 0ULL;
 static atomic_uint_fast64_t g_suspend_offset_ticks = 0ULL;
+static atomic_uint_fast64_t g_last_compensated_ticks = 0ULL;
 
 static uint64_t platform_raw_ticks_24mhz(void) {
 #if defined(__APPLE__)
@@ -114,6 +115,9 @@ static bool format_ios_sandbox_tmp_socket(const char *container_dir,
     const char *app_dir = strstr(p, marker);
     if (app_dir != NULL) {
         const char *uuid_start = app_dir + strlen(marker);
+        while (*uuid_start == '/') {
+            uuid_start++;
+        }
         const char *uuid_end = strchr(uuid_start, '/');
         size_t root_len = (uuid_end != NULL)
             ? (size_t)(uuid_end - p)
@@ -165,7 +169,8 @@ int henge_format_unix_socket_path(const char *container_dir,
     if (container_dir == NULL || socket_name == NULL || out_path == NULL) {
         return -1;
     }
-    if (out_cap == 0U || socket_name[0] == '\0') {
+    if (out_cap == 0U || socket_name[0] == '\0' || strchr(socket_name, '/') != NULL ||
+        strcmp(socket_name, ".") == 0 || strcmp(socket_name, "..") == 0) {
         return -1;
     }
 
@@ -292,21 +297,41 @@ uint64_t hengelinux_suspend_counter_offset(void) {
     return (now > start) ? (base_offset + (now - start)) : base_offset;
 }
 
+static uint64_t clamp_monotonic_ticks(uint64_t candidate) {
+    uint64_t prev = atomic_load_explicit(&g_last_compensated_ticks, memory_order_acquire);
+    while (true) {
+        if (candidate < prev) {
+            return prev;
+        }
+        if (atomic_compare_exchange_weak_explicit(&g_last_compensated_ticks,
+                                                    &prev,
+                                                    candidate,
+                                                    memory_order_acq_rel,
+                                                    memory_order_acquire)) {
+            return candidate;
+        }
+    }
+}
+
 uint64_t hengelinux_compensated_counter(uint64_t raw_ticks) {
     uint64_t base_offset = atomic_load_explicit(&g_suspend_offset_ticks, memory_order_acquire);
+    uint64_t candidate = 0ULL;
     if (atomic_load_explicit(&g_render_paused, memory_order_acquire)) {
         uint64_t start = atomic_load_explicit(&g_pause_start_ticks, memory_order_acquire);
         if (start > 0ULL) {
-            return (start > base_offset) ? (start - base_offset) : 0ULL;
+            candidate = (start > base_offset) ? (start - base_offset) : 0ULL;
+            return clamp_monotonic_ticks(candidate);
         }
     }
-    return (raw_ticks > base_offset) ? (raw_ticks - base_offset) : 0ULL;
+    candidate = (raw_ticks > base_offset) ? (raw_ticks - base_offset) : 0ULL;
+    return clamp_monotonic_ticks(candidate);
 }
 
 void hengelinux_reset_suspend_counter(void) {
     pthread_mutex_lock(&g_render_mutex);
     atomic_store_explicit(&g_pause_start_ticks, 0ULL, memory_order_release);
     atomic_store_explicit(&g_suspend_offset_ticks, 0ULL, memory_order_release);
+    atomic_store_explicit(&g_last_compensated_ticks, 0ULL, memory_order_release);
     atomic_store_explicit(&g_render_paused, false, memory_order_release);
     pthread_mutex_unlock(&g_render_mutex);
 }
