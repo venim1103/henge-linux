@@ -96,7 +96,7 @@ The pre-built `archlinux.hvsparse` image comes pre-configured with `guest/setup-
   - Any files you place in **Files ▸ On My iPhone ▸ HengeLinux ▸ Shared/** are served inside the guest at `http://10.0.2.4/`.
   - Mount inside Arch Linux anytime with:
     ```bash
-    rclone mount :webdav: /mnt/ios-share --webdav-url http://10.0.2.4/ --daemon
+    rclone mount :webdav: /mnt/ios-share --webdav-url http://10.0.2.4/ --webdav-vendor other --daemon
     ```
 - **Safari OAuth & Passkey Bridge (`henge-xdg-open`):**
   - `$BROWSER` and `xdg-open` inside Arch Linux point to `/usr/local/bin/henge-xdg-open`.
@@ -137,6 +137,6 @@ Inside the Archboot QEMU console:
 - **`HengeLinux` folder does not appear in `Files ▸ On My iPhone`:**
   - Use the in-app **Import Guest Files...** and **Import pairing.plist...** buttons (they read directly from `Downloads` / `iCloud Drive` via iOS security-scoped URLs and verify files in **App Container Files (`Documents/`)**). If you upgraded from an older `.ipa`, delete and reinstall `HengeLinux` once via SideStore so iOS registers `CFBundleDocumentTypes`.
 - **Stuck on TianoCore `Start boot option`:**
-  - Wait 30–60 seconds on cold boot for initial DBT translation. If it still does not advance, tap the keyboard icon in the top toolbar and press **Return**, or tap **Stop**, tap **Boot Arch Linux**, and press **`Esc`** immediately on the TianoCore logo to inspect the UEFI Boot Manager / Shell (`fs0:\EFI\BOOT\BOOTAA64.EFI`).
+  - Wait 30–60 seconds on cold boot for initial DBT translation. If it still does not advance, tap **Stop**, tap **Boot Arch Linux**, and press **`Esc`** immediately on the TianoCore logo to open **Boot Manager -> EFI Internal Shell**, then boot `/Image` directly via `CONFIG_EFI_STUB` (`fs0:\Image root=UUID=<ROOT_UUID> rw rootwait console=tty0 console=ttyAMA0,115200` or `fs0:\startup.nsh`).
 - **RAM clamped to `1536 MiB`:**
-  - `CS_DEBUGGED` was not active when `Boot Arch Linux` was tapped, so the untethered Jetsam guard capped RAM at `1,536 MiB` to prevent a ~3 GB Mach ledger kill. Launch through StikDebug with `henge-jit.js` assigned to unlock full `2,560–6,144 MiB` `LEDGER_NO_FOOTPRINT` RAM.
+  - `CS_DEBUGGED` was not active when `Boot Arch Linux` was tapped, so the untethered Jetsam guard capped RAM at `1,536 MiB` to prevent a ~3 GB Mach ledger kill. Launch through StikDebug with `henge-jit.js` assigned to unlock full `2,560–6,144 MiB` `LEDGER_NO_FOOTPRINT` RAM. *(Note: On iOS 26+, telemetry may still report `standard ledger` once `P_TRACED` detaches; `2,560 MiB` fits safely within an 8 GB iPhone's Jetsam ceiling.)*
