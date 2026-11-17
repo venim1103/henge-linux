@@ -47,6 +47,8 @@ jobs:
             qemu-system-aarch64 \
             qemu-system-arm \
             systemd-boot-efi \
+            systemd-ukify \
+            python3-pefile \
             tar \
             util-linux \
             xz-utils \

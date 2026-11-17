@@ -223,7 +223,7 @@ if [ -d "$MNT_DIR/usr/share/locale" ]; then
         -exec rm -rf {} +
 fi
 
-echo "[prebuilt] Populating FAT32 EFI System Partition (systemd-boot BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
+echo "[prebuilt] Populating FAT32 EFI System Partition (direct EFI stub BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
 $SUDO mount -o loop "$ESP_IMG" "$ESP_MNT_DIR"
 if [ -d "$MNT_DIR/boot" ]; then
     $SUDO cp -r --no-preserve=ownership,mode "$MNT_DIR/boot/." "$ESP_MNT_DIR/"
@@ -233,13 +233,28 @@ $SUDO mkdir -p "$MNT_DIR/boot" "$ESP_MNT_DIR/EFI/BOOT" "$ESP_MNT_DIR/loader/entr
 
 KERNEL_CMDLINE="root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200"
 
-if [ -f "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" ]; then
-    echo "[prebuilt] Installing Arch Linux ARM native systemd-bootaa64.efi as EFI/BOOT/BOOTAA64.EFI"
-    $SUDO cp --no-preserve=ownership,mode \
-        "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" \
-        "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
+EFI_STUB=""
+for stub_candidate in \
+    "$MNT_DIR/usr/lib/systemd/boot/efi/linuxaa64.efi.stub" \
+    "/usr/lib/systemd/boot/efi/linuxaa64.efi.stub"; do
+    if [ -f "$stub_candidate" ]; then
+        EFI_STUB="$stub_candidate"
+        break
+    fi
+done
+
+if command -v ukify >/dev/null 2>&1 && [ -n "$EFI_STUB" ] && [ -f "$ESP_MNT_DIR/Image" ] && [ -f "$ESP_MNT_DIR/initramfs-linux.img" ]; then
+    echo "[prebuilt] Building PE-compliant direct EFI stub UKI BOOTAA64.EFI via ukify"
+    ukify build \
+        --linux="$ESP_MNT_DIR/Image" \
+        --initrd="$ESP_MNT_DIR/initramfs-linux.img" \
+        --cmdline="$KERNEL_CMDLINE" \
+        --stub="$EFI_STUB" \
+        --output="$WORK_DIR/BOOTAA64.EFI"
+    $SUDO cp --no-preserve=ownership,mode "$WORK_DIR/BOOTAA64.EFI" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
+    rm -f "$WORK_DIR/BOOTAA64.EFI"
 elif [ -f "$ESP_MNT_DIR/Image" ]; then
-    echo "[prebuilt] Falling back to direct CONFIG_EFI_STUB Linux Image as EFI/BOOT/BOOTAA64.EFI"
+    echo "[prebuilt] Installing direct CONFIG_EFI_STUB Linux Image as EFI/BOOT/BOOTAA64.EFI"
     $SUDO cp --no-preserve=ownership,mode "$ESP_MNT_DIR/Image" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
 fi
 
@@ -372,7 +387,7 @@ if [ "$VERIFY_BOOT" = "1" ] && command -v qemu-system-aarch64 >/dev/null 2>&1; t
         ACCEL_OPT="-accel kvm"
     fi
 
-    timeout 35s qemu-system-aarch64 \
+    timeout 45s qemu-system-aarch64 \
         -machine virt,gic-version=3,acpi=on $ACCEL_OPT \
         -cpu cortex-a76 \
         -smp 2 \
@@ -383,7 +398,7 @@ if [ "$VERIFY_BOOT" = "1" ] && command -v qemu-system-aarch64 >/dev/null 2>&1; t
         -drive if=pflash,format=raw,readonly=on,file="$OUT_DIR/code.fd" \
         -drive if=pflash,format=raw,file="$VERIFY_VARS" \
         -drive if=none,id=nvme0,format=raw,file="$VERIFY_DISK" \
-        -device nvme,drive=nvme0,serial=HENGELINUX0 \
+        -device nvme,drive=nvme0,serial=WIN11IOS01 \
         -serial file:"$VERIFY_LOG" || true
 
     echo "[prebuilt] Captured QEMU UEFI/kernel serial output:"
@@ -393,8 +408,9 @@ if [ "$VERIFY_BOOT" = "1" ] && command -v qemu-system-aarch64 >/dev/null 2>&1; t
         rm -f "$VERIFY_DISK" "$VERIFY_VARS" "$VERIFY_LOG"
         exit 1
     fi
+    cp "$VERIFY_VARS" "$OUT_DIR/vars.fd"
     rm -f "$VERIFY_DISK" "$VERIFY_VARS" "$VERIFY_LOG"
-    echo "[prebuilt] Verified UEFI -> BOOTAA64.EFI -> Linux kernel serial boot!"
+    echo "[prebuilt] Verified UEFI -> BOOTAA64.EFI -> Linux kernel serial boot and saved initialized vars.fd!"
 fi
 
 echo "[prebuilt] Packing $DISK_IMG -> $OUT_DIR/archlinux.hvsparse"
