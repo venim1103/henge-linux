@@ -182,12 +182,6 @@ static bool is_known_jit_trap_pc(uint64_t pc) {
             return true;
         }
     }
-    if (pc != 0ULL && (pc & 3ULL) == 0ULL) {
-        uint32_t insn = *(const uint32_t *)(uintptr_t)pc;
-        if ((insn & 0xFFE0001FU) == 0xD4200000U) {
-            return true;
-        }
-    }
     return false;
 }
 

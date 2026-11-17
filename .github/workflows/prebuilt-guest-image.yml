@@ -23,9 +23,6 @@ jobs:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
-    concurrency:
-      group: release-latest-ipa
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install disk & UEFI provisioning tools
@@ -71,22 +68,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view latest-ipa >/dev/null 2>&1; then
-            gh release upload latest-ipa \
-              build/prebuilt/code.fd \
-              build/prebuilt/vars.fd \
-              build/prebuilt/archlinux.hvsparse \
-              build/prebuilt/SHA256SUMS.txt \
-              --clobber
-          else
-            SHORT_SHA="$(git rev-parse --short HEAD)"
-            gh release create latest-ipa \
-              build/prebuilt/code.fd \
-              build/prebuilt/vars.fd \
-              build/prebuilt/archlinux.hvsparse \
-              build/prebuilt/SHA256SUMS.txt \
-              --title "HengeLinux Unsigned IPA & Arch Linux Guest Image (${SHORT_SHA})" \
-              --notes "Pre-built Arch Linux ARM64 guest image (\`archlinux.hvsparse\`, \`code.fd\`, \`vars.fd\`) and unsigned iOS bundle." \
-              --target main \
-              --prerelease
-          fi
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          for attempt in 1 2 3 4 5; do
+            if gh release view latest-ipa >/dev/null 2>&1; then
+              if gh release upload latest-ipa \
+                build/prebuilt/code.fd \
+                build/prebuilt/vars.fd \
+                build/prebuilt/archlinux.hvsparse \
+                build/prebuilt/SHA256SUMS.txt \
+                --clobber; then
+                exit 0
+              fi
+            else
+              if gh release create latest-ipa \
+                build/prebuilt/code.fd \
+                build/prebuilt/vars.fd \
+                build/prebuilt/archlinux.hvsparse \
+                build/prebuilt/SHA256SUMS.txt \
+                --title "HengeLinux Unsigned IPA & Arch Linux Guest Image (${SHORT_SHA})" \
+                --notes "Pre-built Arch Linux ARM64 guest image (\`archlinux.hvsparse\`, \`code.fd\`, \`vars.fd\`) and unsigned iOS bundle." \
+                --target main \
+                --prerelease; then
+                exit 0
+              fi
+            fi
+            echo "Retrying latest-ipa guest asset upload (attempt ${attempt}/5)..."
+            sleep $((attempt * 3))
+          done
+          echo "ERROR: Failed to publish prebuilt guest image assets to latest-ipa after 5 attempts." >&2
+          exit 1

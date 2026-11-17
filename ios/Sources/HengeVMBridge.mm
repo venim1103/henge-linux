@@ -583,6 +583,9 @@ static void henge_on_vm_exit(int reason) {
 }
 
 - (void)handleEngineExitReason:(int)reason {
+    if (!_running && !_vmCreated) {
+        return;
+    }
 #if HENGE_HAS_UPSTREAM_ENGINE
     const char *name = hv_winvm_reason_name(reason);
     NSString *exitMsg = [NSString stringWithFormat:@"Guest halted (%s)", name ? name : "exit"];

@@ -223,7 +223,7 @@ if [ -d "$MNT_DIR/usr/share/locale" ]; then
         -exec rm -rf {} +
 fi
 
-echo "[prebuilt] Populating FAT32 EFI System Partition (Unified Kernel Image BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
+echo "[prebuilt] Populating FAT32 EFI System Partition (systemd-boot BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
 $SUDO mount -o loop "$ESP_IMG" "$ESP_MNT_DIR"
 if [ -d "$MNT_DIR/boot" ]; then
     $SUDO cp -r --no-preserve=ownership,mode "$MNT_DIR/boot/." "$ESP_MNT_DIR/"
@@ -233,74 +233,13 @@ $SUDO mkdir -p "$MNT_DIR/boot" "$ESP_MNT_DIR/EFI/BOOT" "$ESP_MNT_DIR/loader/entr
 
 KERNEL_CMDLINE="root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200"
 
-EFI_STUB=""
-for stub_candidate in \
-    "$MNT_DIR/usr/lib/systemd/boot/efi/linuxaa64.efi.stub" \
-    "/usr/lib/systemd/boot/efi/linuxaa64.efi.stub"; do
-    if [ -f "$stub_candidate" ]; then
-        EFI_STUB="$stub_candidate"
-        break
-    fi
-done
-
-if [ -n "$EFI_STUB" ] && command -v objcopy >/dev/null 2>&1 && command -v objdump >/dev/null 2>&1 && [ -f "$ESP_MNT_DIR/Image" ] && [ -f "$ESP_MNT_DIR/initramfs-linux.img" ]; then
-    echo "[prebuilt] Building 4 KiB-aligned Unified Kernel Image (UKI) BOOTAA64.EFI from $EFI_STUB"
-    printf '%s' "$KERNEL_CMDLINE" > "$WORK_DIR/uki.cmdline"
-    if [ -f "$MNT_DIR/etc/os-release" ]; then
-        cp "$MNT_DIR/etc/os-release" "$WORK_DIR/uki.osrel"
-    else
-        printf 'NAME="Arch Linux ARM"\nID=archarm\n' > "$WORK_DIR/uki.osrel"
-    fi
-    python3 - "$EFI_STUB" "$WORK_DIR/uki.osrel" "$WORK_DIR/uki.cmdline" "$ESP_MNT_DIR/Image" "$ESP_MNT_DIR/initramfs-linux.img" "$WORK_DIR/BOOTAA64.EFI" <<'PY'
-import re
-import subprocess
-import sys
-from pathlib import Path
-
-stub, osrel, cmdline, image, initrd, out_efi = sys.argv[1:7]
-hdr = subprocess.check_output(["objdump", "-h", stub], text=True)
-max_end = 0
-for line in hdr.splitlines():
-    m = re.match(r"^\s*\d+\s+\S+\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+", line)
-    if m:
-        size = int(m.group(1), 16)
-        vma = int(m.group(2), 16)
-        if vma + size > max_end:
-            max_end = vma + size
-
-def align_up(val: int, align: int = 0x1000) -> int:
-    return (val + align - 1) & ~(align - 1)
-
-osrel_vma = align_up(max_end)
-cmdline_vma = align_up(osrel_vma + Path(osrel).stat().st_size)
-linux_vma = align_up(cmdline_vma + Path(cmdline).stat().st_size)
-initrd_vma = align_up(linux_vma + Path(image).stat().st_size)
-
-cmd = [
-    "objcopy",
-    "--add-section", f".osrel={osrel}",
-    "--set-section-flags", ".osrel=contents,alloc,load,readonly,data",
-    "--change-section-vma", f".osrel=0x{osrel_vma:x}",
-    "--add-section", f".cmdline={cmdline}",
-    "--set-section-flags", ".cmdline=contents,alloc,load,readonly,data",
-    "--change-section-vma", f".cmdline=0x{cmdline_vma:x}",
-    "--add-section", f".linux={image}",
-    "--set-section-flags", ".linux=contents,alloc,load,readonly,data",
-    "--change-section-vma", f".linux=0x{linux_vma:x}",
-    "--add-section", f".initrd={initrd}",
-    "--set-section-flags", ".initrd=contents,alloc,load,readonly,data",
-    "--change-section-vma", f".initrd=0x{initrd_vma:x}",
-    stub,
-    out_efi,
-]
-subprocess.run(cmd, check=True)
-print(f"[prebuilt] UKI sections placed at osrel=0x{osrel_vma:x}, cmdline=0x{cmdline_vma:x}, linux=0x{linux_vma:x}, initrd=0x{initrd_vma:x}")
-PY
-    objdump -h "$WORK_DIR/BOOTAA64.EFI" | grep -E '\.(text|osrel|cmdline|linux|initrd)' || true
-    $SUDO cp --no-preserve=ownership,mode "$WORK_DIR/BOOTAA64.EFI" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
-    rm -f "$WORK_DIR/BOOTAA64.EFI" "$WORK_DIR/uki.cmdline" "$WORK_DIR/uki.osrel"
+if [ -f "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" ]; then
+    echo "[prebuilt] Installing Arch Linux ARM native systemd-bootaa64.efi as EFI/BOOT/BOOTAA64.EFI"
+    $SUDO cp --no-preserve=ownership,mode \
+        "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" \
+        "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
 elif [ -f "$ESP_MNT_DIR/Image" ]; then
-    echo "[prebuilt] Falling back to direct CONFIG_EFI_STUB Linux Image as BOOTAA64.EFI"
+    echo "[prebuilt] Falling back to direct CONFIG_EFI_STUB Linux Image as EFI/BOOT/BOOTAA64.EFI"
     $SUDO cp --no-preserve=ownership,mode "$ESP_MNT_DIR/Image" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
 fi
 
@@ -434,7 +373,7 @@ if [ "$VERIFY_BOOT" = "1" ] && command -v qemu-system-aarch64 >/dev/null 2>&1; t
     fi
 
     timeout 35s qemu-system-aarch64 \
-        -machine virt,gic-version=3 $ACCEL_OPT \
+        -machine virt,gic-version=3,acpi=on $ACCEL_OPT \
         -cpu cortex-a76 \
         -smp 2 \
         -m 1024 \

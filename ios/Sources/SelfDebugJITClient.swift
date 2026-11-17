@@ -349,6 +349,10 @@ final class SelfDebugJITClient: ObservableObject {
             let targetURL: URL
             if lowerName.hasSuffix(".hvsparse") {
                 targetURL = machineDirectoryURL.appendingPathComponent("archlinux.hvsparse")
+                let staleRawURL = machineDirectoryURL.appendingPathComponent("archlinux.img")
+                if fm.fileExists(atPath: staleRawURL.path) {
+                    try? fm.removeItem(at: staleRawURL)
+                }
             } else if lowerName.hasSuffix(".img") || lowerName.hasSuffix(".raw") {
                 targetURL = machineDirectoryURL.appendingPathComponent("archlinux.img")
             } else if lowerName.hasSuffix(".fd") {

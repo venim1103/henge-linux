@@ -154,22 +154,32 @@ jobs:
           2. Download the pre-built guest files (\`archlinux.hvsparse\`, \`code.fd\`, and \`vars.fd\`) attached to this release (or build locally with \`scripts/provision_archlinux_arm64.sh\`).
           3. In **HengeLinux**, tap **Import Guest Files (hvsparse / code.fd / vars.fd)...** (and optionally **Import pairing.plist...** for in-app TXM JIT).
           4. Default Arch Linux ARM credentials: \`root\` / \`root\` (and \`alarm\` / \`alarm\`)."
-          if gh release view latest-ipa >/dev/null 2>&1; then
-            gh release upload latest-ipa \
-              build/HengeLinux-unsigned.ipa \
-              build/HengeLinux-unsigned.ipa.sha256 \
-              --clobber
-            gh release edit latest-ipa \
-              --title "HengeLinux Unsigned IPA (Latest main — ${SHORT_SHA})" \
-              --notes "$NOTES" \
-              --target main \
-              --prerelease
-          else
-            gh release create latest-ipa \
-              build/HengeLinux-unsigned.ipa \
-              build/HengeLinux-unsigned.ipa.sha256 \
-              --title "HengeLinux Unsigned IPA (Latest main — ${SHORT_SHA})" \
-              --notes "$NOTES" \
-              --target main \
-              --prerelease
-          fi
+          for attempt in 1 2 3 4 5; do
+            if gh release view latest-ipa >/dev/null 2>&1; then
+              if gh release upload latest-ipa \
+                build/HengeLinux-unsigned.ipa \
+                build/HengeLinux-unsigned.ipa.sha256 \
+                --clobber; then
+                gh release edit latest-ipa \
+                  --title "HengeLinux Unsigned IPA (Latest main — ${SHORT_SHA})" \
+                  --notes "$NOTES" \
+                  --target main \
+                  --prerelease || true
+                exit 0
+              fi
+            else
+              if gh release create latest-ipa \
+                build/HengeLinux-unsigned.ipa \
+                build/HengeLinux-unsigned.ipa.sha256 \
+                --title "HengeLinux Unsigned IPA (Latest main — ${SHORT_SHA})" \
+                --notes "$NOTES" \
+                --target main \
+                --prerelease; then
+                exit 0
+              fi
+            fi
+            echo "Retrying latest-ipa release publish (attempt ${attempt}/5)..."
+            sleep $((attempt * 3))
+          done
+          echo "ERROR: Failed to publish IPA assets to latest-ipa after 5 attempts." >&2
+          exit 1
