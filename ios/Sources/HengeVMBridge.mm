@@ -27,6 +27,7 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
     BOOL _vmCreated;
     uint32_t _activeRamMiB;
     int _activeCpuCount;
+    uint8_t _hidModifiers;
     NSString *_statusText;
     CAMetalLayer *__weak _displayLayer;
     void *_guestRam;
@@ -70,6 +71,7 @@ static void henge_on_vm_exit(int reason) {
         _vmCreated = NO;
         _activeRamMiB = 0;
         _activeCpuCount = 4;
+        _hidModifiers = 0;
         _statusText = self.isEngineLinked
             ? @"Engine linked · Ready"
             : @"Host substrate ready (run sync_upstream.sh + build_ios_deps.sh for full VM)";
@@ -598,10 +600,89 @@ static void henge_on_vm_exit(int reason) {
     _statusText = exitMsg;
 }
 
+#if HENGE_HAS_UPSTREAM_ENGINE
+static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t modifiers) {
+    if (!uart) {
+        return;
+    }
+    const bool shift = (modifiers & 0x22U) != 0;
+    const bool ctrl = (modifiers & 0x11U) != 0;
+
+    auto sendBytes = [uart](const char *seq, size_t len) {
+        for (size_t i = 0; i < len; ++i) {
+            hv_pl011_receive(uart, static_cast<uint8_t>(seq[i]));
+        }
+    };
+
+    if (usage >= 0x04 && usage <= 0x1D) {
+        char ch = static_cast<char>('a' + (usage - 0x04));
+        if (ctrl) {
+            uint8_t c = static_cast<uint8_t>((ch - 'a') + 1);
+            hv_pl011_receive(uart, c);
+        } else if (shift) {
+            hv_pl011_receive(uart, static_cast<uint8_t>(ch - 'a' + 'A'));
+        } else {
+            hv_pl011_receive(uart, static_cast<uint8_t>(ch));
+        }
+        return;
+    }
+    if (usage >= 0x1E && usage <= 0x26) {
+        static const char kShiftDigits[] = "!@#$%^&*(";
+        char ch = shift ? kShiftDigits[usage - 0x1E] : static_cast<char>('1' + (usage - 0x1E));
+        hv_pl011_receive(uart, static_cast<uint8_t>(ch));
+        return;
+    }
+    switch (usage) {
+    case 0x27: hv_pl011_receive(uart, shift ? ')' : '0'); break;
+    case 0x28: hv_pl011_receive(uart, '\r'); break;
+    case 0x29: hv_pl011_receive(uart, 0x1B); break;
+    case 0x2A: hv_pl011_receive(uart, 0x7F); break;
+    case 0x2B: hv_pl011_receive(uart, '\t'); break;
+    case 0x2C: hv_pl011_receive(uart, ' '); break;
+    case 0x2D: hv_pl011_receive(uart, shift ? '_' : '-'); break;
+    case 0x2E: hv_pl011_receive(uart, shift ? '+' : '='); break;
+    case 0x2F: hv_pl011_receive(uart, shift ? '{' : '['); break;
+    case 0x30: hv_pl011_receive(uart, shift ? '}' : ']'); break;
+    case 0x31: hv_pl011_receive(uart, shift ? '|' : '\\'); break;
+    case 0x33: hv_pl011_receive(uart, shift ? ':' : ';'); break;
+    case 0x34: hv_pl011_receive(uart, shift ? '"' : '\''); break;
+    case 0x35: hv_pl011_receive(uart, shift ? '~' : '`'); break;
+    case 0x36: hv_pl011_receive(uart, shift ? '<' : ','); break;
+    case 0x37: hv_pl011_receive(uart, shift ? '>' : '.'); break;
+    case 0x38: hv_pl011_receive(uart, shift ? '?' : '/'); break;
+    case 0x3A: sendBytes("\x1BOP", 3); break;   /* F1 */
+    case 0x3B: sendBytes("\x1BOQ", 3); break;   /* F2 */
+    case 0x3C: sendBytes("\x1BOR", 3); break;   /* F3 */
+    case 0x3D: sendBytes("\x1BOS", 3); break;   /* F4 */
+    case 0x45: sendBytes("\x1B[24~", 5); break; /* F12 */
+    case 0x4C: sendBytes("\x1B[3~", 4); break;  /* Delete */
+    case 0x4F: sendBytes("\x1B[C", 3); break;   /* Right */
+    case 0x50: sendBytes("\x1B[D", 3); break;   /* Left */
+    case 0x51: sendBytes("\x1B[B", 3); break;   /* Down */
+    case 0x52: sendBytes("\x1B[A", 3); break;   /* Up */
+    default: break;
+    }
+}
+#endif
+
 - (void)sendHidKeyUsage:(uint8_t)usage pressed:(BOOL)pressed {
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_running) {
+        if (usage >= 0xE0 && usage <= 0xE7) {
+            uint8_t bit = static_cast<uint8_t>(1U << (usage - 0xE0));
+            if (pressed) {
+                _hidModifiers |= bit;
+            } else {
+                _hidModifiers &= static_cast<uint8_t>(~bit);
+            }
+        }
         hv_winvm_key_hid(usage, pressed ? 1 : 0);
+        if (pressed && !(usage >= 0xE0 && usage <= 0xE7)) {
+            HvWinVirt *board = hv_winvm_board();
+            if (board != nullptr && board->uart != nullptr) {
+                henge_forward_hid_to_pl011(board->uart, usage, _hidModifiers);
+            }
+        }
     }
 #else
     (void)usage;

@@ -233,29 +233,12 @@ $SUDO mkdir -p "$MNT_DIR/boot" "$ESP_MNT_DIR/EFI/BOOT" "$ESP_MNT_DIR/loader/entr
 
 KERNEL_CMDLINE="root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200"
 
-EFI_STUB=""
-for stub_candidate in \
-    "$MNT_DIR/usr/lib/systemd/boot/efi/linuxaa64.efi.stub" \
-    "/usr/lib/systemd/boot/efi/linuxaa64.efi.stub"; do
-    if [ -f "$stub_candidate" ]; then
-        EFI_STUB="$stub_candidate"
-        break
-    fi
-done
-
-if command -v ukify >/dev/null 2>&1 && [ -n "$EFI_STUB" ] && [ -f "$ESP_MNT_DIR/Image" ] && [ -f "$ESP_MNT_DIR/initramfs-linux.img" ]; then
-    echo "[prebuilt] Building PE-compliant direct EFI stub UKI BOOTAA64.EFI via ukify"
-    ukify build \
-        --linux="$ESP_MNT_DIR/Image" \
-        --initrd="$ESP_MNT_DIR/initramfs-linux.img" \
-        --cmdline="$KERNEL_CMDLINE" \
-        --stub="$EFI_STUB" \
-        --output="$WORK_DIR/BOOTAA64.EFI"
-    $SUDO cp --no-preserve=ownership,mode "$WORK_DIR/BOOTAA64.EFI" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
-    rm -f "$WORK_DIR/BOOTAA64.EFI"
-elif [ -f "$ESP_MNT_DIR/Image" ]; then
+if [ -f "$ESP_MNT_DIR/Image" ]; then
     echo "[prebuilt] Installing direct CONFIG_EFI_STUB Linux Image as EFI/BOOT/BOOTAA64.EFI"
     $SUDO cp --no-preserve=ownership,mode "$ESP_MNT_DIR/Image" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
+else
+    echo "[prebuilt] ERROR: Missing /boot/Image in Arch Linux ARM64 rootfs." >&2
+    exit 1
 fi
 
 $SUDO tee "$ESP_MNT_DIR/loader/loader.conf" >/dev/null <<'EOF'
@@ -387,18 +370,21 @@ if [ "$VERIFY_BOOT" = "1" ] && command -v qemu-system-aarch64 >/dev/null 2>&1; t
         ACCEL_OPT="-accel kvm"
     fi
 
+    # Match HengeVM GPEX PCIe slots (slot 01:0 virtio-net, slot 02:0 nvme0) so
+    # EDK2 writes the exact PCIe device path into Boot0000 inside vars.fd.
     timeout 45s qemu-system-aarch64 \
         -machine virt,gic-version=3,acpi=on $ACCEL_OPT \
         -cpu cortex-a76 \
         -smp 2 \
         -m 1024 \
-        -nic none \
+        -netdev user,id=net0 \
+        -device virtio-net-pci,netdev=net0,bus=pcie.0,addr=0x1 \
         -display none \
         -no-reboot \
         -drive if=pflash,format=raw,readonly=on,file="$OUT_DIR/code.fd" \
         -drive if=pflash,format=raw,file="$VERIFY_VARS" \
         -drive if=none,id=nvme0,format=raw,file="$VERIFY_DISK" \
-        -device nvme,drive=nvme0,serial=WIN11IOS01 \
+        -device nvme,drive=nvme0,serial=WIN11IOS01,bus=pcie.0,addr=0x2 \
         -serial file:"$VERIFY_LOG" || true
 
     echo "[prebuilt] Captured QEMU UEFI/kernel serial output:"
