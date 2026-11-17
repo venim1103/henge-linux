@@ -201,13 +201,21 @@ else
 fi
 rm -f "$TARBALL"
 
-echo "[prebuilt] Pruning static manpages/docs/locales to keep archlinux.hvsparse under GitHub's 2 GiB release cap"
+echo "[prebuilt] Pruning static manpages/docs/locales/firmware to keep archlinux.hvsparse under GitHub's 2 GiB release cap"
 $SUDO rm -rf \
     "$MNT_DIR/var/cache/pacman/pkg/"* \
     "$MNT_DIR/usr/share/doc/"* \
     "$MNT_DIR/usr/share/man/"* \
     "$MNT_DIR/usr/share/info/"* \
-    "$MNT_DIR/usr/share/gtk-doc/"*
+    "$MNT_DIR/usr/share/gtk-doc/"* \
+    "$MNT_DIR/usr/share/help/"* \
+    "$MNT_DIR/usr/share/i18n/"* \
+    "$MNT_DIR/usr/lib/locale/locale-archive"
+if [ -d "$MNT_DIR/usr/lib/firmware" ]; then
+    $SUDO find "$MNT_DIR/usr/lib/firmware" -mindepth 1 -maxdepth 1 \
+        ! -name 'regulatory.db*' \
+        -exec rm -rf {} +
+fi
 if [ -d "$MNT_DIR/usr/share/locale" ]; then
     $SUDO find "$MNT_DIR/usr/share/locale" -mindepth 1 -maxdepth 1 \
         ! -name 'en' ! -name 'en_*' ! -name 'C.UTF-8' ! -name 'locale.alias' \
@@ -259,6 +267,7 @@ LABEL=ARCH_EFI         /boot         vfat      defaults,noatime   0      2
 EOF
 
 echo "hengelinux" | $SUDO tee "$MNT_DIR/etc/hostname" >/dev/null
+echo "LANG=C.UTF-8" | $SUDO tee "$MNT_DIR/etc/locale.conf" >/dev/null
 
 # Install henge-xdg-open and setup-arch-bridge.sh inside the guest rootfs
 $SUDO install -Dm755 "$REPO_ROOT/guest/henge-xdg-open" "$MNT_DIR/usr/local/bin/henge-xdg-open"
@@ -321,6 +330,9 @@ for unit in systemd-networkd.service systemd-resolved.service; do
 done
 
 sync
+if command -v fstrim >/dev/null 2>&1; then
+    $SUDO fstrim "$MNT_DIR" >/dev/null 2>&1 || true
+fi
 $SUDO umount "$ESP_MNT_DIR"
 $SUDO umount "$MNT_DIR"
 
