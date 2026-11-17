@@ -21,6 +21,7 @@ jobs:
   build-guest-image:
     name: Build & Publish archlinux.hvsparse + EDK2 Firmware (ARM64)
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
