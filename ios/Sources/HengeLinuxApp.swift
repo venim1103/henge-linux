@@ -233,7 +233,7 @@ struct HengeLinuxApp: App {
                 Section("Guest Image (`Documents/Machines/ArchLinux`)") {
                     LabeledContent("Disk Container", value: jitClient.diskStatusText)
                     LabeledContent("UEFI Firmware", value: jitClient.uefiStatusText)
-                    LabeledContent("iOS Files Folder", value: "On My iPhone ▸ HengeLinux (Active)")
+                    LabeledContent("iOS Files Folder", value: "On My iPhone ▸ HengeLinux (Registered)")
                     LabeledContent("Background Snapshot", value: HengeVMBridge.shared.hasSavedBackgroundSnapshot ? "suspend.state (Disk Flushed + Metadata)" : "None")
                     LabeledContent("Aligned Guest Bytes", value: "\(alignedBytes) B")
                     LabeledContent("Host Bridge", value: "http://10.0.2.4/.henge/")
@@ -243,6 +243,53 @@ struct HengeLinuxApp: App {
                         isImportingFile = true
                     } label: {
                         Label("Import Guest Files (hvsparse / code.fd / vars.fd)...", systemImage: "folder.badge.plus")
+                    }
+                }
+
+                Section("App Container Files (`Documents/`)") {
+                    if jitClient.containerFiles.isEmpty {
+                        Text("No files in app container yet.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(jitClient.containerFiles) { entry in
+                            HStack(spacing: 10) {
+                                Image(systemName: iconName(for: entry.fileName))
+                                    .foregroundStyle(.blue)
+                                    .frame(width: 20)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.fileName)
+                                        .font(.subheadline.weight(.medium))
+                                    Text(entry.relativePath)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(entry.sizeText)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                if entry.isDeletable {
+                                    Button(role: .destructive) {
+                                        do {
+                                            try jitClient.deleteContainerFile(entry)
+                                            bootWarning = "Removed \(entry.relativePath)."
+                                        } catch {
+                                            bootErrorAlert = "Delete failed: \(error.localizedDescription)"
+                                        }
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Button {
+                        jitClient.bootstrapSandboxFolders()
+                        jitClient.refreshFileStatus()
+                    } label: {
+                        Label("Refresh Container File List", systemImage: "arrow.clockwise")
                     }
                 }
 
@@ -353,6 +400,26 @@ struct HengeLinuxApp: App {
 
     private var effectiveRamMiB: UInt32 {
         UInt32(alignedBytes / (1024 * 1024))
+    }
+
+    private func iconName(for fileName: String) -> String {
+        let lower = fileName.lowercased()
+        if lower.hasSuffix(".plist") || lower.hasSuffix(".mobiledevicepairing") {
+            return "key.fill"
+        }
+        if lower.hasSuffix(".hvsparse") || lower.hasSuffix(".img") || lower.hasSuffix(".raw") {
+            return "internaldrive.fill"
+        }
+        if lower.hasSuffix(".fd") {
+            return "cpu.fill"
+        }
+        if lower.hasSuffix(".state") {
+            return "memorychip.fill"
+        }
+        if lower.hasSuffix(".txt") || lower.hasSuffix(".md") {
+            return "doc.text"
+        }
+        return "doc.fill"
     }
 }
 

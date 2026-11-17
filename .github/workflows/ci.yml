@@ -91,10 +91,18 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
           APP_BUNDLE="build/DerivedData/Build/Products/Release-iphoneos/HengeLinux.app"
+          APP_PLIST="$APP_BUNDLE/Info.plist"
           EXT_PLIST="$APP_BUNDLE/PlugIns/HengeLinuxJITExtension.appex/Info.plist"
           python3 -c '
           import plistlib, sys
           with open(sys.argv[1], "rb") as f:
+              app_pl = plistlib.load(f)
+          assert app_pl.get("UIFileSharingEnabled") is True, f"missing UIFileSharingEnabled: {app_pl}"
+          assert app_pl.get("LSSupportsOpeningDocumentsInPlace") is True, f"missing LSSupportsOpeningDocumentsInPlace: {app_pl}"
+          doc_types = app_pl.get("CFBundleDocumentTypes") or []
+          assert len(doc_types) >= 2, f"missing CFBundleDocumentTypes: {app_pl}"
+          print("[verify] HengeLinux app Info.plist document types valid:", len(doc_types))
+          with open(sys.argv[2], "rb") as f:
               pl = plistlib.load(f)
           ext = pl.get("NSExtension") or {}
           assert ext.get("NSExtensionPointIdentifier") == "com.apple.ar.viewer", f"bad NSExtensionPointIdentifier: {ext}"
@@ -102,7 +110,7 @@ jobs:
           assert pl.get("CFBundleVersion"), f"missing CFBundleVersion: {pl}"
           assert pl.get("CFBundleShortVersionString"), f"missing CFBundleShortVersionString: {pl}"
           print("[verify] HengeLinuxJITExtension Info.plist valid:", ext)
-          ' "$EXT_PLIST"
+          ' "$APP_PLIST" "$EXT_PLIST"
           mkdir -p build/ipa/Payload
           cp -R "$APP_BUNDLE" build/ipa/Payload/
           (cd build/ipa && zip -qr ../HengeLinux-unsigned.ipa Payload)

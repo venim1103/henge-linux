@@ -70,6 +70,43 @@ targets:
       - path: Sources
       - path: Resources
         buildPhase: resources
+    info:
+      path: Info.plist
+      properties:
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: HengeLinux Disk & Firmware Image
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - io.hengelinux.hvsparse
+              - public.data
+              - public.item
+          - CFBundleTypeName: Apple Device Pairing Record
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - io.hengelinux.mobiledevicepairing
+              - com.apple.property-list
+              - public.xml
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: io.hengelinux.hvsparse
+            UTTypeDescription: HengeLinux Sparse Disk & UEFI Firmware Image
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - hvsparse
+                - fd
+                - img
+          - UTTypeIdentifier: io.hengelinux.mobiledevicepairing
+            UTTypeDescription: Apple Device Lockdown Pairing Record
+            UTTypeConformsTo:
+              - com.apple.property-list
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - mobiledevicepairing
+                - plist
     entitlements:
       path: HengeLinux.entitlements
       properties:

@@ -28,6 +28,14 @@ private struct ExtensionInvocationResult: @unchecked Sendable {
     let errorMessage: String?
 }
 
+struct ContainerFileEntry: Identifiable, Hashable, Sendable {
+    let id: String
+    let relativePath: String
+    let fileName: String
+    let sizeText: String
+    let isDeletable: Bool
+}
+
 /// Manages in-app TXM JIT activation (`brk #0xf00d` + `0x69` page blessing),
 /// App Group pairing record synchronization (`group.io.hengelinux.shared`),
 /// and `HengeLinuxJITExtension` XPC handshake.
@@ -40,6 +48,7 @@ final class SelfDebugJITClient: ObservableObject {
     @Published private(set) var pairingStatusText: String = "Missing (Optional)"
     @Published private(set) var diskStatusText: String = "Missing (Import archlinux.hvsparse)"
     @Published private(set) var uefiStatusText: String = "Missing (Import code.fd & vars.fd)"
+    @Published private(set) var containerFiles: [ContainerFileEntry] = []
 
     static let defaultJitPoolMiB: Int = 384
     static let defaultAppGroupIdentifier: String = "group.io.hengelinux.shared"
@@ -195,6 +204,83 @@ final class SelfDebugJITClient: ObservableObject {
         case (false, false):
             uefiStatusText = "Missing (Import code.fd & vars.fd)"
         }
+
+        containerFiles = Self.scanContainerFiles(docsURL: documentsDirectoryURL)
+    }
+
+    func deleteContainerFile(_ entry: ContainerFileEntry) throws {
+        guard entry.isDeletable, !entry.relativePath.isEmpty, !entry.relativePath.contains("..") else {
+            return
+        }
+        let fm = FileManager.default
+        let targetURL = documentsDirectoryURL.appendingPathComponent(entry.relativePath)
+        if fm.fileExists(atPath: targetURL.path) {
+            try fm.removeItem(at: targetURL)
+        }
+        if entry.relativePath == "pairing.plist",
+           let sharedURL = appGroupPairingFileURL,
+           fm.fileExists(atPath: sharedURL.path) {
+            try? fm.removeItem(at: sharedURL)
+        }
+        refreshFileStatus()
+    }
+
+    private static func scanContainerFiles(docsURL: URL) -> [ContainerFileEntry] {
+        let fm = FileManager.default
+        let seededNames: Set<String> = ["README-HengeLinux.txt", "README-ArchLinux.txt"]
+        let scanRoots: [(dir: URL, prefix: String)] = [
+            (docsURL, ""),
+            (docsURL.appendingPathComponent("Machines/ArchLinux", isDirectory: true), "Machines/ArchLinux/"),
+            (docsURL.appendingPathComponent("Shared", isDirectory: true), "Shared/"),
+        ]
+
+        var results: [ContainerFileEntry] = []
+        for (dirURL, prefix) in scanRoots {
+            guard let items = try? fm.contentsOfDirectory(
+                at: dirURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                continue
+            }
+            let sorted = items.sorted {
+                $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
+            }
+            for itemURL in sorted {
+                let values = try? itemURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                guard values?.isRegularFile == true else {
+                    continue
+                }
+                let name = itemURL.lastPathComponent
+                let relPath = "\(prefix)\(name)"
+                let byteCount = UInt64(max(0, values?.fileSize ?? 0))
+                results.append(
+                    ContainerFileEntry(
+                        id: relPath,
+                        relativePath: relPath,
+                        fileName: name,
+                        sizeText: formatByteCount(byteCount),
+                        isDeletable: !seededNames.contains(name)
+                    )
+                )
+            }
+        }
+        return results
+    }
+
+    private static func formatByteCount(_ bytes: UInt64) -> String {
+        if bytes < 1024 {
+            return "\(bytes) B"
+        }
+        let kib = Double(bytes) / 1024.0
+        if kib < 1024.0 {
+            return String(format: "%.1f KiB", kib)
+        }
+        let mib = kib / 1024.0
+        if mib < 1024.0 {
+            return String(format: "%.1f MiB", mib)
+        }
+        return String(format: "%.2f GiB", mib / 1024.0)
     }
 
     private static func isValidPropertyListDictionary(at url: URL) -> Bool {
