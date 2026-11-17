@@ -13,8 +13,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 WORK_DIR="${WORK_DIR:-$REPO_ROOT/work/prebuilt}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/build/prebuilt}"
-DISK_SIZE_MIB="${DISK_SIZE_MIB:-16384}"
-ESP_SIZE_MIB="${ESP_SIZE_MIB:-512}"
+DISK_SIZE_MIB="${DISK_SIZE_MIB:-8192}"
+ESP_SIZE_MIB="${ESP_SIZE_MIB:-256}"
+MAX_HVSPARSE_BYTES="${MAX_HVSPARSE_BYTES:-2097152000}"
 ROOT_UUID="${ROOT_UUID:-60417316-399c-4918-b592-19e253118b72}"
 ESP_PARTUUID="${ESP_PARTUUID:-c12a7328-f81f-11d2-ba4b-00a0c93ec93b}"
 ROOT_PARTUUID="${ROOT_PARTUUID:-b921b045-1df0-41c3-af44-4c6f280d3fae}"
@@ -187,7 +188,7 @@ truncate -s "${ESP_SIZE_MIB}M" "$ESP_IMG"
 mkfs.vfat -F 32 -n "ARCH_EFI" "$ESP_IMG" >/dev/null
 
 truncate -s "${ROOT_SIZE_MIB}M" "$ROOT_IMG"
-mkfs.ext4 -F -q -L "arch_root" -U "$ROOT_UUID" "$ROOT_IMG"
+mkfs.ext4 -F -q -L "arch_root" -U "$ROOT_UUID" -i 32768 -J size=16 -E lazy_itable_init=1,lazy_journal_init=1 "$ROOT_IMG"
 
 mkdir -p "$MNT_DIR" "$ESP_MNT_DIR"
 $SUDO mount -o loop "$ROOT_IMG" "$MNT_DIR"
@@ -197,6 +198,20 @@ if command -v bsdtar >/dev/null 2>&1; then
     $SUDO bsdtar -xpf "$TARBALL" -C "$MNT_DIR"
 else
     $SUDO tar -xzpf "$TARBALL" -C "$MNT_DIR" --numeric-owner
+fi
+rm -f "$TARBALL"
+
+echo "[prebuilt] Pruning static manpages/docs/locales to keep archlinux.hvsparse under GitHub's 2 GiB release cap"
+$SUDO rm -rf \
+    "$MNT_DIR/var/cache/pacman/pkg/"* \
+    "$MNT_DIR/usr/share/doc/"* \
+    "$MNT_DIR/usr/share/man/"* \
+    "$MNT_DIR/usr/share/info/"* \
+    "$MNT_DIR/usr/share/gtk-doc/"*
+if [ -d "$MNT_DIR/usr/share/locale" ]; then
+    $SUDO find "$MNT_DIR/usr/share/locale" -mindepth 1 -maxdepth 1 \
+        ! -name 'en' ! -name 'en_*' ! -name 'C.UTF-8' ! -name 'locale.alias' \
+        -exec rm -rf {} +
 fi
 
 echo "[prebuilt] Populating FAT32 EFI System Partition (BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
@@ -332,6 +347,12 @@ rm -f "$ESP_IMG" "$ROOT_IMG"
 echo "[prebuilt] Packing $DISK_IMG -> $OUT_DIR/archlinux.hvsparse"
 "$HVSPARSE_BIN" pack "$DISK_IMG" "$OUT_DIR/archlinux.hvsparse"
 rm -f "$DISK_IMG"
+
+SPARSE_BYTES="$(wc -c < "$OUT_DIR/archlinux.hvsparse" | tr -d '[:space:]')"
+if [ "$SPARSE_BYTES" -ge "$MAX_HVSPARSE_BYTES" ]; then
+    echo "[prebuilt] ERROR: archlinux.hvsparse is ${SPARSE_BYTES} bytes (exceeds ${MAX_HVSPARSE_BYTES}-byte limit for GitHub Releases)." >&2
+    exit 1
+fi
 
 (
     cd "$OUT_DIR"
