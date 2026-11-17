@@ -49,6 +49,7 @@ struct HengeLinuxApp: App {
     @State private var isRunning: Bool = false
     @State private var isPreparingDisk: Bool = false
     @State private var isImportingFile: Bool = false
+    @State private var showDebugConsole: Bool = false
     @State private var fileImportMode: FileImportMode = .pairingPlist
     @State private var bootWarning: String?
     @State private var bootErrorAlert: String?
@@ -85,6 +86,9 @@ struct HengeLinuxApp: App {
             .sheet(item: $safariURL) { item in
                 SafariSheetView(url: item.url)
                     .ignoresSafeArea()
+            }
+            .sheet(isPresented: $showDebugConsole) {
+                DebugConsoleSheetView()
             }
             .onReceive(bridgePollTimer) { _ in
                 guard isRunning else { return }
@@ -291,6 +295,11 @@ struct HengeLinuxApp: App {
                     } label: {
                         Label("Refresh Container File List", systemImage: "arrow.clockwise")
                     }
+                    Button {
+                        showDebugConsole = true
+                    } label: {
+                        Label("View Boot & Serial Logs...", systemImage: "terminal")
+                    }
                 }
 
                 if let banner = bootWarning, !banner.isEmpty {
@@ -438,4 +447,139 @@ struct SafariSheetView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+}
+
+/// Live PL011 (`ttyAMA0`) serial & `HengeVM` engine diagnostic console sheet.
+struct DebugConsoleSheetView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var telemetryText: String = ""
+    @State private var logText: String = ""
+    @State private var lastObservedBytes: UInt64 = UInt64.max
+    @State private var showRawEscapeCodes: Bool = false
+    @State private var autoScroll: Bool = true
+    @State private var copiedBanner: Bool = false
+
+    private let refreshTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(telemetryText)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+
+                    HStack(spacing: 12) {
+                        Toggle("Auto-Scroll", isOn: $autoScroll)
+                            .font(.caption)
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+
+                        Toggle("Raw ANSI", isOn: $showRawEscapeCodes)
+                            .font(.caption)
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .onChange(of: showRawEscapeCodes) { _, _ in
+                                refreshLogs(force: true)
+                            }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(white: 0.12))
+
+                Divider()
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(logText.isEmpty ? "Waiting for UEFI / PL011 serial (ttyAMA0) or HengeVM engine output..." : logText)
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .foregroundStyle(logText.isEmpty ? Color.secondary : Color.green)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                                .textSelection(.enabled)
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id("console-bottom")
+                        }
+                    }
+                    .background(Color.black)
+                    .onChange(of: logText) { _, _ in
+                        if autoScroll {
+                            withAnimation(.easeOut(duration: 0.12)) {
+                                proxy.scrollTo("console-bottom", anchor: .bottom)
+                            }
+                        }
+                    }
+                    .onAppear {
+                        refreshLogs(force: true)
+                        if autoScroll {
+                            proxy.scrollTo("console-bottom", anchor: .bottom)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Serial & Debug Logs")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarLeading) {
+                    Button {
+                        let combined = "=== Telemetry ===\n\(telemetryText)\n\n=== Serial / Engine Log ===\n\(logText)"
+                        UIPasteboard.general.string = combined
+                        copiedBanner = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            copiedBanner = false
+                        }
+                    } label: {
+                        Label(copiedBanner ? "Copied" : "Copy All", systemImage: copiedBanner ? "checkmark" : "doc.on.doc")
+                    }
+
+                    Button(role: .destructive) {
+                        HengeVMBridge.shared.clearConsoleLog()
+                        refreshLogs(force: true)
+                    } label: {
+                        Label("Clear", systemImage: "trash")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+            .onReceive(refreshTimer) { _ in
+                refreshLogs(force: false)
+            }
+        }
+    }
+
+    private func refreshLogs(force: Bool) {
+        let bridge = HengeVMBridge.shared
+        telemetryText = bridge.diagnosticSnapshot()
+        let currentBytes = bridge.consoleTotalBytes
+        guard force || currentBytes != lastObservedBytes else {
+            return
+        }
+        lastObservedBytes = currentBytes
+        let raw = bridge.copyConsoleLog()
+        logText = showRawEscapeCodes ? raw : Self.sanitizeTerminalOutput(raw)
+    }
+
+    private static func sanitizeTerminalOutput(_ input: String) -> String {
+        var text = input
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        if let csiRegex = try? NSRegularExpression(pattern: "\\x1B\\[[0-9;?]*[ -/]*[@-~]", options: []) {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            text = csiRegex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+        }
+        if let oscRegex = try? NSRegularExpression(pattern: "\\x1B\\][^\\x07\\x1B]*(?:\\x07|\\x1B\\\\)", options: []) {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            text = oscRegex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+        }
+        return text
+    }
 }

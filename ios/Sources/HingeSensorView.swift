@@ -15,14 +15,18 @@ struct HingeSensorView: View {
     @State private var forceClamshellPreview: Bool = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Label(postureLabel, systemImage: postureIcon)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
             Toggle("Split Deck", isOn: $forceClamshellPreview)
                 .toggleStyle(.button)
                 .controlSize(.mini)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .onChange(of: forceClamshellPreview) { _, enabled in
                     if enabled {
                         posture = .clamshell(angleDegrees: 115.0)

@@ -252,11 +252,11 @@ $SUDO tee "$ESP_MNT_DIR/loader/entries/arch.conf" >/dev/null <<EOF
 title   Arch Linux ARM64 (HengeLinux iOS)
 linux   /Image
 initrd  /initramfs-linux.img
-options root=UUID=${ROOT_UUID} rw rootwait console=tty0 console=ttyAMA0,115200
+options root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200
 EOF
 
 $SUDO tee "$ESP_MNT_DIR/startup.nsh" >/dev/null <<EOF
-\Image initrd=\initramfs-linux.img root=UUID=${ROOT_UUID} rw rootwait console=tty0 console=ttyAMA0,115200
+\Image initrd=\initramfs-linux.img root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200
 EOF
 
 echo "[prebuilt] Configuring /etc/fstab, hostname, serial/GOP console, and henge-linux guest bridge"

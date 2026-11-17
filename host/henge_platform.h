@@ -71,6 +71,17 @@ const uint64_t *hengelinux_negative_counter_offset_ptr(void);
 uint64_t hengelinux_compensated_counter(uint64_t raw_ticks);
 void hengelinux_reset_suspend_counter(void);
 
+/*
+ * Capture POSIX stdout/stderr (including PL011 serial ttyAMA0 and HengeVM
+ * engine diagnostics) into an in-memory 64 KiB circular log buffer and an
+ * optional persistent log file (e.g., Documents/hengelinux-boot.log).
+ */
+int hengelinux_start_console_capture(const char *log_file_path);
+void hengelinux_console_append_line(const char *line);
+uint64_t hengelinux_console_total_bytes(void);
+size_t hengelinux_copy_console_log(char *out_buf, size_t out_cap);
+void hengelinux_clear_console_log(void);
+
 #ifdef __cplusplus
 }
 #endif

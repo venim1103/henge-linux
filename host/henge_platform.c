@@ -467,3 +467,193 @@ void hengelinux_reset_suspend_counter(void) {
     atomic_store_explicit(&g_render_paused, false, memory_order_release);
     pthread_mutex_unlock(&g_render_mutex);
 }
+
+#define HENGE_CONSOLE_RING_BYTES 65536U
+
+static pthread_mutex_t g_console_mutex = PTHREAD_MUTEX_INITIALIZER;
+static char g_console_ring[HENGE_CONSOLE_RING_BYTES];
+static size_t g_console_head = 0U;
+static size_t g_console_len = 0U;
+static atomic_uint_fast64_t g_console_total_bytes = 0ULL;
+static FILE *g_console_log_fp = NULL;
+static int g_console_pipe_read_fd = -1;
+static int g_console_orig_stderr_fd = -1;
+static bool g_console_capture_started = false;
+
+static void console_ring_append_bytes_locked(const char *data, size_t len) {
+    if (data == NULL || len == 0U) {
+        return;
+    }
+    const char *src = data;
+    size_t remaining = len;
+    if (remaining > HENGE_CONSOLE_RING_BYTES) {
+        src += (remaining - HENGE_CONSOLE_RING_BYTES);
+        remaining = HENGE_CONSOLE_RING_BYTES;
+    }
+
+    size_t first = HENGE_CONSOLE_RING_BYTES - g_console_head;
+    if (first > remaining) {
+        first = remaining;
+    }
+    memcpy(g_console_ring + g_console_head, src, first);
+    if (remaining > first) {
+        memcpy(g_console_ring, src + first, remaining - first);
+    }
+
+    g_console_head = (g_console_head + remaining) % HENGE_CONSOLE_RING_BYTES;
+    if (g_console_len + remaining >= HENGE_CONSOLE_RING_BYTES) {
+        g_console_len = HENGE_CONSOLE_RING_BYTES;
+    } else {
+        g_console_len += remaining;
+    }
+
+    if (g_console_log_fp != NULL) {
+        size_t written = fwrite(data, 1U, len, g_console_log_fp);
+        (void)written;
+        fflush(g_console_log_fp);
+    }
+    atomic_fetch_add_explicit(&g_console_total_bytes, (uint64_t)len, memory_order_release);
+}
+
+static void *console_capture_reader_thread(void *opaque) {
+    (void)opaque;
+    char buf[2048];
+    while (true) {
+        int fd = g_console_pipe_read_fd;
+        if (fd < 0) {
+            break;
+        }
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        if (n == 0) {
+            break;
+        }
+        if (g_console_orig_stderr_fd >= 0) {
+            ssize_t ignored = write(g_console_orig_stderr_fd, buf, (size_t)n);
+            (void)ignored;
+        }
+        pthread_mutex_lock(&g_console_mutex);
+        console_ring_append_bytes_locked(buf, (size_t)n);
+        pthread_mutex_unlock(&g_console_mutex);
+    }
+    return NULL;
+}
+
+int hengelinux_start_console_capture(const char *log_file_path) {
+    pthread_mutex_lock(&g_console_mutex);
+    if (log_file_path != NULL && log_file_path[0] != '\0' && g_console_log_fp == NULL) {
+        g_console_log_fp = fopen(log_file_path, "ab");
+        if (g_console_log_fp != NULL) {
+            setvbuf(g_console_log_fp, NULL, _IONBF, 0);
+        }
+    }
+    if (g_console_capture_started) {
+        pthread_mutex_unlock(&g_console_mutex);
+        return 0;
+    }
+
+    int fds[2] = {-1, -1};
+    if (pipe(fds) != 0) {
+        pthread_mutex_unlock(&g_console_mutex);
+        return -1;
+    }
+
+    int saved_err = dup(STDERR_FILENO);
+    fflush(stdout);
+    fflush(stderr);
+    if (dup2(fds[1], STDOUT_FILENO) < 0 || dup2(fds[1], STDERR_FILENO) < 0) {
+        if (saved_err >= 0) {
+            close(saved_err);
+        }
+        close(fds[0]);
+        close(fds[1]);
+        pthread_mutex_unlock(&g_console_mutex);
+        return -1;
+    }
+    close(fds[1]);
+
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
+    g_console_pipe_read_fd = fds[0];
+    g_console_orig_stderr_fd = saved_err;
+
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, console_capture_reader_thread, NULL) != 0) {
+        g_console_pipe_read_fd = -1;
+        if (saved_err >= 0) {
+            close(saved_err);
+            g_console_orig_stderr_fd = -1;
+        }
+        close(fds[0]);
+        pthread_mutex_unlock(&g_console_mutex);
+        return -1;
+    }
+    pthread_detach(tid);
+    g_console_capture_started = true;
+    pthread_mutex_unlock(&g_console_mutex);
+    return 0;
+}
+
+void hengelinux_console_append_line(const char *line) {
+    if (line == NULL) {
+        return;
+    }
+    size_t len = strlen(line);
+    pthread_mutex_lock(&g_console_mutex);
+    if (len > 0U) {
+        console_ring_append_bytes_locked(line, len);
+    }
+    if (len == 0U || line[len - 1U] != '\n') {
+        console_ring_append_bytes_locked("\n", 1U);
+    }
+    pthread_mutex_unlock(&g_console_mutex);
+}
+
+uint64_t hengelinux_console_total_bytes(void) {
+    return atomic_load_explicit(&g_console_total_bytes, memory_order_acquire);
+}
+
+size_t hengelinux_copy_console_log(char *out_buf, size_t out_cap) {
+    if (out_buf == NULL || out_cap == 0U) {
+        return 0U;
+    }
+    pthread_mutex_lock(&g_console_mutex);
+    size_t avail = g_console_len;
+    size_t to_copy = (avail < (out_cap - 1U)) ? avail : (out_cap - 1U);
+    if (to_copy > 0U) {
+        size_t start = (g_console_head + HENGE_CONSOLE_RING_BYTES - to_copy) % HENGE_CONSOLE_RING_BYTES;
+        if (start + to_copy <= HENGE_CONSOLE_RING_BYTES) {
+            memcpy(out_buf, g_console_ring + start, to_copy);
+        } else {
+            size_t first = HENGE_CONSOLE_RING_BYTES - start;
+            memcpy(out_buf, g_console_ring + start, first);
+            memcpy(out_buf + first, g_console_ring, to_copy - first);
+        }
+    }
+    out_buf[to_copy] = '\0';
+    pthread_mutex_unlock(&g_console_mutex);
+    return to_copy;
+}
+
+void hengelinux_clear_console_log(void) {
+    pthread_mutex_lock(&g_console_mutex);
+    g_console_head = 0U;
+    g_console_len = 0U;
+    if (g_console_log_fp != NULL) {
+        fflush(g_console_log_fp);
+        int fd = fileno(g_console_log_fp);
+        if (fd >= 0) {
+            rewind(g_console_log_fp);
+            int rc = ftruncate(fd, 0);
+            (void)rc;
+        }
+    }
+    atomic_fetch_add_explicit(&g_console_total_bytes, 1ULL, memory_order_release);
+    pthread_mutex_unlock(&g_console_mutex);
+}

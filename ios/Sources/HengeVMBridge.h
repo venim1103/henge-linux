@@ -24,6 +24,13 @@ NS_SWIFT_UI_ACTOR
 @property (nonatomic, readonly) uint32_t activeRamMiB;
 @property (nonatomic, readonly, copy) NSString *statusText;
 @property (nonatomic, readonly) uint64_t framesPresented;
+@property (nonatomic, readonly) uint64_t consoleTotalBytes;
+@property (nonatomic, readonly, copy) NSString *bootLogFilePath;
+
+/// Read or clear captured PL011 serial (`ttyAMA0`) + HengeVM engine diagnostic logs.
+- (NSString *)copyConsoleLog;
+- (void)clearConsoleLog;
+- (NSString *)diagnosticSnapshot;
 
 /// Attach or detach the `MetalDisplaySurfaceView` `CAMetalLayer` for UEFI GOP / framebuffer output.
 - (void)attachDisplayLayer:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(attachDisplayLayer(_:));

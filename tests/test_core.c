@@ -367,6 +367,30 @@ static void test_virtio_gpu_backends(void) {
     henge_virtio_gpu_destroy(gpu);
 }
 
+static void test_console_log_capture(void) {
+    const char *log_path = "build/test_console.log";
+    remove(log_path);
+    HENGE_CHECK(hengelinux_start_console_capture(log_path) == 0);
+    hengelinux_clear_console_log();
+
+    hengelinux_console_append_line("[test] console marker line 1");
+    fprintf(stderr, "[test] stderr serial line 2\n");
+    fflush(stderr);
+
+    struct timespec ts = {0, 20000000L}; /* 20 ms for reader thread */
+    nanosleep(&ts, NULL);
+
+    HENGE_CHECK(hengelinux_console_total_bytes() > 0ULL);
+    char buf[1024] = {0};
+    size_t n = hengelinux_copy_console_log(buf, sizeof(buf));
+    HENGE_CHECK(n > 0U);
+    HENGE_CHECK(strstr(buf, "[test] console marker line 1") != NULL);
+    HENGE_CHECK(strstr(buf, "[test] stderr serial line 2") != NULL);
+
+    hengelinux_clear_console_log();
+    remove(log_path);
+}
+
 int main(void) {
     test_unix_socket_path_bounds();
     test_mmu_granule_decoding();
@@ -375,6 +399,7 @@ int main(void) {
     test_multivcpu_counter_jump_atomicity();
     test_txm_jit_bounds_and_blessing();
     test_virtio_gpu_backends();
-    printf("[PASS] test_core: all platform, MMU, RAM, lifecycle, TXM JIT, and VirtIO-GPU checks passed.\n");
+    test_console_log_capture();
+    printf("[PASS] test_core: all platform, MMU, RAM, lifecycle, TXM JIT, VirtIO-GPU, and console checks passed.\n");
     return 0;
 }

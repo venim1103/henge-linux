@@ -13,6 +13,7 @@ struct SessionView: View {
     let onStopSession: () -> Void
 
     @State private var showModifierBar: Bool = true
+    @State private var showDebugConsole: Bool = false
     @State private var focusSoftwareKeyboard: Bool = false
     @State private var ctrlActive: Bool = false
     @State private var altActive: Bool = false
@@ -54,6 +55,9 @@ struct SessionView: View {
                 }
             }
             .background(Color.black.ignoresSafeArea())
+            .sheet(isPresented: $showDebugConsole) {
+                DebugConsoleSheetView()
+            }
             .onDisappear {
                 releaseActiveModifiers()
             }
@@ -81,14 +85,25 @@ struct SessionView: View {
     }
 
     private var topStatusBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 6) {
             HingeSensorView(posture: $posture)
 
-            Spacer()
+            Spacer(minLength: 4)
 
-            Text("\(displayRamMiB) MiB · \(profile.cpuCount) vCPU")
-                .font(.caption.monospacedDigit())
+            Text("\(displayRamMiB)M·\(profile.cpuCount)c")
+                .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            Button {
+                showDebugConsole = true
+            } label: {
+                Image(systemName: "terminal")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .accessibilityLabel("Debug & Serial Logs")
 
             Button {
                 focusSoftwareKeyboard.toggle()
@@ -114,8 +129,10 @@ struct SessionView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.mini)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(.ultraThinMaterial)
     }

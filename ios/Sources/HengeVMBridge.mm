@@ -39,6 +39,7 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
     std::string _shareDirStr;
     std::string _shareSockStr;
     std::string _snapshotPathStr;
+    std::string _bootLogPathStr;
 }
 - (void)handleEngineExitReason:(int)reason;
 @end
@@ -75,6 +76,12 @@ static void henge_on_vm_exit(int reason) {
         _guestRam = nullptr;
         _guestRamBytes = 0;
         _gpuDevice = nullptr;
+
+        NSURL *docsURL = [self documentsDirectoryURL];
+        NSURL *logURL = [docsURL URLByAppendingPathComponent:@"hengelinux-boot.log"];
+        _bootLogPathStr = logURL.path.fileSystemRepresentation;
+        hengelinux_start_console_capture(_bootLogPathStr.c_str());
+        hengelinux_console_append_line("[bridge] HengeVMBridge initialized");
     }
     return self;
 }
@@ -122,6 +129,65 @@ static void henge_on_vm_exit(int reason) {
 #else
     return _running ? virglFrames : 0ULL;
 #endif
+}
+
+- (uint64_t)consoleTotalBytes {
+    return hengelinux_console_total_bytes();
+}
+
+- (NSString *)bootLogFilePath {
+    if (_bootLogPathStr.empty()) {
+        return @"";
+    }
+    return [NSString stringWithUTF8String:_bootLogPathStr.c_str()] ?: @"";
+}
+
+- (NSString *)copyConsoleLog {
+    char *buf = static_cast<char *>(std::malloc(65536U));
+    if (buf == nullptr) {
+        return @"";
+    }
+    size_t n = hengelinux_copy_console_log(buf, 65536U);
+    NSString *str = [[NSString alloc] initWithBytes:buf length:n encoding:NSUTF8StringEncoding];
+    if (str == nil) {
+        str = [[NSString alloc] initWithBytes:buf length:n encoding:NSISOLatin1StringEncoding] ?: @"";
+    }
+    std::free(buf);
+    return str;
+}
+
+- (void)clearConsoleLog {
+    hengelinux_clear_console_log();
+}
+
+- (NSString *)diagnosticSnapshot {
+    HengeJitPool pool;
+    std::memset(&pool, 0, sizeof(pool));
+    bool hasPool = henge_jit_current_pool(&pool);
+    bool csDebugged = henge_txm_is_cs_debugged();
+    bool ptraced = henge_txm_is_ptraced();
+    uint64_t frames = [self framesPresented];
+    uint64_t logBytes = [self consoleTotalBytes];
+    NSString *jitDesc = hasPool
+        ? [NSString stringWithFormat:@"Blessed (%zu MiB @ 0x%llx)",
+           pool.size >> 20,
+           (unsigned long long)pool.rx_base]
+        : @"Inactive";
+    return [NSString stringWithFormat:
+            @"EngineLinked=%@ | Running=%@ | Frames=%llu | LogBytes=%llu\n"
+            @"CS_DEBUGGED=%@ | P_TRACED=%@ | JIT=%@\n"
+            @"RAM=%u MiB | vCPUs=%d | Layer=%@ | Status=%@",
+            self.isEngineLinked ? @"YES" : @"NO",
+            _running ? @"YES" : @"NO",
+            (unsigned long long)frames,
+            (unsigned long long)logBytes,
+            csDebugged ? @"YES" : @"NO",
+            ptraced ? @"YES" : @"NO",
+            jitDesc,
+            _activeRamMiB,
+            _activeCpuCount,
+            (_displayLayer != nil) ? @"Attached" : @"Nil",
+            _statusText ?: @""];
 }
 
 - (void)attachDisplayLayer:(nullable CAMetalLayer *)layer {
@@ -184,6 +250,7 @@ static void henge_on_vm_exit(int reason) {
         }
         if (needsUnpack) {
             _statusText = @"Unpacking archlinux.hvsparse disk image...";
+            hengelinux_console_append_line("[bridge] Unpacking archlinux.hvsparse -> archlinux.img...");
             std::string sparseStr = sparseURL.path.fileSystemRepresentation;
             std::string rawStr = rawDiskURL.path.fileSystemRepresentation;
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -196,11 +263,13 @@ static void henge_on_vm_exit(int reason) {
                     if (rc != 0) {
                         NSString *msg = @"Failed to unpack archlinux.hvsparse into sparse raw NVMe disk image.";
                         self->_statusText = msg;
+                        hengelinux_console_append_line("[bridge] ERROR: hv_sparse_unpack failed");
                         NSError *err = [NSError errorWithDomain:HengeVMErrorDomain
                                                            code:1007
                                                        userInfo:@{NSLocalizedDescriptionKey: msg}];
                         completion(NO, err);
                     } else {
+                        hengelinux_console_append_line("[bridge] Unpacked archlinux.img successfully");
                         completion(YES, nil);
                     }
                 });
@@ -397,12 +466,22 @@ static void henge_on_vm_exit(int reason) {
 
     char errBuf[512];
     std::memset(errBuf, 0, sizeof(errBuf));
+    NSString *createDiag = [NSString stringWithFormat:
+        @"[bridge] Calling hv_winvm_create(ram=%llu MiB, cpus=%d, jit_rx=0x%llx, jit_bytes=%zu, cs_debugged=%d, ptraced=%d)",
+        cfg.ram_mb,
+        cfg.ncpus,
+        (unsigned long long)jitPool.rx_base,
+        jitPool.size,
+        henge_txm_is_cs_debugged() ? 1 : 0,
+        henge_txm_is_ptraced() ? 1 : 0];
+    hengelinux_console_append_line(createDiag.UTF8String);
     if (hv_winvm_create(&cfg, errBuf, sizeof(errBuf)) != 0) {
         henge_free_ledger_exempt_ram(ramPtr, (size_t)alignedBytes);
         NSString *msg = errBuf[0] != '\0'
             ? [NSString stringWithUTF8String:errBuf]
             : @"hv_winvm_create failed";
         _statusText = msg;
+        hengelinux_console_append_line([[NSString stringWithFormat:@"[bridge] ERROR: hv_winvm_create failed: %@", msg] UTF8String]);
         if (error) {
             *error = [NSError errorWithDomain:HengeVMErrorDomain
                                          code:1004
@@ -432,7 +511,9 @@ static void henge_on_vm_exit(int reason) {
     if (layer != nil) {
         hv_winvm_set_display_layer((__bridge void *)layer);
     }
+    hengelinux_console_append_line("[bridge] Calling hv_winvm_start(1, henge_on_vm_exit)...");
     hv_winvm_start(1, henge_on_vm_exit);
+    hengelinux_console_append_line("[bridge] hv_winvm_start returned; vCPUs running");
     return YES;
 #else
     NSString *msg = @"Upstream WindowsiOS engine not compiled into libhengelinux.a yet (run sync_upstream.sh + build_ios_deps.sh).";
@@ -472,6 +553,7 @@ static void henge_on_vm_exit(int reason) {
 }
 
 - (void)stopGuest {
+    hengelinux_console_append_line("[bridge] stopGuest requested");
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_vmCreated) {
         hv_winvm_set_display_layer(nullptr);
@@ -493,6 +575,7 @@ static void henge_on_vm_exit(int reason) {
         _guestRamBytes = 0;
     }
     _statusText = @"Stopped";
+    hengelinux_console_append_line("[bridge] Guest stopped and RAM released");
 }
 
 - (void)handleEngineExitReason:(int)reason {
@@ -503,6 +586,7 @@ static void henge_on_vm_exit(int reason) {
     (void)reason;
     NSString *exitMsg = @"Guest halted";
 #endif
+    hengelinux_console_append_line([[NSString stringWithFormat:@"[bridge] Engine exit callback: %@ (code=%d)", exitMsg, reason] UTF8String]);
     [self stopGuest];
     _statusText = exitMsg;
 }
