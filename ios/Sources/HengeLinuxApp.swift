@@ -137,7 +137,7 @@ struct HengeLinuxApp: App {
                     return
                 }
                 lastPasteboardChangeCount = pb.changeCount
-                guard let hostClip = pb.string, !hostClip.isEmpty, hostClip != lastPushedClipboard else {
+                guard let hostClip = pb.string, !hostClip.isEmpty else {
                     return
                 }
                 lastPushedClipboard = hostClip
@@ -568,15 +568,24 @@ struct DebugConsoleSheetView: View {
         logText = showRawEscapeCodes ? raw : Self.sanitizeTerminalOutput(raw)
     }
 
+    private static let csiEscapeRegex = try? NSRegularExpression(
+        pattern: "\\x1B\\[[0-9;?]*[ -/]*[@-~]",
+        options: []
+    )
+    private static let oscEscapeRegex = try? NSRegularExpression(
+        pattern: "\\x1B\\][^\\x07\\x1B]*(?:\\x07|\\x1B\\\\)",
+        options: []
+    )
+
     private static func sanitizeTerminalOutput(_ input: String) -> String {
         var text = input
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
-        if let csiRegex = try? NSRegularExpression(pattern: "\\x1B\\[[0-9;?]*[ -/]*[@-~]", options: []) {
+        if let csiRegex = csiEscapeRegex {
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             text = csiRegex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
         }
-        if let oscRegex = try? NSRegularExpression(pattern: "\\x1B\\][^\\x07\\x1B]*(?:\\x07|\\x1B\\\\)", options: []) {
+        if let oscRegex = oscEscapeRegex {
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             text = oscRegex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
         }

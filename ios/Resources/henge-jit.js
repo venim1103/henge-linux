@@ -178,6 +178,13 @@ function JIT26PrepareRegion() {
         }
         jitPageAddress = BigInt(`0x${requestRXResponse}`);
     }
+    const minTxmVA = 0x100000000n;
+    const maxTxmVA = 0x1000000000n;
+    if (jitPageAddress < minTxmVA || (jitPageAddress + x1) > maxTxmVA) {
+        log(`Allocated RX region 0x${jitPageAddress.toString(16)} outside TXM [4 GiB, 64 GiB) bounds.`);
+        send_command(`P0=0000000000000000;thread:${tid};`);
+        return;
+    }
     prepare_memory_region(jitPageAddress, x1);
     send_command(`P0=${numberToLittleEndianHexString(jitPageAddress)};thread:${tid};`);
 }

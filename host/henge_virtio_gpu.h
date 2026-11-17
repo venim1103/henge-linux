@@ -155,6 +155,8 @@ int henge_vm_snapshot_read(const char *path,
                            void *payload_buf,
                            size_t payload_cap);
 
+bool henge_virtio_gpu_is_virgl_ready(const HengeVirtioGpuDevice *dev);
+
 #ifdef __cplusplus
 }
 #endif

@@ -203,7 +203,11 @@ static void henge_jit_trap_handler(int sig, siginfo_t *info, void *ctx) {
         prev->sa_handler(sig);
         return;
     }
-    sigaction(sig, prev, NULL);
+    struct sigaction dfl_sa = *prev;
+    if (dfl_sa.sa_handler == SIG_DFL) {
+        dfl_sa.sa_flags |= SA_RESETHAND;
+    }
+    sigaction(sig, &dfl_sa, NULL);
     raise(sig);
 }
 

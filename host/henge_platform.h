@@ -78,6 +78,12 @@ void hengelinux_reset_suspend_counter(void);
  */
 int hengelinux_start_console_capture(const char *log_file_path);
 void hengelinux_console_append_line(const char *line);
+/**
+ * Returns a monotonically increasing byte/event counter for captured console output.
+ * Note: hengelinux_clear_console_log() increments this counter by a sentinel +1ULL
+ * so SwiftUI polling observers wake immediately; callers must not treat it as an
+ * exact cumulative byte count across log clears.
+ */
 uint64_t hengelinux_console_total_bytes(void);
 size_t hengelinux_copy_console_log(char *out_buf, size_t out_cap);
 void hengelinux_clear_console_log(void);

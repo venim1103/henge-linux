@@ -23,6 +23,7 @@ _henge_jit26_probe:
 .globl _henge_jit26_prepare_region
 _henge_jit26_prepare_region:
     .cfi_startproc
+    /* x0 (hint) and x1 (size) are already in their ABI argument registers on brk #0xf00d entry. */
     hint    #34             /* bti c */
     mov     x16, #1
     brk     #0xf00d

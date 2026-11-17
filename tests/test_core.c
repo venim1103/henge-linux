@@ -355,7 +355,20 @@ static void test_virtio_gpu_backends(void) {
     HENGE_CHECK(snap_out.scanout0_res_id == 10U);
     HENGE_CHECK(snap_out.gpu_flush_count == 1ULL);
     HENGE_CHECK(strcmp(read_payload, payload) == 0);
+
+    /* Bit-flip corruption check: FNV-1a checksum validation must reject tampered snapshots. */
+    FILE *corrupt_fp = fopen(snap_path, "r+b");
+    HENGE_CHECK(corrupt_fp != NULL);
+    HENGE_CHECK(fseek(corrupt_fp, 16L, SEEK_SET) == 0);
+    int orig_byte = fgetc(corrupt_fp);
+    HENGE_CHECK(orig_byte != EOF);
+    HENGE_CHECK(fseek(corrupt_fp, 16L, SEEK_SET) == 0);
+    HENGE_CHECK(fputc(orig_byte ^ 0x5A, corrupt_fp) != EOF);
+    HENGE_CHECK(fclose(corrupt_fp) == 0);
+    HENGE_CHECK(henge_vm_snapshot_read(snap_path, &snap_out, read_payload, sizeof(read_payload)) == -1);
     remove(snap_path);
+
+    HENGE_CHECK(henge_virtio_gpu_is_virgl_ready(gpu));
 
     /* Unreferencing resource 10 decrements context 1's attached_resources counter to 0. */
     HENGE_CHECK(henge_virtio_gpu_process_ctrl(

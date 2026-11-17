@@ -93,4 +93,4 @@ fi
 
 install -d /mnt/ios-share
 echo "[guest-setup] Installed henge-xdg-open, VirtIO-Net DHCP config, and /mnt/ios-share."
-echo "[guest-setup] Mount iOS files anytime with: rclone mount :webdav: /mnt/ios-share --webdav-url http://10.0.2.4/ --daemon"
+echo "[guest-setup] Mount iOS files anytime with: rclone mount :webdav: /mnt/ios-share --webdav-url http://10.0.2.4/ --webdav-vendor other --daemon"

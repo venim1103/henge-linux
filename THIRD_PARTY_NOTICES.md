@@ -19,10 +19,10 @@ To satisfy GPLv3 §6(d) and LGPLv2.1 §4(d) Corresponding Source requirements fo
 - **`GNU gettext / libintl`** — **LGPL-2.1-or-later** (internationalization support for GLib; pinned in `WindowsiOS@0071d6975287`).
 
 ## 3. Optional Self-Debugging & 3D Graphics Subsystems
-- **`StikJIT` / `StikDebug` (`StephenDev0/StikDebug`)** — **MPL-2.0** (compatible with `GPL-3.0-or-later` per MPL 2.0 §3.3).
-- **`idevice` (`jkcoxson/idevice`)** — **MIT** (Remote Service Discovery / lockdown debugproxy transport).
-- **`virglrenderer` & `ANGLE`** — **MIT** / **BSD-3-Clause** (OpenGL ES / Metal translation layers for `virtio-gpu-gl-pci`).
+- **`StikJIT` / `StikDebug` (`https://github.com/StephenDev0/StikDebug`)** — **MPL-2.0** (compatible with `GPL-3.0-or-later` per MPL 2.0 §3.3; optional `StikJIT.xcframework` integration).
+- **`idevice` (`https://github.com/jkcoxson/idevice`)** — **MIT** (Remote Service Discovery / lockdown `debugproxy` transport; optional `idevice.xcframework` integration).
+- **`virglrenderer` (`https://gitlab.freedesktop.org/virgl/virglrenderer`) & `ANGLE` (`https://chromium.googlesource.com/angle/angle`)** — **MIT** / **BSD-3-Clause** (OpenGL ES / Metal translation layers for `virtio-gpu-gl-pci`).
 
 ## 4. Pre-Built Guest Image & UEFI Firmware Artifacts (`prebuilt-guest-image.yml`)
-- **`Arch Linux ARM` (`ArchLinuxARM-aarch64-latest.tar.gz`)** — Distributed under upstream open-source licenses (`GPL-2.0-or-later`, `LGPL-2.1-or-later`, `MIT`, `BSD`) and provisioned non-interactively via `scripts/build_prebuilt_archlinux_arm64.sh`.
-- **`TianoCore EDK2` (`ArmVirtQemu` / `AAVMF_CODE.fd` & `AAVMF_VARS.fd`)** — **BSD-2-Clause-Patent** (64 MiB AArch64 UEFI firmware images packaged alongside `archlinux.hvsparse`).
+- **`Arch Linux ARM` (`http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz`)** — Distributed under upstream open-source licenses (`GPL-2.0-or-later`, `LGPL-2.1-or-later`, `MIT`, `BSD`); verified against upstream `.md5` digest during build in `scripts/build_prebuilt_archlinux_arm64.sh` and published with `SHA256SUMS.txt`.
+- **`TianoCore EDK2` (`https://github.com/tianocore/edk2`, Ubuntu `qemu-efi-aarch64` `AAVMF_CODE.fd` & `AAVMF_VARS.fd`)** — **BSD-2-Clause-Patent** (64 MiB AArch64 UEFI firmware images packaged alongside `archlinux.hvsparse` with `SHA256SUMS.txt`).

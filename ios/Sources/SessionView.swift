@@ -20,7 +20,6 @@ struct SessionView: View {
     @State private var superActive: Bool = false
     @State private var cursorNormX: Double = 0.5
     @State private var cursorNormY: Double = 0.5
-    @State private var lastTrackpadPoint: CGPoint?
 
     var body: some View {
         GeometryReader { geo in
@@ -359,9 +358,15 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
     }
 
     override func resignFirstResponder() -> Bool {
+        pendingKeystrokes.removeAll()
+        isDrainingKeystrokes = false
         let ok = super.resignFirstResponder()
         onFocusChanged?(false)
         return ok
+    }
+
+    deinit {
+        pendingKeystrokes.removeAll()
     }
 
     override func layoutSubviews() {

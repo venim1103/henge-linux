@@ -25,6 +25,7 @@ To boot Arch Linux on iOS, you need the app bundle, three guest VM files, and th
 2. Open **SideStore** (or **AltStore**), tap **`+`**, and select `HengeLinux-unsigned.ipa` from **Downloads**.
 3. Sign and install the app with your Apple ID.
    - *Tip:* If you previously installed an older build of `HengeLinux` before `UIFileSharingEnabled` / `CFBundleDocumentTypes` were added, delete the old app icon first before installing so iOS refreshes its `Files.app` container registration.
+   - *Free Apple ID note:* SideStore/AltStore strips `com.apple.developer.kernel.increased-memory-limit` and rewrites the App Group prefix on free Apple IDs (`HengeLinux` handles this automatically via `CS_DEBUGGED` + `LEDGER_NO_FOOTPRINT` and dynamic bundle ID derivation).
 4. Launch **HengeLinux** once so it initializes `Documents/Machines/ArchLinux/` and `Documents/Shared/`.
 
 ---

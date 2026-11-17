@@ -180,6 +180,10 @@ HengeVirtioGpuDevice *henge_virtio_gpu_create(const HengeVirtioGpuConfig *cfg) {
     return dev;
 }
 
+bool henge_virtio_gpu_is_virgl_ready(const HengeVirtioGpuDevice *dev) {
+    return dev != NULL && dev->virgl_backend_ready;
+}
+
 void henge_virtio_gpu_destroy(HengeVirtioGpuDevice *dev) {
     if (dev == NULL) {
         return;
@@ -582,7 +586,11 @@ int henge_vm_snapshot_write(const char *path,
         return -1;
     }
 
+#if defined(PATH_MAX) && (PATH_MAX > 1024)
+    char tmp_path[PATH_MAX];
+#else
     char tmp_path[1024];
+#endif
     int n = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
     if (n <= 0 || (size_t)n >= sizeof(tmp_path)) {
         return -1;

@@ -476,7 +476,7 @@ static size_t g_console_head = 0U;
 static size_t g_console_len = 0U;
 static atomic_uint_fast64_t g_console_total_bytes = 0ULL;
 static FILE *g_console_log_fp = NULL;
-static int g_console_pipe_read_fd = -1;
+static atomic_int g_console_pipe_read_fd = -1;
 static int g_console_orig_stderr_fd = -1;
 static bool g_console_capture_started = false;
 
@@ -519,7 +519,7 @@ static void *console_capture_reader_thread(void *opaque) {
     (void)opaque;
     char buf[2048];
     while (true) {
-        int fd = g_console_pipe_read_fd;
+        int fd = atomic_load_explicit(&g_console_pipe_read_fd, memory_order_acquire);
         if (fd < 0) {
             break;
         }
@@ -580,12 +580,12 @@ int hengelinux_start_console_capture(const char *log_file_path) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    g_console_pipe_read_fd = fds[0];
+    atomic_store_explicit(&g_console_pipe_read_fd, fds[0], memory_order_release);
     g_console_orig_stderr_fd = saved_err;
 
     pthread_t tid;
     if (pthread_create(&tid, NULL, console_capture_reader_thread, NULL) != 0) {
-        g_console_pipe_read_fd = -1;
+        atomic_store_explicit(&g_console_pipe_read_fd, -1, memory_order_release);
         if (saved_err >= 0) {
             close(saved_err);
             g_console_orig_stderr_fd = -1;
@@ -654,6 +654,7 @@ void hengelinux_clear_console_log(void) {
             (void)rc;
         }
     }
+    /* Sentinel +1ULL bump wakes SwiftUI log observers polling hengelinux_console_total_bytes(). */
     atomic_fetch_add_explicit(&g_console_total_bytes, 1ULL, memory_order_release);
     pthread_mutex_unlock(&g_console_mutex);
 }

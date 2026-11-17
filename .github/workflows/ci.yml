@@ -40,6 +40,10 @@ jobs:
           '
           ./build/hvsparse unpack build/test.hvsparse build/unpacked.bin
           cmp build/raw.bin build/unpacked.bin
+          : > build/empty.bin
+          ./build/hvsparse pack build/empty.bin build/empty.hvsparse
+          ./build/hvsparse unpack build/empty.hvsparse build/empty_unpacked.bin
+          cmp build/empty.bin build/empty_unpacked.bin
       - name: Run 16 KiB TLB fast-path tests
         run: make clean && make HV_TLB_PAGE_BITS=14 test-core hvsparse
       - name: Validate guest bridge, upstream patcher, & provisioning scripts
@@ -66,7 +70,9 @@ jobs:
           fi
           xcodebuild -version | tee .xcode-version
       - name: Install XcodeGen & iOS static dependency build tools
-        run: brew install xcodegen meson ninja pkg-config
+        run: |
+          brew install xcodegen meson ninja pkg-config
+          brew list --versions xcodegen meson ninja pkg-config
       - name: Sync & patch upstream WindowsiOS engine
         run: bash scripts/sync_upstream.sh
       - name: Restore cached iOS static dependencies (libffi, glib, libslirp)

@@ -398,14 +398,18 @@ if [ "$VERIFY_BOOT" = "1" ] && command -v qemu-system-aarch64 >/dev/null 2>&1; t
 fi
 
 echo "[prebuilt] Packing $DISK_IMG -> $OUT_DIR/archlinux.hvsparse"
-"$HVSPARSE_BIN" pack "$DISK_IMG" "$OUT_DIR/archlinux.hvsparse"
+TMP_HVSPARSE="$OUT_DIR/archlinux.hvsparse.tmp"
+rm -f "$TMP_HVSPARSE"
+"$HVSPARSE_BIN" pack "$DISK_IMG" "$TMP_HVSPARSE"
 rm -f "$DISK_IMG"
 
-SPARSE_BYTES="$(wc -c < "$OUT_DIR/archlinux.hvsparse" | tr -d '[:space:]')"
+SPARSE_BYTES="$(wc -c < "$TMP_HVSPARSE" | tr -d '[:space:]')"
 if [ "$SPARSE_BYTES" -ge "$MAX_HVSPARSE_BYTES" ]; then
+    rm -f "$TMP_HVSPARSE"
     echo "[prebuilt] ERROR: archlinux.hvsparse is ${SPARSE_BYTES} bytes (exceeds ${MAX_HVSPARSE_BYTES}-byte limit for GitHub Releases)." >&2
     exit 1
 fi
+mv -f "$TMP_HVSPARSE" "$OUT_DIR/archlinux.hvsparse"
 
 (
     cd "$OUT_DIR"

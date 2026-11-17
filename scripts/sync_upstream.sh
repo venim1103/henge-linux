@@ -9,6 +9,11 @@ UPSTREAM_URL="${UPSTREAM_URL:-https://github.com/ammaarreshi/WindowsiOS.git}"
 UPSTREAM_REF="${UPSTREAM_REF:-0071d6975287fd720b9046dfd3bd80b6f2aa765e}"
 DEST_DIR=".upstream/WindowsiOS"
 
+if [[ ! "$UPSTREAM_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "[sync] ERROR: UPSTREAM_REF must be a 40-character hex commit SHA (got: '$UPSTREAM_REF')" >&2
+    exit 1
+fi
+
 mkdir -p .upstream
 
 if [ ! -d "$DEST_DIR/.git" ]; then

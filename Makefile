@@ -32,10 +32,9 @@ $(TLB_STAMP): | $(BUILD_DIR)
 	@touch $@
 
 HOST_SRCS := host/henge_platform.c host/henge_txm_jit.c host/henge_virtio_gpu.c
-HOST_HDRS := host/henge_platform.h host/henge_txm_jit.h host/henge_virtio_gpu.h
 HOST_ASM  := $(if $(filter aarch64 arm64,$(UNAME_M)),host/henge_brk.S,)
 
-$(BUILD_DIR)/test_core: tests/test_core.c $(HOST_SRCS) $(HOST_HDRS) $(HOST_ASM) $(TLB_STAMP) | $(BUILD_DIR)
+$(BUILD_DIR)/test_core: tests/test_core.c $(HOST_SRCS) $(HOST_ASM) $(TLB_STAMP) | $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) -pthread tests/test_core.c $(HOST_SRCS) $(HOST_ASM) -o $(BUILD_DIR)/test_core
 
 $(BUILD_DIR)/hvsparse: tools/hvsparse.c | $(BUILD_DIR)
@@ -117,17 +116,17 @@ $(BUILD_DIR)/ios/%.o: host/%.c $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang $(IOS_CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/ios/henge_brk.o: host/henge_brk.S | $(BUILD_DIR)
+$(BUILD_DIR)/ios/henge_brk.o: host/henge_brk.S $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
-	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$(IOS_SDK)" -c $< -o $@
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$(IOS_SDK)" -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -c $< -o $@
 
 $(BUILD_DIR)/ios/up_core_mmu.o: $(UPSTREAM_DIR)/core/mmu.c $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	xcrun --sdk iphoneos clang $(IOS_UP_CFLAGS) $(ENG_INC) -mgeneral-regs-only -c $< -o $@
 
-$(BUILD_DIR)/ios/up_host_enter.o: $(UPSTREAM_DIR)/host/enter.S | $(BUILD_DIR)
+$(BUILD_DIR)/ios/up_host_enter.o: $(UPSTREAM_DIR)/host/enter.S $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
-	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$(IOS_SDK)" -c $< -o $@
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$(IOS_SDK)" -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -c $< -o $@
 
 $(BUILD_DIR)/ios/up_dev_fb_metal.o: $(UPSTREAM_DIR)/devices/fb_metal.m $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
@@ -149,9 +148,13 @@ ios-lib-full: $(IOS_HOST_OBJS) $(UPSTREAM_ALL_OBJS)
 	rm -f $(BUILD_DIR)/ios/libhengelinux.a
 	ar rcs $(BUILD_DIR)/ios/libhengelinux.a $(IOS_HOST_OBJS) $(UPSTREAM_ALL_OBJS)
 	@echo "[ios-lib] Built $(BUILD_DIR)/ios/libhengelinux.a (full HengeVM engine)"
+else
+ios-lib-full:
+	@echo "[ios-lib-full] ERROR: ios-lib-full requires macOS (Darwin) with Xcode iPhoneOS SDK." >&2
+	@exit 1
 endif
 
-ios-lib: $(HOST_SRCS) $(HOST_HDRS) host/henge_brk.S | $(BUILD_DIR)
+ios-lib: $(HOST_SRCS) host/henge_brk.S | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
 	@if [ "$(UNAME_S)" = "Darwin" ]; then \
 		set -euo pipefail; \

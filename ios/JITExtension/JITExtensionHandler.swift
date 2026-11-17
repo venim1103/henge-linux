@@ -384,9 +384,10 @@ private final class GdbRspTxmBlesser {
                 return "Failed sending pipelined 0x69 blessing batch at 0x\(addrHex)."
             }
             for pageIdx in idx..<end {
-                guard let reply = receiveNextPacket(), reply == "OK" else {
+                let reply = receiveNextPacket()
+                guard reply == "OK" else {
                     let addrHex = String(rxBase &+ (UInt64(pageIdx) * pageSize), radix: 16)
-                    return "Failed writing 0x69 blessing byte at 0x\(addrHex)."
+                    return "Failed writing 0x69 blessing byte at 0x\(addrHex) (reply: \(reply ?? "EOF"))."
                 }
             }
             idx = end
@@ -459,18 +460,24 @@ private final class GdbRspTxmBlesser {
         guard fd >= 0 else { return nil }
         var scratch = [UInt8](repeating: 0, count: 4096)
         while recvBuf.count < 65536 {
-            if let dollarIdx = recvBuf.firstIndex(of: UInt8(ascii: "$")),
-               let hashIdx = recvBuf[dollarIdx...].firstIndex(of: UInt8(ascii: "#")),
-               recvBuf.distance(from: hashIdx, to: recvBuf.endIndex) >= 3 {
-                if !noAckMode {
-                    var ack: UInt8 = UInt8(ascii: "+")
-                    _ = Darwin.send(fd, &ack, 1, 0)
+            if let dollarIdx = recvBuf.firstIndex(of: UInt8(ascii: "$")) {
+                if dollarIdx > recvBuf.startIndex {
+                    recvBuf.removeSubrange(recvBuf.startIndex..<dollarIdx)
                 }
-                let bodyStart = recvBuf.index(after: dollarIdx)
-                let rawBody = String(decoding: recvBuf[bodyStart..<hashIdx], as: UTF8.self)
-                let packetEnd = recvBuf.index(hashIdx, offsetBy: 3)
-                recvBuf.removeSubrange(recvBuf.startIndex..<packetEnd)
-                return expandRspRle(rawBody)
+                if let hashIdx = recvBuf.firstIndex(of: UInt8(ascii: "#")),
+                   recvBuf.distance(from: hashIdx, to: recvBuf.endIndex) >= 3 {
+                    if !noAckMode {
+                        var ack: UInt8 = UInt8(ascii: "+")
+                        _ = Darwin.send(fd, &ack, 1, 0)
+                    }
+                    let bodyStart = recvBuf.index(after: recvBuf.startIndex)
+                    let rawBody = String(decoding: recvBuf[bodyStart..<hashIdx], as: UTF8.self)
+                    let packetEnd = recvBuf.index(hashIdx, offsetBy: 3)
+                    recvBuf.removeSubrange(recvBuf.startIndex..<packetEnd)
+                    return expandRspRle(rawBody)
+                }
+            } else if !recvBuf.isEmpty {
+                recvBuf.removeAll(keepingCapacity: true)
             }
 
             let n = Darwin.recv(fd, &scratch, scratch.count, 0)

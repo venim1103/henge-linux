@@ -50,6 +50,7 @@ jobs:
             util-linux \
             xz-utils \
             zstd
+          dpkg-query -W -f='${Package}=${Version}\n' binutils dosfstools e2fsprogs gdisk mtools parted qemu-efi-aarch64 qemu-system-aarch64 systemd-boot-efi || true
       - name: Build code.fd, vars.fd, and archlinux.hvsparse
         env:
           VERIFY_BOOT: "1"

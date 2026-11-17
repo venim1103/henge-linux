@@ -88,7 +88,7 @@ def is_allowed_http_url(target_url: str) -> bool:
 def is_loopback_hostname(host: str | None) -> bool:
     if not host:
         return False
-    h = host.strip("[]").lower()
+    h = host.strip("[]").split("%", 1)[0].lower()
     if h == "localhost":
         return True
     try:
@@ -312,6 +312,7 @@ def run_oauth_bridge(port: int, url: str) -> None:
                 if not is_port_listening(port):
                     gateway_put("oauth-done", str(port))
             return
+        print(f"henge-xdg-open: warning: could not bind 127.0.0.1:{port} ({exc}); falling back to direct Safari open", file=sys.stderr)
         gateway_put("open-url", url, log_errors=True)
         return
 
