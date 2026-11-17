@@ -237,9 +237,10 @@ static void henge_on_vm_exit(int reason) {
 
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (hasSparse) {
+        NSDictionary *sparseAttrs = [fm attributesOfItemAtPath:sparseURL.path error:nil];
+        unsigned long long sparseSize = [sparseAttrs[NSFileSize] unsignedLongLongValue];
         BOOL needsUnpack = !hasRaw;
         if (hasRaw) {
-            NSDictionary *sparseAttrs = [fm attributesOfItemAtPath:sparseURL.path error:nil];
             NSDictionary *rawAttrs = [fm attributesOfItemAtPath:rawDiskURL.path error:nil];
             NSDate *sparseMod = sparseAttrs[NSFileModificationDate];
             NSDate *rawMod = rawAttrs[NSFileModificationDate];
@@ -250,7 +251,10 @@ static void henge_on_vm_exit(int reason) {
         }
         if (needsUnpack) {
             _statusText = @"Unpacking archlinux.hvsparse disk image...";
-            hengelinux_console_append_line("[bridge] Unpacking archlinux.hvsparse -> archlinux.img...");
+            NSString *unpackMsg = [NSString stringWithFormat:
+                @"[bridge] Unpacking archlinux.hvsparse (%llu bytes) -> archlinux.img...",
+                sparseSize];
+            hengelinux_console_append_line(unpackMsg.UTF8String);
             std::string sparseStr = sparseURL.path.fileSystemRepresentation;
             std::string rawStr = rawDiskURL.path.fileSystemRepresentation;
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{

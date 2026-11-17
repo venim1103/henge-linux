@@ -19,6 +19,7 @@ MAX_HVSPARSE_BYTES="${MAX_HVSPARSE_BYTES:-2097152000}"
 ROOT_UUID="${ROOT_UUID:-60417316-399c-4918-b592-19e253118b72}"
 ESP_PARTUUID="${ESP_PARTUUID:-c12a7328-f81f-11d2-ba4b-00a0c93ec93b}"
 ROOT_PARTUUID="${ROOT_PARTUUID:-b921b045-1df0-41c3-af44-4c6f280d3fae}"
+VERIFY_BOOT="${VERIFY_BOOT:-0}"
 DRY_RUN=0
 
 ALARM_MIRRORS=(
@@ -222,47 +223,77 @@ if [ -d "$MNT_DIR/usr/share/locale" ]; then
         -exec rm -rf {} +
 fi
 
-echo "[prebuilt] Populating FAT32 EFI System Partition (GRUB2 arm64-efi BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
+echo "[prebuilt] Populating FAT32 EFI System Partition (Unified Kernel Image BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
 $SUDO mount -o loop "$ESP_IMG" "$ESP_MNT_DIR"
 if [ -d "$MNT_DIR/boot" ]; then
     $SUDO cp -r --no-preserve=ownership,mode "$MNT_DIR/boot/." "$ESP_MNT_DIR/"
     $SUDO rm -rf "$MNT_DIR/boot"
 fi
-$SUDO mkdir -p "$MNT_DIR/boot" "$ESP_MNT_DIR/EFI/BOOT" "$ESP_MNT_DIR/boot/grub" "$ESP_MNT_DIR/loader/entries"
+$SUDO mkdir -p "$MNT_DIR/boot" "$ESP_MNT_DIR/EFI/BOOT" "$ESP_MNT_DIR/loader/entries"
 
 KERNEL_CMDLINE="root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200"
 
-cat <<EOF > "$WORK_DIR/grub.cfg"
-serial --unit=0 --speed=115200
-terminal_input console serial
-terminal_output console serial
-set timeout=1
-set default=0
+EFI_STUB=""
+for stub_candidate in \
+    "$MNT_DIR/usr/lib/systemd/boot/efi/linuxaa64.efi.stub" \
+    "/usr/lib/systemd/boot/efi/linuxaa64.efi.stub"; do
+    if [ -f "$stub_candidate" ]; then
+        EFI_STUB="$stub_candidate"
+        break
+    fi
+done
 
-menuentry "Arch Linux ARM64 (HengeLinux iOS)" {
-    search --no-floppy --label --set=root ARCH_EFI
-    linux /Image ${KERNEL_CMDLINE}
-    initrd /initramfs-linux.img
-}
-EOF
-$SUDO cp --no-preserve=ownership,mode "$WORK_DIR/grub.cfg" "$ESP_MNT_DIR/boot/grub/grub.cfg"
-$SUDO cp --no-preserve=ownership,mode "$WORK_DIR/grub.cfg" "$ESP_MNT_DIR/EFI/BOOT/grub.cfg"
+if [ -n "$EFI_STUB" ] && command -v objcopy >/dev/null 2>&1 && command -v objdump >/dev/null 2>&1 && [ -f "$ESP_MNT_DIR/Image" ] && [ -f "$ESP_MNT_DIR/initramfs-linux.img" ]; then
+    echo "[prebuilt] Building 4 KiB-aligned Unified Kernel Image (UKI) BOOTAA64.EFI from $EFI_STUB"
+    printf '%s' "$KERNEL_CMDLINE" > "$WORK_DIR/uki.cmdline"
+    if [ -f "$MNT_DIR/etc/os-release" ]; then
+        cp "$MNT_DIR/etc/os-release" "$WORK_DIR/uki.osrel"
+    else
+        printf 'NAME="Arch Linux ARM"\nID=archarm\n' > "$WORK_DIR/uki.osrel"
+    fi
+    python3 - "$EFI_STUB" "$WORK_DIR/uki.osrel" "$WORK_DIR/uki.cmdline" "$ESP_MNT_DIR/Image" "$ESP_MNT_DIR/initramfs-linux.img" "$WORK_DIR/BOOTAA64.EFI" <<'PY'
+import re
+import subprocess
+import sys
+from pathlib import Path
 
-if command -v grub-mkstandalone >/dev/null 2>&1 && [ -d "/usr/lib/grub/arm64-efi" ]; then
-    echo "[prebuilt] Building self-contained GRUB2 arm64-efi BOOTAA64.EFI with embedded grub.cfg"
-    grub-mkstandalone \
-        --format=arm64-efi \
-        --output="$WORK_DIR/BOOTAA64.EFI" \
-        --locales="" \
-        --fonts="" \
-        "boot/grub/grub.cfg=$WORK_DIR/grub.cfg"
+stub, osrel, cmdline, image, initrd, out_efi = sys.argv[1:7]
+hdr = subprocess.check_output(["objdump", "-h", stub], text=True)
+max_end = 0
+for line in hdr.splitlines():
+    m = re.match(r"^\s*\d+\s+\S+\s+([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+", line)
+    if m:
+        size = int(m.group(1), 16)
+        vma = int(m.group(2), 16)
+        if vma + size > max_end:
+            max_end = vma + size
+
+def align_up(val: int, align: int = 0x1000) -> int:
+    return (val + align - 1) & ~(align - 1)
+
+osrel_vma = align_up(max_end)
+cmdline_vma = align_up(osrel_vma + Path(osrel).stat().st_size)
+linux_vma = align_up(cmdline_vma + Path(cmdline).stat().st_size)
+initrd_vma = align_up(linux_vma + Path(image).stat().st_size)
+
+cmd = [
+    "objcopy",
+    "--add-section", f".osrel={osrel}", "--change-section-vma", f".osrel=0x{osrel_vma:x}",
+    "--add-section", f".cmdline={cmdline}", "--change-section-vma", f".cmdline=0x{cmdline_vma:x}",
+    "--add-section", f".linux={image}", "--change-section-vma", f".linux=0x{linux_vma:x}",
+    "--add-section", f".initrd={initrd}", "--change-section-vma", f".initrd=0x{initrd_vma:x}",
+    stub,
+    out_efi,
+]
+subprocess.run(cmd, check=True)
+print(f"[prebuilt] UKI sections placed at osrel=0x{osrel_vma:x}, cmdline=0x{cmdline_vma:x}, linux=0x{linux_vma:x}, initrd=0x{initrd_vma:x}")
+PY
     $SUDO cp --no-preserve=ownership,mode "$WORK_DIR/BOOTAA64.EFI" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
-    rm -f "$WORK_DIR/BOOTAA64.EFI"
+    rm -f "$WORK_DIR/BOOTAA64.EFI" "$WORK_DIR/uki.cmdline" "$WORK_DIR/uki.osrel"
 elif [ -f "$ESP_MNT_DIR/Image" ]; then
-    # Fallback: Linux ARM64 Image is built with CONFIG_EFI_STUB=y and can execute directly as BOOTAA64.EFI
+    echo "[prebuilt] Falling back to direct CONFIG_EFI_STUB Linux Image as BOOTAA64.EFI"
     $SUDO cp --no-preserve=ownership,mode "$ESP_MNT_DIR/Image" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
 fi
-rm -f "$WORK_DIR/grub.cfg"
 
 $SUDO tee "$ESP_MNT_DIR/loader/loader.conf" >/dev/null <<'EOF'
 default arch.conf
@@ -378,6 +409,44 @@ EOF
 dd if="$ESP_IMG" of="$DISK_IMG" bs=1M seek=1 conv=notrunc,sparse status=none
 dd if="$ROOT_IMG" of="$DISK_IMG" bs=1M seek=$((1 + ESP_SIZE_MIB)) conv=notrunc,sparse status=none
 rm -f "$ESP_IMG" "$ROOT_IMG"
+
+if [ "$VERIFY_BOOT" = "1" ] && command -v qemu-system-aarch64 >/dev/null 2>&1; then
+    echo "[prebuilt] Running headless QEMU AArch64 UEFI -> Linux kernel boot smoke test..."
+    VERIFY_DISK="$WORK_DIR/verify.img"
+    VERIFY_VARS="$WORK_DIR/verify_vars.fd"
+    VERIFY_LOG="$WORK_DIR/verify_serial.log"
+    cp --reflink=auto "$DISK_IMG" "$VERIFY_DISK"
+    cp "$OUT_DIR/vars.fd" "$VERIFY_VARS"
+    rm -f "$VERIFY_LOG"
+
+    ACCEL_OPT="-accel tcg"
+    if [ -w /dev/kvm ] && [ "$(uname -m)" = "aarch64" ]; then
+        ACCEL_OPT="-accel kvm"
+    fi
+
+    timeout 30s qemu-system-aarch64 \
+        -machine virt,gic-version=3 $ACCEL_OPT \
+        -cpu cortex-a76 \
+        -smp 2 \
+        -m 1024 \
+        -nographic \
+        -no-reboot \
+        -drive if=pflash,format=raw,readonly=on,file="$OUT_DIR/code.fd" \
+        -drive if=pflash,format=raw,file="$VERIFY_VARS" \
+        -drive if=none,id=nvme0,format=raw,file="$VERIFY_DISK" \
+        -device nvme,drive=nvme0,serial=HENGELINUX0 \
+        -serial file:"$VERIFY_LOG" >/dev/null 2>&1 || true
+
+    echo "[prebuilt] Captured QEMU UEFI/kernel serial output:"
+    cat "$VERIFY_LOG" || true
+    if ! grep -Eq "Booting Linux on physical CPU|EFI stub:" "$VERIFY_LOG"; then
+        echo "[prebuilt] ERROR: QEMU boot smoke test did not reach Linux kernel entry!" >&2
+        rm -f "$VERIFY_DISK" "$VERIFY_VARS" "$VERIFY_LOG"
+        exit 1
+    fi
+    rm -f "$VERIFY_DISK" "$VERIFY_VARS" "$VERIFY_LOG"
+    echo "[prebuilt] Verified UEFI -> BOOTAA64.EFI -> Linux kernel serial boot!"
+fi
 
 echo "[prebuilt] Packing $DISK_IMG -> $OUT_DIR/archlinux.hvsparse"
 "$HVSPARSE_BIN" pack "$DISK_IMG" "$OUT_DIR/archlinux.hvsparse"
