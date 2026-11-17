@@ -54,6 +54,8 @@ struct SessionView: View {
                     compactModifierStrip
                 }
             }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .clipped()
             .background(Color.black.ignoresSafeArea())
             .sheet(isPresented: $showDebugConsole) {
                 DebugConsoleSheetView()
@@ -88,13 +90,13 @@ struct SessionView: View {
         HStack(spacing: 6) {
             HingeSensorView(posture: $posture)
 
-            Spacer(minLength: 4)
+            Spacer(minLength: 2)
 
             Text("\(displayRamMiB)M·\(profile.cpuCount)c")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+                .minimumScaleFactor(0.8)
 
             Button {
                 showDebugConsole = true

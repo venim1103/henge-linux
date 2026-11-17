@@ -20,7 +20,7 @@ struct HingeSensorView: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+                .minimumScaleFactor(0.8)
 
             Toggle("Split Deck", isOn: $forceClamshellPreview)
                 .toggleStyle(.button)
@@ -53,11 +53,11 @@ struct HingeSensorView: View {
     private var postureLabel: String {
         switch posture {
         case .singleScreen:
-            return "Single-Screen Canvas"
+            return "Canvas"
         case .clamshell(let angle):
-            return String(format: "Clamshell Deck (%.0f°)", angle)
+            return String(format: "Clamshell %.0f°", angle)
         case .openStudio:
-            return "Open Studio"
+            return "Studio"
         }
     }
 

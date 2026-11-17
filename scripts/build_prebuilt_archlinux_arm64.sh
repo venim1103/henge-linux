@@ -222,24 +222,47 @@ if [ -d "$MNT_DIR/usr/share/locale" ]; then
         -exec rm -rf {} +
 fi
 
-echo "[prebuilt] Populating FAT32 EFI System Partition (BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
+echo "[prebuilt] Populating FAT32 EFI System Partition (GRUB2 arm64-efi BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
 $SUDO mount -o loop "$ESP_IMG" "$ESP_MNT_DIR"
 if [ -d "$MNT_DIR/boot" ]; then
     $SUDO cp -r --no-preserve=ownership,mode "$MNT_DIR/boot/." "$ESP_MNT_DIR/"
     $SUDO rm -rf "$MNT_DIR/boot"
 fi
-$SUDO mkdir -p "$MNT_DIR/boot" "$ESP_MNT_DIR/EFI/BOOT" "$ESP_MNT_DIR/EFI/systemd" "$ESP_MNT_DIR/loader/entries"
+$SUDO mkdir -p "$MNT_DIR/boot" "$ESP_MNT_DIR/EFI/BOOT" "$ESP_MNT_DIR/boot/grub" "$ESP_MNT_DIR/loader/entries"
 
-if [ -f "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" ]; then
-    $SUDO cp --no-preserve=ownership,mode "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
-    $SUDO cp --no-preserve=ownership,mode "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$ESP_MNT_DIR/EFI/systemd/systemd-bootaa64.efi"
-elif [ -f "/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" ]; then
-    $SUDO cp --no-preserve=ownership,mode "/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
-    $SUDO cp --no-preserve=ownership,mode "/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$ESP_MNT_DIR/EFI/systemd/systemd-bootaa64.efi"
+KERNEL_CMDLINE="root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200"
+
+cat <<EOF > "$WORK_DIR/grub.cfg"
+serial --unit=0 --speed=115200
+terminal_input console serial
+terminal_output console serial
+set timeout=1
+set default=0
+
+menuentry "Arch Linux ARM64 (HengeLinux iOS)" {
+    search --no-floppy --label --set=root ARCH_EFI
+    linux /Image ${KERNEL_CMDLINE}
+    initrd /initramfs-linux.img
+}
+EOF
+$SUDO cp --no-preserve=ownership,mode "$WORK_DIR/grub.cfg" "$ESP_MNT_DIR/boot/grub/grub.cfg"
+$SUDO cp --no-preserve=ownership,mode "$WORK_DIR/grub.cfg" "$ESP_MNT_DIR/EFI/BOOT/grub.cfg"
+
+if command -v grub-mkstandalone >/dev/null 2>&1 && [ -d "/usr/lib/grub/arm64-efi" ]; then
+    echo "[prebuilt] Building self-contained GRUB2 arm64-efi BOOTAA64.EFI with embedded grub.cfg"
+    grub-mkstandalone \
+        --format=arm64-efi \
+        --output="$WORK_DIR/BOOTAA64.EFI" \
+        --locales="" \
+        --fonts="" \
+        "boot/grub/grub.cfg=$WORK_DIR/grub.cfg"
+    $SUDO cp --no-preserve=ownership,mode "$WORK_DIR/BOOTAA64.EFI" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
+    rm -f "$WORK_DIR/BOOTAA64.EFI"
 elif [ -f "$ESP_MNT_DIR/Image" ]; then
-    # Linux ARM64 Image is built with CONFIG_EFI_STUB=y and can execute directly as BOOTAA64.EFI
+    # Fallback: Linux ARM64 Image is built with CONFIG_EFI_STUB=y and can execute directly as BOOTAA64.EFI
     $SUDO cp --no-preserve=ownership,mode "$ESP_MNT_DIR/Image" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
 fi
+rm -f "$WORK_DIR/grub.cfg"
 
 $SUDO tee "$ESP_MNT_DIR/loader/loader.conf" >/dev/null <<'EOF'
 default arch.conf
@@ -252,11 +275,11 @@ $SUDO tee "$ESP_MNT_DIR/loader/entries/arch.conf" >/dev/null <<EOF
 title   Arch Linux ARM64 (HengeLinux iOS)
 linux   /Image
 initrd  /initramfs-linux.img
-options root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200
+options ${KERNEL_CMDLINE}
 EOF
 
 $SUDO tee "$ESP_MNT_DIR/startup.nsh" >/dev/null <<EOF
-\Image initrd=\initramfs-linux.img root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200
+\Image initrd=\initramfs-linux.img ${KERNEL_CMDLINE}
 EOF
 
 echo "[prebuilt] Configuring /etc/fstab, hostname, serial/GOP console, and henge-linux guest bridge"

@@ -39,6 +39,8 @@ jobs:
             e2fsprogs \
             fdisk \
             gdisk \
+            grub-common \
+            grub-efi-arm64-bin \
             libarchive-tools \
             mount \
             mtools \
@@ -48,7 +50,6 @@ jobs:
             util-linux \
             xz-utils \
             zstd
-          sudo apt-get install -y --no-install-recommends systemd-boot-efi || true
       - name: Build code.fd, vars.fd, and archlinux.hvsparse
         run: bash scripts/build_prebuilt_archlinux_arm64.sh
       - name: Upload prebuilt guest image artifact
