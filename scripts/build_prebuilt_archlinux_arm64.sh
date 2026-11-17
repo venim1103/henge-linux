@@ -278,16 +278,25 @@ initrd_vma = align_up(linux_vma + Path(image).stat().st_size)
 
 cmd = [
     "objcopy",
-    "--add-section", f".osrel={osrel}", "--change-section-vma", f".osrel=0x{osrel_vma:x}",
-    "--add-section", f".cmdline={cmdline}", "--change-section-vma", f".cmdline=0x{cmdline_vma:x}",
-    "--add-section", f".linux={image}", "--change-section-vma", f".linux=0x{linux_vma:x}",
-    "--add-section", f".initrd={initrd}", "--change-section-vma", f".initrd=0x{initrd_vma:x}",
+    "--add-section", f".osrel={osrel}",
+    "--set-section-flags", ".osrel=contents,alloc,load,readonly,data",
+    "--change-section-vma", f".osrel=0x{osrel_vma:x}",
+    "--add-section", f".cmdline={cmdline}",
+    "--set-section-flags", ".cmdline=contents,alloc,load,readonly,data",
+    "--change-section-vma", f".cmdline=0x{cmdline_vma:x}",
+    "--add-section", f".linux={image}",
+    "--set-section-flags", ".linux=contents,alloc,load,readonly,data",
+    "--change-section-vma", f".linux=0x{linux_vma:x}",
+    "--add-section", f".initrd={initrd}",
+    "--set-section-flags", ".initrd=contents,alloc,load,readonly,data",
+    "--change-section-vma", f".initrd=0x{initrd_vma:x}",
     stub,
     out_efi,
 ]
 subprocess.run(cmd, check=True)
 print(f"[prebuilt] UKI sections placed at osrel=0x{osrel_vma:x}, cmdline=0x{cmdline_vma:x}, linux=0x{linux_vma:x}, initrd=0x{initrd_vma:x}")
 PY
+    objdump -h "$WORK_DIR/BOOTAA64.EFI" | grep -E '\.(text|osrel|cmdline|linux|initrd)' || true
     $SUDO cp --no-preserve=ownership,mode "$WORK_DIR/BOOTAA64.EFI" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
     rm -f "$WORK_DIR/BOOTAA64.EFI" "$WORK_DIR/uki.cmdline" "$WORK_DIR/uki.osrel"
 elif [ -f "$ESP_MNT_DIR/Image" ]; then
@@ -424,21 +433,21 @@ if [ "$VERIFY_BOOT" = "1" ] && command -v qemu-system-aarch64 >/dev/null 2>&1; t
         ACCEL_OPT="-accel kvm"
     fi
 
-    timeout 30s qemu-system-aarch64 \
+    timeout 35s qemu-system-aarch64 \
         -machine virt,gic-version=3 $ACCEL_OPT \
         -cpu cortex-a76 \
         -smp 2 \
         -m 1024 \
-        -nographic \
+        -display none \
         -no-reboot \
         -drive if=pflash,format=raw,readonly=on,file="$OUT_DIR/code.fd" \
         -drive if=pflash,format=raw,file="$VERIFY_VARS" \
         -drive if=none,id=nvme0,format=raw,file="$VERIFY_DISK" \
         -device nvme,drive=nvme0,serial=HENGELINUX0 \
-        -serial file:"$VERIFY_LOG" >/dev/null 2>&1 || true
+        -serial file:"$VERIFY_LOG" || true
 
     echo "[prebuilt] Captured QEMU UEFI/kernel serial output:"
-    cat "$VERIFY_LOG" || true
+    tr -d '\r' < "$VERIFY_LOG" | head -n 120 || true
     if ! grep -Eq "Booting Linux on physical CPU|EFI stub:" "$VERIFY_LOG"; then
         echo "[prebuilt] ERROR: QEMU boot smoke test did not reach Linux kernel entry!" >&2
         rm -f "$VERIFY_DISK" "$VERIFY_VARS" "$VERIFY_LOG"
