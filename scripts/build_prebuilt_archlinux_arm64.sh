@@ -120,6 +120,7 @@ HVSPARSE_BIN="$REPO_ROOT/build/hvsparse"
 
 mkdir -p "$WORK_DIR" "$OUT_DIR"
 MNT_DIR="$WORK_DIR/mnt"
+ESP_MNT_DIR="$WORK_DIR/esp_mnt"
 ESP_IMG="$WORK_DIR/esp.img"
 ROOT_IMG="$WORK_DIR/root.img"
 DISK_IMG="$WORK_DIR/archlinux.img"
@@ -127,6 +128,9 @@ TARBALL="$WORK_DIR/ArchLinuxARM-aarch64-latest.tar.gz"
 
 cleanup() {
     set +e
+    if mountpoint -q "$ESP_MNT_DIR" 2>/dev/null; then
+        $SUDO umount -lf "$ESP_MNT_DIR"
+    fi
     if mountpoint -q "$MNT_DIR/boot" 2>/dev/null; then
         $SUDO umount -lf "$MNT_DIR/boot"
     fi
@@ -154,11 +158,22 @@ if [ ! -s "$TARBALL" ]; then
     for url in "${ALARM_MIRRORS[@]}"; do
         echo "[prebuilt] Downloading Arch Linux ARM64 rootfs from $url"
         if curl -fL --retry 4 --retry-delay 3 --connect-timeout 20 "$url" -o "$TARBALL.part"; then
+            if curl -fsSL --connect-timeout 10 "${url}.md5" -o "$TARBALL.md5" 2>/dev/null; then
+                EXPECTED_MD5="$(awk '{print $1; exit}' "$TARBALL.md5")"
+                ACTUAL_MD5="$(md5sum "$TARBALL.part" | awk '{print $1}')"
+                if [ -n "$EXPECTED_MD5" ] && [ "$ACTUAL_MD5" != "$EXPECTED_MD5" ]; then
+                    echo "[prebuilt] MD5 mismatch from $url (expected $EXPECTED_MD5, got $ACTUAL_MD5)" >&2
+                    rm -f "$TARBALL.part" "$TARBALL.md5"
+                    continue
+                fi
+                echo "[prebuilt] Verified MD5 checksum ($ACTUAL_MD5)"
+            fi
+            rm -f "$TARBALL.md5"
             mv "$TARBALL.part" "$TARBALL"
             DOWNLOADED=1
             break
         fi
-        rm -f "$TARBALL.part"
+        rm -f "$TARBALL.part" "$TARBALL.md5"
     done
     if [ "$DOWNLOADED" -ne 1 ]; then
         echo "[prebuilt] Failed to download Arch Linux ARM64 rootfs from all mirrors." >&2
@@ -174,47 +189,50 @@ mkfs.vfat -F 32 -n "ARCH_EFI" "$ESP_IMG" >/dev/null
 truncate -s "${ROOT_SIZE_MIB}M" "$ROOT_IMG"
 mkfs.ext4 -F -q -L "arch_root" -U "$ROOT_UUID" "$ROOT_IMG"
 
-mkdir -p "$MNT_DIR"
+mkdir -p "$MNT_DIR" "$ESP_MNT_DIR"
 $SUDO mount -o loop "$ROOT_IMG" "$MNT_DIR"
-$SUDO mkdir -p "$MNT_DIR/boot"
-$SUDO mount -o loop "$ESP_IMG" "$MNT_DIR/boot"
 
-echo "[prebuilt] Extracting Arch Linux ARM64 rootfs into mounted partitions"
+echo "[prebuilt] Extracting Arch Linux ARM64 rootfs into ext4 root partition"
 if command -v bsdtar >/dev/null 2>&1; then
     $SUDO bsdtar -xpf "$TARBALL" -C "$MNT_DIR"
 else
     $SUDO tar -xzpf "$TARBALL" -C "$MNT_DIR" --numeric-owner
 fi
 
-echo "[prebuilt] Configuring UEFI bootloader (BOOTAA64.EFI + systemd-boot + startup.nsh)"
-$SUDO mkdir -p "$MNT_DIR/boot/EFI/BOOT" "$MNT_DIR/boot/EFI/systemd" "$MNT_DIR/boot/loader/entries"
+echo "[prebuilt] Populating FAT32 EFI System Partition (BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
+$SUDO mount -o loop "$ESP_IMG" "$ESP_MNT_DIR"
+if [ -d "$MNT_DIR/boot" ]; then
+    $SUDO cp -r --no-preserve=ownership,mode "$MNT_DIR/boot/." "$ESP_MNT_DIR/"
+    $SUDO rm -rf "$MNT_DIR/boot"
+fi
+$SUDO mkdir -p "$MNT_DIR/boot" "$ESP_MNT_DIR/EFI/BOOT" "$ESP_MNT_DIR/EFI/systemd" "$ESP_MNT_DIR/loader/entries"
 
 if [ -f "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" ]; then
-    $SUDO cp "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$MNT_DIR/boot/EFI/BOOT/BOOTAA64.EFI"
-    $SUDO cp "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$MNT_DIR/boot/EFI/systemd/systemd-bootaa64.efi"
+    $SUDO cp --no-preserve=ownership,mode "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
+    $SUDO cp --no-preserve=ownership,mode "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$ESP_MNT_DIR/EFI/systemd/systemd-bootaa64.efi"
 elif [ -f "/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" ]; then
-    $SUDO cp "/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$MNT_DIR/boot/EFI/BOOT/BOOTAA64.EFI"
-    $SUDO cp "/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$MNT_DIR/boot/EFI/systemd/systemd-bootaa64.efi"
-elif [ -f "$MNT_DIR/boot/Image" ]; then
+    $SUDO cp --no-preserve=ownership,mode "/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
+    $SUDO cp --no-preserve=ownership,mode "/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" "$ESP_MNT_DIR/EFI/systemd/systemd-bootaa64.efi"
+elif [ -f "$ESP_MNT_DIR/Image" ]; then
     # Linux ARM64 Image is built with CONFIG_EFI_STUB=y and can execute directly as BOOTAA64.EFI
-    $SUDO cp "$MNT_DIR/boot/Image" "$MNT_DIR/boot/EFI/BOOT/BOOTAA64.EFI"
+    $SUDO cp --no-preserve=ownership,mode "$ESP_MNT_DIR/Image" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
 fi
 
-$SUDO tee "$MNT_DIR/boot/loader/loader.conf" >/dev/null <<'EOF'
+$SUDO tee "$ESP_MNT_DIR/loader/loader.conf" >/dev/null <<'EOF'
 default arch.conf
 timeout 1
 console-mode max
 editor no
 EOF
 
-$SUDO tee "$MNT_DIR/boot/loader/entries/arch.conf" >/dev/null <<EOF
+$SUDO tee "$ESP_MNT_DIR/loader/entries/arch.conf" >/dev/null <<EOF
 title   Arch Linux ARM64 (HengeLinux iOS)
 linux   /Image
 initrd  /initramfs-linux.img
 options root=UUID=${ROOT_UUID} rw rootwait console=tty0 console=ttyAMA0,115200
 EOF
 
-$SUDO tee "$MNT_DIR/boot/startup.nsh" >/dev/null <<EOF
+$SUDO tee "$ESP_MNT_DIR/startup.nsh" >/dev/null <<EOF
 \Image initrd=\initramfs-linux.img root=UUID=${ROOT_UUID} rw rootwait console=tty0 console=ttyAMA0,115200
 EOF
 
@@ -274,15 +292,21 @@ x-scheme-handler/http=henge-safari-bridge.desktop
 x-scheme-handler/https=henge-safari-bridge.desktop
 EOF
 
-# Ensure serial (ttyAMA0) and framebuffer (tty1) login prompts are enabled
-$SUDO mkdir -p "$MNT_DIR/etc/systemd/system/getty.target.wants"
+# Ensure serial (ttyAMA0), networking, and DNS services are enabled
+$SUDO mkdir -p "$MNT_DIR/etc/systemd/system/getty.target.wants" "$MNT_DIR/etc/systemd/system/multi-user.target.wants"
 if [ -f "$MNT_DIR/usr/lib/systemd/system/serial-getty@.service" ]; then
     $SUDO ln -sf /usr/lib/systemd/system/serial-getty@.service \
         "$MNT_DIR/etc/systemd/system/getty.target.wants/serial-getty@ttyAMA0.service"
 fi
+for unit in systemd-networkd.service systemd-resolved.service; do
+    if [ -f "$MNT_DIR/usr/lib/systemd/system/$unit" ]; then
+        $SUDO ln -sf "/usr/lib/systemd/system/$unit" \
+            "$MNT_DIR/etc/systemd/system/multi-user.target.wants/$unit"
+    fi
+done
 
 sync
-$SUDO umount "$MNT_DIR/boot"
+$SUDO umount "$ESP_MNT_DIR"
 $SUDO umount "$MNT_DIR"
 
 echo "[prebuilt] Assembling ${DISK_SIZE_MIB} MiB GPT disk image and writing ESP + root extents"
