@@ -36,6 +36,10 @@ final class SelfDebugJITClient: ObservableObject {
     @Published private(set) var state: JitActivationState = .idle
     @Published var gpuBackend: GpuDisplayBackend = .gop2D
     @Published private(set) var extensionDiagnostic: String?
+    @Published private(set) var hasPairingFile: Bool = false
+    @Published private(set) var pairingStatusText: String = "Missing (Optional)"
+    @Published private(set) var diskStatusText: String = "Missing (Import archlinux.hvsparse)"
+    @Published private(set) var uefiStatusText: String = "Missing (Import code.fd & vars.fd)"
 
     static let defaultJitPoolMiB: Int = 384
     static let defaultAppGroupIdentifier: String = "group.io.hengelinux.shared"
@@ -72,13 +76,28 @@ final class SelfDebugJITClient: ObservableObject {
 
     init() {
         henge_jit_install_trap_guard()
+        bootstrapSandboxFolders()
         syncPairingRecordToAppGroup()
+        refreshFileStatus()
+    }
+
+    var documentsDirectoryURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+    }
+
+    var machineDirectoryURL: URL {
+        documentsDirectoryURL
+            .appendingPathComponent("Machines", isDirectory: true)
+            .appendingPathComponent("ArchLinux", isDirectory: true)
+    }
+
+    var sharedDirectoryURL: URL {
+        documentsDirectoryURL.appendingPathComponent("Shared", isDirectory: true)
     }
 
     var pairingFileURL: URL {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return docs.appendingPathComponent("pairing.plist")
+        documentsDirectoryURL.appendingPathComponent("pairing.plist")
     }
 
     var appGroupPairingFileURL: URL? {
@@ -87,14 +106,195 @@ final class SelfDebugJITClient: ObservableObject {
             .appendingPathComponent("pairing.plist")
     }
 
-    var hasPairingFile: Bool {
-        if FileManager.default.fileExists(atPath: pairingFileURL.path) {
-            return true
+    /// Creates `Documents/Machines/ArchLinux/` and `Documents/Shared/` and seeds a non-hidden
+    /// guide file in `Documents/` on first launch so iOS `Files.app` immediately displays the
+    /// `On My iPhone -> HengeLinux` folder before any manual import.
+    func bootstrapSandboxFolders() {
+        let fm = FileManager.default
+        let docs = documentsDirectoryURL
+        let machineDir = machineDirectoryURL
+        let sharedDir = sharedDirectoryURL
+
+        try? fm.createDirectory(at: machineDir, withIntermediateDirectories: true, attributes: nil)
+        try? fm.createDirectory(at: sharedDir, withIntermediateDirectories: true, attributes: nil)
+
+        let rootReadme = docs.appendingPathComponent("README-HengeLinux.txt")
+        if !fm.fileExists(atPath: rootReadme.path) {
+            let text = """
+            henge-linux iOS Sandbox Container
+            =================================
+
+            1. Optional TXM Self-Debug Pairing File:
+               Place `pairing.plist` (or `.mobiledevicepairing`) here in `Documents/pairing.plist`
+               or import it directly from the in-app "Import pairing.plist..." button.
+
+            2. Arch Linux Guest Files (`Machines/ArchLinux/`):
+               - `archlinux.hvsparse` (or `archlinux.img`)
+               - `code.fd` (64 MiB EDK2 AArch64 UEFI code firmware)
+               - `vars.fd` (64 MiB EDK2 AArch64 UEFI variable store)
+
+            3. Host <-> Guest WebDAV Shared Folder (`Shared/`):
+               Mounted inside Arch Linux via `http://10.0.2.4/`.
+            """
+            try? text.write(to: rootReadme, atomically: true, encoding: .utf8)
         }
-        if let sharedURL = appGroupPairingFileURL {
-            return FileManager.default.fileExists(atPath: sharedURL.path)
+
+        let machineReadme = machineDir.appendingPathComponent("README-ArchLinux.txt")
+        if !fm.fileExists(atPath: machineReadme.path) {
+            let text = """
+            Place your Arch Linux AArch64 VM files in this directory:
+            - archlinux.hvsparse (packed sparse NVMe image)
+            - code.fd (EDK2 UEFI firmware code)
+            - vars.fd (EDK2 UEFI NVRAM variables)
+            """
+            try? text.write(to: machineReadme, atomically: true, encoding: .utf8)
         }
-        return false
+    }
+
+    /// Refreshes reactive `@Published` file status properties for the SwiftUI launcher.
+    func refreshFileStatus() {
+        let fm = FileManager.default
+        let localExists = fm.fileExists(atPath: pairingFileURL.path)
+        let groupExists = appGroupPairingFileURL.map { fm.fileExists(atPath: $0.path) } ?? false
+        hasPairingFile = localExists || groupExists
+
+        if hasPairingFile {
+            let activeURL = localExists ? pairingFileURL : (appGroupPairingFileURL ?? pairingFileURL)
+            if Self.isValidPropertyListDictionary(at: activeURL) {
+                pairingStatusText = groupExists
+                    ? "pairing.plist (Valid · App Group Synced)"
+                    : "pairing.plist (Valid · Local Container)"
+            } else {
+                pairingStatusText = "pairing.plist (Present)"
+            }
+        } else {
+            pairingStatusText = "Missing (Optional · Tap Import)"
+        }
+
+        let sparseURL = machineDirectoryURL.appendingPathComponent("archlinux.hvsparse")
+        let rawURL = machineDirectoryURL.appendingPathComponent("archlinux.img")
+        if fm.fileExists(atPath: sparseURL.path) {
+            let sizeStr = Self.formattedFileSize(at: sparseURL)
+            diskStatusText = "archlinux.hvsparse (Ready\(sizeStr))"
+        } else if fm.fileExists(atPath: rawURL.path) {
+            let sizeStr = Self.formattedFileSize(at: rawURL)
+            diskStatusText = "archlinux.img (Ready\(sizeStr))"
+        } else {
+            diskStatusText = "Missing (Import archlinux.hvsparse)"
+        }
+
+        let codeExists = fm.fileExists(atPath: machineDirectoryURL.appendingPathComponent("code.fd").path)
+        let varsExists = fm.fileExists(atPath: machineDirectoryURL.appendingPathComponent("vars.fd").path)
+        switch (codeExists, varsExists) {
+        case (true, true):
+            uefiStatusText = "code.fd + vars.fd (Ready)"
+        case (true, false):
+            uefiStatusText = "code.fd present (Need vars.fd)"
+        case (false, true):
+            uefiStatusText = "vars.fd present (Need code.fd)"
+        case (false, false):
+            uefiStatusText = "Missing (Import code.fd & vars.fd)"
+        }
+    }
+
+    private static func isValidPropertyListDictionary(at url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else {
+            return false
+        }
+        guard let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let dict = plist as? [String: Any],
+              !dict.isEmpty else {
+            return false
+        }
+        return true
+    }
+
+    private static func formattedFileSize(at url: URL) -> String {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let bytes = (attrs[.size] as? NSNumber)?.uint64Value,
+              bytes > 0 else {
+            return ""
+        }
+        let mib = Double(bytes) / (1024.0 * 1024.0)
+        if mib >= 1024.0 {
+            return String(format: " · %.2f GiB", mib / 1024.0)
+        }
+        return String(format: " · %.0f MiB", max(mib, 1.0))
+    }
+
+    /// Imports one or more security-scoped URLs selected from the iOS File Browser or Share Sheet.
+    @discardableResult
+    func importFiles(from urls: [URL], forceAsPairingPlist: Bool = false) throws -> String {
+        bootstrapSandboxFolders()
+        let fm = FileManager.default
+        var importedNames: [String] = []
+
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if scoped {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            let rawName = url.lastPathComponent
+            let lowerName = rawName.lowercased()
+            let isPairingCandidate = forceAsPairingPlist
+                || lowerName.hasSuffix(".plist")
+                || lowerName.hasSuffix(".mobiledevicepairing")
+
+            if isPairingCandidate {
+                let data = try Data(contentsOf: url)
+                guard let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+                      let dict = plist as? [String: Any],
+                      !dict.isEmpty else {
+                    throw NSError(
+                        domain: "io.hengelinux.import",
+                        code: 3001,
+                        userInfo: [NSLocalizedDescriptionKey: "'\(rawName)' is not a valid Apple lockdown property list (.plist / .mobiledevicepairing)."]
+                    )
+                }
+                try data.write(to: pairingFileURL, options: .atomic)
+                _ = syncPairingRecordToAppGroup()
+                importedNames.append("pairing.plist")
+                continue
+            }
+
+            let targetURL: URL
+            if lowerName.hasSuffix(".hvsparse") {
+                targetURL = machineDirectoryURL.appendingPathComponent("archlinux.hvsparse")
+            } else if lowerName.hasSuffix(".img") || lowerName.hasSuffix(".raw") {
+                targetURL = machineDirectoryURL.appendingPathComponent("archlinux.img")
+            } else if lowerName.hasSuffix(".fd") {
+                if lowerName.contains("vars") {
+                    targetURL = machineDirectoryURL.appendingPathComponent("vars.fd")
+                } else if lowerName.contains("code") || lowerName.contains("efi") {
+                    targetURL = machineDirectoryURL.appendingPathComponent("code.fd")
+                } else {
+                    targetURL = machineDirectoryURL.appendingPathComponent(rawName)
+                }
+            } else if Self.isValidPropertyListDictionary(at: url) {
+                let data = try Data(contentsOf: url)
+                try data.write(to: pairingFileURL, options: .atomic)
+                _ = syncPairingRecordToAppGroup()
+                importedNames.append("pairing.plist")
+                continue
+            } else {
+                targetURL = machineDirectoryURL.appendingPathComponent(rawName)
+            }
+
+            if fm.fileExists(atPath: targetURL.path) {
+                try fm.removeItem(at: targetURL)
+            }
+            try fm.copyItem(at: url, to: targetURL)
+            importedNames.append(targetURL.lastPathComponent)
+        }
+
+        refreshFileStatus()
+        guard !importedNames.isEmpty else {
+            return "No files were selected for import."
+        }
+        return "Imported \(importedNames.joined(separator: ", ")) into HengeLinux container."
     }
 
     /// Mirrors `Documents/pairing.plist` into the App Group container so
@@ -102,6 +302,7 @@ final class SelfDebugJITClient: ObservableObject {
     @discardableResult
     func syncPairingRecordToAppGroup() -> Bool {
         let fm = FileManager.default
+        defer { refreshFileStatus() }
         guard fm.fileExists(atPath: pairingFileURL.path),
               let sharedURL = appGroupPairingFileURL else {
             return false

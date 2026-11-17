@@ -38,12 +38,18 @@ struct MachineProfile: Identifiable, Hashable {
 
 @main
 struct HengeLinuxApp: App {
+    private enum FileImportMode {
+        case pairingPlist
+        case guestFiles
+    }
+
     @StateObject private var lifecycle = MetalLifecycleGuard()
     @StateObject private var jitClient = SelfDebugJITClient()
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
     @State private var isRunning: Bool = false
     @State private var isPreparingDisk: Bool = false
     @State private var isImportingFile: Bool = false
+    @State private var fileImportMode: FileImportMode = .pairingPlist
     @State private var bootWarning: String?
     @State private var bootErrorAlert: String?
     @State private var posture: DevicePosture = .singleScreen
@@ -120,6 +126,7 @@ struct HengeLinuxApp: App {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                jitClient.refreshFileStatus()
                 guard isRunning, autoSyncClipboard else { return }
                 let pb = UIPasteboard.general
                 guard pb.changeCount != lastPasteboardChangeCount, pb.hasStrings else {
@@ -131,6 +138,13 @@ struct HengeLinuxApp: App {
                 }
                 lastPushedClipboard = hostClip
                 HengeVMBridge.shared.pushHostClipboard(hostClip)
+            }
+            .onOpenURL { url in
+                do {
+                    bootWarning = try jitClient.importFiles(from: [url], forceAsPairingPlist: false)
+                } catch {
+                    bootErrorAlert = "Import failed: \(error.localizedDescription)"
+                }
             }
             .alert("Unable to Start VM", isPresented: Binding(
                 get: { bootErrorAlert != nil },
@@ -144,38 +158,18 @@ struct HengeLinuxApp: App {
             }
             .fileImporter(
                 isPresented: $isImportingFile,
-                allowedContentTypes: [.item, .data],
-                allowsMultipleSelection: false
+                allowedContentTypes: fileImportMode == .pairingPlist
+                    ? [.propertyList, .xml, .data, .item]
+                    : [.item, .data, .propertyList],
+                allowsMultipleSelection: fileImportMode == .guestFiles
             ) { result in
                 switch result {
                 case .success(let urls):
-                    guard let url = urls.first else { return }
-                    guard url.startAccessingSecurityScopedResource() else {
-                        bootErrorAlert = "Failed to access selected file security scope."
-                        return
-                    }
-                    defer { url.stopAccessingSecurityScopedResource() }
                     do {
-                        let filename = url.lastPathComponent.lowercased()
-                        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-                        let targetURL: URL
-                        if filename.hasSuffix(".plist") {
-                            targetURL = docs.appendingPathComponent("pairing.plist")
-                        } else if filename.hasSuffix(".hvsparse") || filename.hasSuffix(".fd") || filename.hasSuffix(".img") {
-                            let machineDir = docs.appendingPathComponent("Machines/ArchLinux", isDirectory: true)
-                            try FileManager.default.createDirectory(at: machineDir, withIntermediateDirectories: true, attributes: nil)
-                            targetURL = machineDir.appendingPathComponent(url.lastPathComponent)
-                        } else {
-                            targetURL = docs.appendingPathComponent(url.lastPathComponent)
-                        }
-                        if FileManager.default.fileExists(atPath: targetURL.path) {
-                            try FileManager.default.removeItem(at: targetURL)
-                        }
-                        try FileManager.default.copyItem(at: url, to: targetURL)
-                        if targetURL.lastPathComponent == "pairing.plist" {
-                            jitClient.syncPairingRecordToAppGroup()
-                        }
-                        bootWarning = "Successfully imported \(url.lastPathComponent)."
+                        bootWarning = try jitClient.importFiles(
+                            from: urls,
+                            forceAsPairingPlist: fileImportMode == .pairingPlist
+                        )
                     } catch {
                         bootErrorAlert = "Import failed: \(error.localizedDescription)"
                     }
@@ -221,7 +215,7 @@ struct HengeLinuxApp: App {
                     }
                     Toggle("Auto-Sync Host Clipboard on Focus", isOn: $autoSyncClipboard)
                     LabeledContent("TXM JIT Pool", value: "\(SelfDebugJITClient.defaultJitPoolMiB) MiB (< 0x7000000000)")
-                    LabeledContent("Pairing File", value: jitClient.hasPairingFile ? "pairing.plist (Synced)" : "Missing (Optional)")
+                    LabeledContent("Pairing File", value: jitClient.pairingStatusText)
                     LabeledContent("JIT Status", value: jitStatusLabel)
                     if let diag = jitClient.extensionDiagnostic, !diag.isEmpty {
                         Text(diag)
@@ -229,19 +223,38 @@ struct HengeLinuxApp: App {
                             .foregroundStyle(.secondary)
                     }
                     Button {
+                        fileImportMode = .pairingPlist
                         isImportingFile = true
                     } label: {
-                        Label("Import pairing.plist / Guest Files...", systemImage: "square.and.arrow.down")
+                        Label("Import pairing.plist / .mobiledevicepairing...", systemImage: "key.fill")
                     }
                 }
 
                 Section("Guest Image (`Documents/Machines/ArchLinux`)") {
-                    LabeledContent("Disk Container", value: "archlinux.hvsparse")
-                    LabeledContent("UEFI Firmware", value: "code.fd / vars.fd")
+                    LabeledContent("Disk Container", value: jitClient.diskStatusText)
+                    LabeledContent("UEFI Firmware", value: jitClient.uefiStatusText)
+                    LabeledContent("iOS Files Folder", value: "On My iPhone ▸ HengeLinux (Active)")
                     LabeledContent("Background Snapshot", value: HengeVMBridge.shared.hasSavedBackgroundSnapshot ? "suspend.state (Disk Flushed + Metadata)" : "None")
                     LabeledContent("Aligned Guest Bytes", value: "\(alignedBytes) B")
                     LabeledContent("Host Bridge", value: "http://10.0.2.4/.henge/")
                     LabeledContent("VM Engine", value: HengeVMBridge.shared.isEngineLinked ? "Linked (HengeVM)" : "Host Substrate Only")
+                    Button {
+                        fileImportMode = .guestFiles
+                        isImportingFile = true
+                    } label: {
+                        Label("Import Guest Files (hvsparse / code.fd / vars.fd)...", systemImage: "folder.badge.plus")
+                    }
+                }
+
+                if let banner = bootWarning, !banner.isEmpty {
+                    Section("Status") {
+                        Label(
+                            banner,
+                            systemImage: banner.hasPrefix("Imported ") ? "checkmark.circle.fill" : "info.circle.fill"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(banner.hasPrefix("Imported ") ? .green : .secondary)
+                    }
                 }
 
                 Section {
