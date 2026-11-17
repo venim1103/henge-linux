@@ -40,6 +40,7 @@ jobs:
             e2fsprogs \
             fdisk \
             gdisk \
+            ipxe-qemu \
             libarchive-tools \
             mount \
             mtools \

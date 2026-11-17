@@ -438,6 +438,7 @@ if [ "$VERIFY_BOOT" = "1" ] && command -v qemu-system-aarch64 >/dev/null 2>&1; t
         -cpu cortex-a76 \
         -smp 2 \
         -m 1024 \
+        -nic none \
         -display none \
         -no-reboot \
         -drive if=pflash,format=raw,readonly=on,file="$OUT_DIR/code.fd" \
