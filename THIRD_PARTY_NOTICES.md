@@ -22,3 +22,7 @@ To satisfy GPLv3 §6(d) and LGPLv2.1 §4(d) Corresponding Source requirements fo
 - **`StikJIT` / `StikDebug` (`StephenDev0/StikDebug`)** — **MPL-2.0** (compatible with `GPL-3.0-or-later` per MPL 2.0 §3.3).
 - **`idevice` (`jkcoxson/idevice`)** — **MIT** (Remote Service Discovery / lockdown debugproxy transport).
 - **`virglrenderer` & `ANGLE`** — **MIT** / **BSD-3-Clause** (OpenGL ES / Metal translation layers for `virtio-gpu-gl-pci`).
+
+## 4. Pre-Built Guest Image & UEFI Firmware Artifacts (`prebuilt-guest-image.yml`)
+- **`Arch Linux ARM` (`ArchLinuxARM-aarch64-latest.tar.gz`)** — Distributed under upstream open-source licenses (`GPL-2.0-or-later`, `LGPL-2.1-or-later`, `MIT`, `BSD`) and provisioned non-interactively via `scripts/build_prebuilt_archlinux_arm64.sh`.
+- **`TianoCore EDK2` (`ArmVirtQemu` / `AAVMF_CODE.fd` & `AAVMF_VARS.fd`)** — **BSD-2-Clause-Patent** (64 MiB AArch64 UEFI firmware images packaged alongside `archlinux.hvsparse`).

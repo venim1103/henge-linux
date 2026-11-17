@@ -5,20 +5,29 @@
 `henge-linux` adapts the direct ARM64-to-ARM64 dynamic binary translation architecture of [`ammaarreshi/WindowsiOS`](https://github.com/ammaarreshi/WindowsiOS) and [`Leviidev/Henge`](https://github.com/Leviidev/Henge) (`HengeVM`) to boot mainline `aarch64` Arch Linux on modern iPhones and iPads, combining full kernel (`EL1`) fidelity with 16 KiB page-granule alignment, TXM dual-mapped JIT, and ledger-exempt guest RAM.
 
 > **Documentation & Builds:**
-> - **Latest Unsigned `.ipa` (Direct Download):** [`HengeLinux-unsigned.ipa`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa) · [All Releases](https://github.com/venim1103/henge-linux/releases) · [GitHub Actions CI](https://github.com/venim1103/henge-linux/actions)
+> - **Latest Unsigned `.ipa` & Pre-Built Guest Image:** [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) (`HengeLinux-unsigned.ipa`, `archlinux.hvsparse`, `code.fd`, `vars.fd`) · [All Releases](https://github.com/venim1103/henge-linux/releases) · [GitHub Actions CI](https://github.com/venim1103/henge-linux/actions)
+> - [`docs/SETUP.md`](docs/SETUP.md) — Complete step-by-step setup guide for SideStore/AltStore sideloading, importing guest files, configuring **StikDebug** (`henge-jit.js` + `Assign Script`) & **LocalDevVPN**, and using Safari OAuth / WebDAV bridges.
 > - [`PLAN.md`](PLAN.md) — Detailed engineering implementation plan, module architecture, technical invariants, and Phase 1–5 roadmap.
-> - [`HANDOVER.md`](HANDOVER.md) — Current repository status, file inventory, CI build guide, and next-session handover checklist.
+> - [`HANDOVER.md`](HANDOVER.md) — Current repository status, 42-file inventory, CI build guide, and next-session handover checklist.
 > - [`docs/RESEARCH.md`](docs/RESEARCH.md) — Complete technical review of `WindowsiOS`/`HengeVM` and all 6 Linux-on-iOS execution architectures.
+> - [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — GPLv3 §5a / §6(d) attribution and license provenance for all upstream and linked dependencies.
 
 ---
 
-## Quick Sideload (No Mac Required)
+## Quick Sideload & Setup (No Mac Required)
 
-Every green push to `main` automatically packages and publishes an unsigned iOS 26.0+ `arm64` bundle (`HengeLinux.app` + embedded `HengeLinuxJITExtension.appex`):
+Every green push to `main` automatically builds and publishes the unsigned iOS 26.0+ `arm64` bundle and pre-built Arch Linux ARM64 guest artifacts on the [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) (see [`docs/SETUP.md`](docs/SETUP.md) for full details and troubleshooting):
 
-1. **Download `.ipa` on iPhone / iPad:** Grab [`HengeLinux-unsigned.ipa`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa) from the [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) (or from the `HengeLinux-unsigned-ipa` artifact on any [GitHub Actions run](https://github.com/venim1103/henge-linux/actions)).
-2. **Sign & Install:** Open the `.ipa` in **SideStore** or **AltStore** to sign with your Apple ID and install on-device.
-3. **Import Pre-Built Guest Files in App:** Download [`archlinux.hvsparse`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/archlinux.hvsparse), [`code.fd`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/code.fd), and [`vars.fd`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/vars.fd) from [`latest-ipa`](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa), then tap **Import Guest Files (hvsparse / code.fd / vars.fd)...** inside `HengeLinux` (or copy them into **Files -> On My iPhone -> HengeLinux -> Machines/ArchLinux/**).
+1. **Install `HengeLinux-unsigned.ipa` with SideStore / AltStore:**
+   - Download [`HengeLinux-unsigned.ipa`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa) on your iPhone/iPad, import it into **SideStore** or **AltStore**, sign with your Apple ID, and launch it once.
+2. **Import Pre-Built Arch Linux Guest Files:**
+   - Download [`archlinux.hvsparse`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/archlinux.hvsparse), [`code.fd`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/code.fd), and [`vars.fd`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/vars.fd) from [`latest-ipa`](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) to **Downloads**.
+   - Inside **HengeLinux**, tap **Import Guest Files (hvsparse / code.fd / vars.fd)...** and select all three files (or place them in **Files ▸ On My iPhone ▸ HengeLinux ▸ Machines ▸ ArchLinux/**).
+3. **Configure TXM JIT in StikDebug + LocalDevVPN:**
+   - Save [`ios/Resources/henge-jit.js`](https://raw.githubusercontent.com/venim1103/henge-linux/main/ios/Resources/henge-jit.js) into **Files ▸ On My iPhone ▸ StikDebug**.
+   - Enable **LocalDevVPN**, open **StikDebug**, **long-press `HengeLinux` -> Assign Script -> `henge-jit.js`** (starring the script alone does not assign it to an app), and tap **HengeLinux** to launch with JIT attached.
+4. **Boot Arch Linux:**
+   - Select your device RAM profile (`2,560 MiB` on 8 GB iPhone Pro; `4,608 MiB` on 12 GB Pro/Duo; `6,144 MiB` on 16 GB iPad Pro) and tap **Boot Arch Linux**. Allow 30–60 seconds on cold boot past TianoCore `Start boot option` while the ARM64 DBT compiles the kernel and `initramfs`.
 
 ---
 
@@ -52,7 +61,7 @@ Stock iOS 16.4+ restricts `com.apple.developer.kernel.hypervisor` on non-jailbro
 | :--- | :--- | :--- | :--- |
 | **Build iOS App (`.ipa`)** | **Yes** (Xcode 26 / 27) | **Yes** (up to macOS 26 / Xcode 26; use `/usr/local` Homebrew prefix) | **No natively** (use GitHub Actions `macos-latest` + SideStore/AltStore, or a macOS 26 KVM VM) |
 | **Run Local macOS VM (`winvm`)** | **Yes** (ARM64-to-ARM64 host) | **No** (requires host ARM64 CPU) | **No** (requires macOS + ARM64 CPU) |
-| **Build `hvsparse` & Arch Disk Image** | **Yes** | **Yes** | **Yes** (native C compiler + `qemu-system-aarch64`) |
+| **Build `hvsparse` & Arch Disk Image** | **Yes** (`provision_archlinux_arm64.sh`) | **Yes** (`provision_archlinux_arm64.sh`) | **Yes** (`make prebuilt-guest-image` or `provision_archlinux_arm64.sh`) |
 
 ---
 
@@ -62,7 +71,7 @@ Stock iOS 16.4+ restricts `com.apple.developer.kernel.hypervisor` on non-jailbro
 2. **Phase 2 — Core Engine, Host Layer & Single/Dual-Screen iOS Shell:** Port `HengeVM` / `WindowsiOS` `core/`, `devices/`, `host/`, `tests/`, and `ios/` targets—Verify instruction/block unit tests (`make test-core`), enforce `< 104`-byte `AF_UNIX` `sun_path` socket paths inside the iOS sandbox `<container>/tmp/` directory, serialize `CAMetalLayer` rendering under a `pthread_mutex_t` pause fence on `willResignActive`, and guard `UIHingeInteraction` for both foldable iPhone Duo and single-screen iPhones (e.g., iPhone 16 Pro).
 3. **Phase 3 — Arch Linux AArch64 Guest & Dual-Stack Native Bridge:** Provision an upstream-compatible `"HVSPARSE"` streaming-extent Arch Linux image via Archboot AArch64 (evaluating both 4 KiB default and 16 KiB `HV_TLB_PAGE_BITS=14` kernels), mount `http://10.0.2.4/` WebDAV, and ship non-blocking `henge-xdg-open` with dual-stack (`127.0.0.1` / `[::1]` ↔ `10.0.2.15`) OAuth port-forwarding and auto-dismiss (`/.henge/oauth-done`).
 4. **Phase 4 — In-App Self-Debugging & VirtIO-GPU 3D Metal Acceleration:** Integrate embedded `StikJIT` (`MPL-2.0`) XPC self-blessing (`HengeLinuxJITExtension` with nested `Info.plist`) and add `virtio-gpu-gl-pci` (`virglrenderer` → `ANGLE` → `Metal`) for 3D Wayland compositors (`Hyprland`, `Wayfire`, `Sway`) alongside `tctiSH`-style background state persistence (since `Henge`'s `pvg_lite.c` targets macOS-only `ParavirtualizedGraphics.framework`).
-5. **Phase 5 — Upstream `WindowsiOS` Engine Linkage & Live Arch Linux Runtime (*Milestones 5.1–5.6 Landed; Ready for Physical Device Boot*):** Upstream `WindowsiOS` patcher (`scripts/apply_upstream_patches.py`), cached `libffi`/`glib`/`libslirp` static deps (`scripts/build_ios_deps.sh` + `.github/workflows/ci.yml`), `"HVSPARSE"` extent unpacking (`HengeVMBridge.mm`), decoupled `CNTVCT_EL0` suspend compensation (`host/henge_platform.c`), `HengeLinuxJITExtension` XPC + pipelined GDB RSP TXM blesser (`JITExtensionHandler.swift` + `SelfDebugJITClient.swift`), `virtio-gpu-gl-pci` 3D VirGL control-queue + durable background state snapshots (`host/henge_virtio_gpu.{h,c}`), in-app file browser importers (`HengeLinuxApp.swift`), and automated pre-built Arch Linux ARM64 guest image CI (`scripts/build_prebuilt_archlinux_arm64.sh` + `.github/workflows/prebuilt-guest-image.yml`) are landed; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), [`PLAN.md`](PLAN.md), and [`HANDOVER.md`](HANDOVER.md) for physical device provisioning and testing.
+5. **Phase 5 — Upstream `WindowsiOS` Engine Linkage & Live Arch Linux Runtime (*Milestones 5.1–5.6 Landed; On-Device Boot & 3D VirGL PCIe Bring-Up Active*):** Upstream `WindowsiOS` patcher (`scripts/apply_upstream_patches.py`), cached `libffi`/`glib`/`libslirp` static deps (`scripts/build_ios_deps.sh` + `.github/workflows/ci.yml`), `"HVSPARSE"` extent unpacking (`HengeVMBridge.mm`), decoupled `CNTVCT_EL0` suspend compensation (`host/henge_platform.c`), `HengeLinuxJITExtension` XPC + pipelined GDB RSP TXM blesser (`JITExtensionHandler.swift` + `SelfDebugJITClient.swift`), `virtio-gpu-gl-pci` 3D VirGL control-queue + durable background state snapshots (`host/henge_virtio_gpu.{h,c}`), `CFBundleDocumentTypes` + in-app file browser importers/container viewer (`ios/project.yml`, `HengeLinuxApp.swift`), and automated pre-built Arch Linux ARM64 guest image CI (`scripts/build_prebuilt_archlinux_arm64.sh` + `.github/workflows/prebuilt-guest-image.yml`) are landed; see [`docs/SETUP.md`](docs/SETUP.md), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), [`PLAN.md`](PLAN.md), and [`HANDOVER.md`](HANDOVER.md).
 
 ---
 
