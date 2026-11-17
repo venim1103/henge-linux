@@ -115,7 +115,7 @@ Every code change in `henge-linux` must preserve these verified platform invaria
 - [x] `ios/JITExtension/JITExtensionHandler.swift` + nested `ios/JITExtension/Info.plist` (`com.apple.ar.viewer` extension target in `ios/project.yml`), Files app sharing keys (`UIFileSharingEnabled` / `LSSupportsOpeningDocumentsInPlace`), single-source-of-truth `libhengelinux.a` linking, and synchronous `MetalLifecycleGuard` render fence.
 - [x] `host/henge_virtio_gpu.{h,c}` defining `2D UEFI GOP` and `3D VirtIO-GPU VirGL (ANGLE Metal)` configuration descriptors, plus non-blocking double-fork `guest/henge-xdg-open` and 64 KiB aligned `tools/hvsparse.c`.
 
-### Phase 5: Upstream Engine Integration, Live VM Runtime & 3D VirGL Bring-Up — **MILESTONES 5.1–5.5 LANDED (Ready for Physical SideStore Boot & Live PCIe VirGL Bus Wiring)**
+### Phase 5: Upstream Engine Integration, Live VM Runtime & 3D VirGL Bring-Up — **MILESTONES 5.1–5.5 LANDED (Milestone 5.6 Automated Pre-Built Guest Image CI Next)**
 - [x] **Milestone 5.1 — Upstream `HengeVM` / `WindowsiOS` Engine Linkage & Patcher:**
   - Implemented `scripts/apply_upstream_patches.py` (invoked by `scripts/sync_upstream.sh`) to patch `host/share.c` (`henge_format_unix_socket_path()`), `devices/fb_metal.m` (`hengelinux_render_lock()` + `hengelinux_is_render_paused()`), `host/audio_mac.c`, and `host/jit_region.c` (`henge_txm_is_valid_jit_range()`).
   - Updated `Makefile` (`ios-lib`) to compile upstream `core/*.c` (`-mgeneral-regs-only` on `mmu.c`), `host/*.c`/`enter.S`, and `devices/*.{c,m}` into `build/ios/libhengelinux.a` whenever `.upstream/WindowsiOS` + `ios/deps` (`libffi`, `glib`, `libslirp`) are present.
@@ -138,6 +138,9 @@ Every code change in `henge-linux` must preserve these verified platform invaria
   - **P1 Concurrency, Watchdog & State-Machine Fixes:** Eliminate the multi-vCPU `CNTVCT_EL0` `> 500 ms` jump torn read in `host/henge_platform.c`; replace scalar `owner_ctx_id` with a 32-bit `attached_ctx_mask` bitmask in `host/henge_virtio_gpu.c`; offload first-boot `hv_sparse_unpack()` off `@MainActor` in `HengeVMBridge.mm`; wrap `didEnterBackground` snapshot flush in `UIApplication.beginBackgroundTask`; surface honest staged VirGL UI status until PCIe `0x1af4:0x1050` MMIO/virtqueue routing + `libvirglrenderer.a`/`ANGLE` are linked; dispatch `focusKeyboard` binding updates asynchronously and guard `dismantleUIView` layer detach in `SessionView.swift`; forward non-`SIGTRAP` signals (`C<sigHex>`) in `JITExtensionHandler.swift` + `henge-jit.js`; silence CoreAudio input capture on render pause in `scripts/apply_upstream_patches.py`; and add a `HV_TLB_PAGE_BITS` stamp prerequisite in `Makefile`.
   - **P2/P3 Durability, Performance & Tooling Polish:** Harden `guest/henge-xdg-open` (`127.0.0.0/8` + IPv4-mapped `ipaddress` check, double-unquote + portless `localhost` redirect parsing, `8192`-byte header inspection, `EADDRINUSE` `saw_listener` guard) and `arch-chroot` `/etc/resolv.conf` fallback; verify trap PCs in `henge_jit_trap_handler()` and add `.subsections_via_symbols` in `host/henge_brk.S`; validate 36-char UUIDs in `format_ios_sandbox_tmp_socket()`; call `fsync()`/`F_FULLFSYNC` before `rename()` in `henge_vm_snapshot_write()`; expand GDB RSP `*` RLE in `JITExtensionHandler.swift`; make `didBecomeActive` `UIPasteboard` sync opt-in; restore inline `CNTVCT_EL0` JIT emission in `scripts/apply_upstream_patches.py`; fail closed on truncated `.hvsparse` archives in `tools/hvsparse.c`; use `AAVMF_VARS.fd` templates in `scripts/provision_archlinux_arm64.sh`; hash `.xcode-version` and serialize `release-ipa` in `.github/workflows/ci.yml`; and expand `tests/test_core.c` coverage.
   - **UI File Importer Feature:** Added native `fileImporter` sheet in `HengeLinuxApp.swift` allowing users to import `pairing.plist`, `code.fd`, `vars.fd`, or `archlinux.hvsparse` directly via the iOS document browser into app documents and machine directories, ensuring immediate Files app visibility and zero setup friction.
+- [ ] **Milestone 5.6 — Automated Pre-Built Arch Linux AArch64 Guest Image & EDK2 Firmware CI (`ubuntu-24.04-arm`):**
+  - Add a headless non-interactive rootfs builder script (`scripts/build_prebuilt_archlinux_arm64.sh`) that provisions a GPT + EFI System Partition (`FAT32`) + root (`ext4`) image, bootstraps Arch Linux ARM (`aarch64`) userland + kernel (`console=tty0 console=ttyAMA0,115200`), runs `guest/setup-arch-bridge.sh` (`henge-xdg-open`, `20-henge-virtio.network`, `/mnt/ios-share`), and packs `archlinux.hvsparse` + 64 MiB `code.fd` + 64 MiB `vars.fd`.
+  - Add a GitHub Actions workflow on `ubuntu-24.04-arm` (triggered via `workflow_dispatch` and release tags / `main`) that builds and publishes `code.fd`, `vars.fd`, and `archlinux.hvsparse` directly to the rolling `latest-ipa` Pre-Release so users can download all 3 VM files directly on their iPhone without running QEMU on a PC/Mac.
 
 ---
 
@@ -149,3 +152,60 @@ Every code change in `henge-linux` must preserve these verified platform invaria
 | **Intel (`x86_64`) MacBook** *(macOS 26 / Xcode 26)* | `make test-core hvsparse ios-lib`<br>`xcodegen generate --spec ios/project.yml`<br>`xcodebuild -project ios/HengeLinux.xcodeproj -scheme HengeLinux -configuration Release -sdk iphoneos CODE_SIGNING_ALLOWED=NO build` | `build/ios/libhengelinux.a`, `HengeLinux.app` (sideload via SideStore / AltStore) |
 | **Apple Silicon Mac** *(M1–M5, Xcode 26/27)* | Same as Intel MacBook + `xcrun devicectl device install app --device <UDID> ...` | Signed `HengeLinux.app` installed directly over USB/Wi-Fi |
 | **GitHub Actions CI & Releases** *(No local Mac needed)* | Triggered automatically on push/PR to `main` (`.github/workflows/ci.yml`) | Direct download [`HengeLinux-unsigned.ipa`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa) from `latest-ipa` Pre-Release and sign on-device with SideStore/AltStore |
+
+---
+
+## 6. Guest Artifact & `pairing.plist` Provisioning Plan
+
+Four files are used to boot Arch Linux in `HengeLinux` on iOS: `code.fd`, `vars.fd`, `archlinux.hvsparse`, and optionally `pairing.plist` (for in-app TXM JIT blessing).
+
+### 6.1 Where Each File Comes From
+
+| File | Required | Where to Get It |
+| :--- | :--- | :--- |
+| `code.fd` & `vars.fd` | **Yes** | Generated automatically by `scripts/provision_archlinux_arm64.sh` from local QEMU EDK2 AArch64 firmware (`edk2-aarch64-code.fd` / `QEMU_EFI.fd` and `edk2-arm-vars.fd` / `AAVMF_VARS.fd`, padded to 64 MiB), or built automatically in GitHub Actions (Milestone 5.6). |
+| `archlinux.hvsparse` | **Yes** | Generated locally by `scripts/provision_archlinux_arm64.sh` (which downloads the official Archboot AArch64 ISO from `https://archboot.com`, boots QEMU to install Arch onto `/dev/nvme0n1`, and packs the disk with `./build/hvsparse`), or built automatically in GitHub Actions (Milestone 5.6). |
+| `pairing.plist` | **Optional** *(In-App JIT)* | Exported from your iPhone over USB using `libimobiledevice` (`idevicepair pair` / `idevicepair validate`) or `idevice_pair`, or reused from your existing SideStore / StikDebug pairing file. |
+
+### 6.2 Step-by-Step: Local Build of `code.fd`, `vars.fd`, and `archlinux.hvsparse`
+
+1. **Install prerequisites & build the `hvsparse` packer:**
+   - **macOS:**
+     ```bash
+     brew install qemu
+     make hvsparse
+     ```
+   - **Arch Linux / Debian / Ubuntu:**
+     ```bash
+     # Arch: sudo pacman -S qemu-system-aarch64 edk2-aarch64
+     # Debian/Ubuntu: sudo apt install qemu-system-arm qemu-efi-aarch64
+     make hvsparse
+     ```
+2. **Run the Arch Linux provisioner:**
+   ```bash
+   ./scripts/provision_archlinux_arm64.sh
+   ```
+   - Automatically downloads `archboot-...-aarch64-ARCH-latest-aarch64.iso`, verifies its SHA-256 checksum, creates 64 MiB `work/code.fd` and `work/vars.fd`, and boots the Archboot installer over your terminal console.
+3. **Complete the Archboot installation inside QEMU:**
+   - Run `setup` at the Archboot prompt and install Arch Linux onto `/dev/nvme0n1` with a GPT EFI System Partition (`/boot` or `/boot/efi`).
+   - Include `console=tty0 console=ttyAMA0,115200` on the bootloader kernel command line so output renders on both the iOS Metal display (`tty0`) and serial debug logs (`ttyAMA0`).
+   - Copy `guest/setup-arch-bridge.sh` and `guest/henge-xdg-open` into the guest and run `sudo ./setup-arch-bridge.sh` to configure VirtIO-Net DHCP (`10.0.2.15`), `$BROWSER`, and Safari OAuth/Passkey redirects.
+   - Run `poweroff` inside the guest; `provision_archlinux_arm64.sh` then runs `./build/hvsparse pack work/archlinux.img work/archlinux.hvsparse`.
+4. **Import onto iPhone / iPad:**
+   - Transfer `work/code.fd`, `work/vars.fd`, and `work/archlinux.hvsparse` to your iOS device (via AirDrop, iCloud Drive, or USB Finder) and tap **Import Guest Files (hvsparse / code.fd / vars.fd)...** inside `HengeLinux`.
+
+### 6.3 Exporting `pairing.plist` for In-App TXM JIT
+
+- **macOS:** `brew install libimobiledevice && idevicepair pair && cp "/var/db/lockdown/$(idevice_id -l | head -n1).plist" ~/Desktop/pairing.plist`
+- **Linux:** `sudo apt install libimobiledevice-utils && idevicepair pair && sudo cp "/var/lib/lockdown/$(idevice_id -l | head -n1).plist" ~/pairing.plist && sudo chown $USER ~/pairing.plist`
+- **Windows / Cross-Platform GUI:** Use [`idevice_pair`](https://github.com/jkcoxson/idevice_pair) (the official SideStore / StikDebug pairing generator) to export `pairing.plist` or `.mobiledevicepairing`, then import it in `HengeLinux` via **Import pairing.plist / .mobiledevicepairing...**.
+
+### 6.4 Automated Pre-Built Guest Image via GitHub Actions (Milestone 5.6 Architecture)
+
+To eliminate manual QEMU provisioning on a desktop computer, Milestone 5.6 adds an automated `ubuntu-24.04-arm` GitHub Actions pipeline:
+1. **Firmware Packaging:** Extracts `/usr/share/AAVMF/AAVMF_CODE.fd` -> `code.fd` (64 MiB) and `/usr/share/AAVMF/AAVMF_VARS.fd` -> `vars.fd` (64 MiB).
+2. **Non-Interactive Rootfs & ESP Provisioning (`scripts/build_prebuilt_archlinux_arm64.sh`):**
+   - Allocates a sparse raw disk image (`archlinux.img`), partitions GPT (`512 MiB` `EFI System` FAT32 + `ext4` rootfs), formats filesystems, and extracts the official Arch Linux ARM (`ArchLinuxARM-aarch64-latest.tar.gz`) or Archboot rootfs.
+   - Configures `/etc/fstab`, `/boot/loader/entries/arch.conf` (or GRUB/BOOTAA64.EFI with `console=tty0 console=ttyAMA0,115200 rw`), and executes `guest/setup-arch-bridge.sh` inside the rootfs.
+   - Compiles `./build/hvsparse` and packs `archlinux.img` into a streaming `"HVSPARSE"` archive (`archlinux.hvsparse`).
+3. **Release Publishing:** Uploads `code.fd`, `vars.fd`, and `archlinux.hvsparse` (plus `.sha256` checksums) to the rolling `latest-ipa` GitHub Pre-Release alongside `HengeLinux-unsigned.ipa`.
