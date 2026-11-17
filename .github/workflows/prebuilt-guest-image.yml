@@ -46,6 +46,7 @@ jobs:
             mtools \
             parted \
             qemu-efi-aarch64 \
+            qemu-system-aarch64 \
             qemu-system-arm \
             systemd-boot-efi \
             tar \
