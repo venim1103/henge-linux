@@ -18,7 +18,7 @@ Every green push to `main` automatically packages and publishes an unsigned iOS 
 
 1. **Download `.ipa` on iPhone / iPad:** Grab [`HengeLinux-unsigned.ipa`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa) from the [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) (or from the `HengeLinux-unsigned-ipa` artifact on any [GitHub Actions run](https://github.com/venim1103/henge-linux/actions)).
 2. **Sign & Install:** Open the `.ipa` in **SideStore** or **AltStore** to sign with your Apple ID and install on-device.
-3. **Load Guest Files via iOS Files App:** Place `archlinux.hvsparse`, `code.fd`, and `vars.fd` (and optional `pairing.plist`) into **Files -> On My iPhone -> HengeLinux -> Machines/ArchLinux/** (`UIFileSharingEnabled` is pre-configured).
+3. **Import Pre-Built Guest Files in App:** Download [`archlinux.hvsparse`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/archlinux.hvsparse), [`code.fd`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/code.fd), and [`vars.fd`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/vars.fd) from [`latest-ipa`](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa), then tap **Import Guest Files (hvsparse / code.fd / vars.fd)...** inside `HengeLinux` (or copy them into **Files -> On My iPhone -> HengeLinux -> Machines/ArchLinux/**).
 
 ---
 

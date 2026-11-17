@@ -49,7 +49,9 @@ jobs:
           bash -n scripts/sync_upstream.sh
           bash -n scripts/build_ios_deps.sh
           bash -n scripts/provision_archlinux_arm64.sh
+          bash -n scripts/build_prebuilt_archlinux_arm64.sh
           bash scripts/provision_archlinux_arm64.sh --dry-run
+          bash scripts/build_prebuilt_archlinux_arm64.sh --dry-run
           bash scripts/sync_upstream.sh
 
   ios-build:
@@ -140,9 +142,10 @@ jobs:
           NOTES="Automated unsigned iOS build from \`main\` (\`${SHORT_SHA}\`) built on ${BUILD_DATE}.
 
           ### Sideloading on iPhone / iPad (iOS 26.0+)
-          1. Download \`HengeLinux-unsigned.ipa\` directly on your iOS device.
-          2. Import and sign with **SideStore** or **AltStore** (no local Mac required).
-          3. Copy \`archlinux.hvsparse\`, \`code.fd\`, and \`vars.fd\` into **Files -> On My iPhone -> HengeLinux -> Machines/ArchLinux/**."
+          1. Download \`HengeLinux-unsigned.ipa\` directly on your iOS device and sign/install with **SideStore** or **AltStore** (no local Mac required).
+          2. Download the pre-built guest files (\`archlinux.hvsparse\`, \`code.fd\`, and \`vars.fd\`) attached to this release (or build locally with \`scripts/provision_archlinux_arm64.sh\`).
+          3. In **HengeLinux**, tap **Import Guest Files (hvsparse / code.fd / vars.fd)...** (and optionally **Import pairing.plist...** for in-app TXM JIT).
+          4. Default Arch Linux ARM credentials: \`root\` / \`root\` (and \`alarm\` / \`alarm\`)."
           if gh release view latest-ipa >/dev/null 2>&1; then
             gh release upload latest-ipa \
               build/HengeLinux-unsigned.ipa \

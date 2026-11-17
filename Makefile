@@ -20,7 +20,7 @@ BUILD_DIR := build
 UPSTREAM_DIR := .upstream/WindowsiOS
 TLB_STAMP := $(BUILD_DIR)/.tlb_bits_$(HV_TLB_PAGE_BITS)
 
-.PHONY: all clean test-core hvsparse ios-lib ios-lib-full sync-upstream ios-project
+.PHONY: all clean test-core hvsparse ios-lib ios-lib-full sync-upstream ios-project prebuilt-guest-image
 
 all: test-core hvsparse
 
@@ -182,6 +182,9 @@ sync-upstream:
 
 ios-project:
 	xcodegen generate --spec ios/project.yml
+
+prebuilt-guest-image: hvsparse
+	bash ./scripts/build_prebuilt_archlinux_arm64.sh
 
 clean:
 	rm -rf $(BUILD_DIR) ios/HengeLinux.xcodeproj
