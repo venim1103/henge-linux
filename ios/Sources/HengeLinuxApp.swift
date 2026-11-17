@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+import UniformTypeIdentifiers
 import SafariServices
 import SwiftUI
 import UIKit
@@ -42,6 +43,7 @@ struct HengeLinuxApp: App {
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
     @State private var isRunning: Bool = false
     @State private var isPreparingDisk: Bool = false
+    @State private var isImportingFile: Bool = false
     @State private var bootWarning: String?
     @State private var bootErrorAlert: String?
     @State private var posture: DevicePosture = .singleScreen
@@ -140,6 +142,47 @@ struct HengeLinuxApp: App {
             } message: {
                 Text(bootErrorAlert ?? "")
             }
+            .fileImporter(
+                isPresented: $isImportingFile,
+                allowedContentTypes: [.item, .data],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    guard url.startAccessingSecurityScopedResource() else {
+                        bootErrorAlert = "Failed to access selected file security scope."
+                        return
+                    }
+                    defer { url.stopAccessingSecurityScopedResource() }
+                    do {
+                        let filename = url.lastPathComponent.lowercased()
+                        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
+                        let targetURL: URL
+                        if filename.hasSuffix(".plist") {
+                            targetURL = docs.appendingPathComponent("pairing.plist")
+                        } else if filename.hasSuffix(".hvsparse") || filename.hasSuffix(".fd") || filename.hasSuffix(".img") {
+                            let machineDir = docs.appendingPathComponent("Machines/ArchLinux", isDirectory: true)
+                            try FileManager.default.createDirectory(at: machineDir, withIntermediateDirectories: true, attributes: nil)
+                            targetURL = machineDir.appendingPathComponent(url.lastPathComponent)
+                        } else {
+                            targetURL = docs.appendingPathComponent(url.lastPathComponent)
+                        }
+                        if FileManager.default.fileExists(atPath: targetURL.path) {
+                            try FileManager.default.removeItem(at: targetURL)
+                        }
+                        try FileManager.default.copyItem(at: url, to: targetURL)
+                        if targetURL.lastPathComponent == "pairing.plist" {
+                            jitClient.syncPairingRecordToAppGroup()
+                        }
+                        bootWarning = "Successfully imported \(url.lastPathComponent)."
+                    } catch {
+                        bootErrorAlert = "Import failed: \(error.localizedDescription)"
+                    }
+                case .failure(let err):
+                    bootErrorAlert = "Import failed: \(err.localizedDescription)"
+                }
+            }
         }
     }
 
@@ -184,6 +227,11 @@ struct HengeLinuxApp: App {
                         Text(diag)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        isImportingFile = true
+                    } label: {
+                        Label("Import pairing.plist / Guest Files...", systemImage: "square.and.arrow.down")
                     }
                 }
 
