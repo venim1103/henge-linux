@@ -15,23 +15,23 @@ struct MachineProfile: Identifiable, Hashable {
         MachineProfile(
             id: "iphone-8gb",
             name: "iPhone Pro (8 GB RAM)",
-            subtitle: "iPhone 16 Pro · 2.5 GiB guest RAM · Safe Jetsam headroom",
+            subtitle: "iPhone 16 Pro · 2.5 GiB guest RAM · 2 vCPU (RCU-stall & Jetsam safe)",
             ramMiB: 2560,
-            cpuCount: 4
+            cpuCount: 2
         ),
         MachineProfile(
             id: "iphone-duo",
             name: "iPhone Duo / 12 GB Pro",
-            subtitle: "4.5 GiB guest RAM · Full desktop & multi-process workloads",
+            subtitle: "4.5 GiB guest RAM · 4 vCPU · Full desktop & multi-process workloads",
             ramMiB: 4608,
             cpuCount: 4
         ),
         MachineProfile(
             id: "ipad-pro",
             name: "M-Series iPad Pro (16 GB)",
-            subtitle: "6.0 GiB guest RAM · External USB-C display mode",
+            subtitle: "6.0 GiB guest RAM · 4 vCPU · External USB-C display mode",
             ramMiB: 6144,
-            cpuCount: 6
+            cpuCount: 4
         )
     ]
 }
@@ -355,8 +355,9 @@ struct HengeLinuxApp: App {
                                     gpuBackend: gpuMode
                                 )
                                 let actualMiB = HengeVMBridge.shared.activeRamMiB
-                                if actualMiB > 0 && actualMiB < effectiveRamMiB {
-                                    bootWarning = "Jetsam guard clamped guest RAM from \(effectiveRamMiB) MiB to \(actualMiB) MiB (standard Mach ledger)."
+                                let actualCpus = Int(HengeVMBridge.shared.activeCpuCount)
+                                if actualMiB > 0 && (actualMiB < effectiveRamMiB || actualCpus < selectedProfile.cpuCount) {
+                                    bootWarning = "Jetsam/RCU guard clamped VM to \(actualMiB) MiB · \(actualCpus) vCPU (standard Mach ledger)."
                                 } else {
                                     bootWarning = nil
                                 }

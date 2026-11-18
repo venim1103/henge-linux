@@ -421,12 +421,13 @@ static void henge_on_vm_exit(int reason) {
      * On iOS 26+, VM_LEDGER_FLAG_NO_FOOTPRINT requires active P_TRACED or
      * com.apple.private.memorystatus. When detached (CS_DEBUGGED=1, ptraced=0),
      * allocation falls back to the standard Mach ledger (~3 GiB Jetsam kill
-     * limit). Cap standard-ledger guest RAM to 1,792 MiB so RAM + 384 MiB JIT
-     * + host buffers stay safely under Jetsam during heavy workloads (pacman).
+     * limit). Cap standard-ledger guest RAM to 1,664 MiB and vCPUs to 2 so
+     * RAM + 384 MiB JIT + host buffers stay under Jetsam and 4-vCPU DBT
+     * threads do not trigger Linux rcu_preempt stalls during heavy pacman I/O.
      */
-    if (ramPtr != nullptr && !ledgerExempt && alignedBytes > (1792ULL * 1024ULL * 1024ULL)) {
+    if (ramPtr != nullptr && !ledgerExempt && alignedBytes > (1664ULL * 1024ULL * 1024ULL)) {
         henge_free_ledger_exempt_ram(ramPtr, (size_t)alignedBytes);
-        cappedRequestMiB = 1792U;
+        cappedRequestMiB = 1664U;
         alignedBytes = henge_align_guest_ram_bytes(cappedRequestMiB, 8192U);
         ramPtr = henge_alloc_ledger_exempt_ram((size_t)alignedBytes, &ledgerExempt);
     }
@@ -475,7 +476,11 @@ static void henge_on_vm_exit(int reason) {
     cfg.disk0 = _diskPathStr.c_str();
     cfg.share_dir = _shareDirStr.c_str();
     cfg.share_sock = _shareSockStr.c_str();
-    cfg.ncpus = (cpuCount > 0) ? cpuCount : 4;
+    int effectiveCpus = (cpuCount > 0) ? cpuCount : 2;
+    if (!ledgerExempt && effectiveCpus > 2) {
+        effectiveCpus = 2;
+    }
+    cfg.ncpus = effectiveCpus;
     cfg.ram_mb = alignedBytes / (1024ULL * 1024ULL);
     cfg.jit_rx = (void *)jitPool.rx_base;
     cfg.jit_rw = (void *)jitPool.rw_base;

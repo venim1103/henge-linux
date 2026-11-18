@@ -234,7 +234,7 @@ if [ -d "$MNT_DIR/boot" ]; then
 fi
 $SUDO mkdir -p "$MNT_DIR/boot" "$ESP_MNT_DIR/EFI/BOOT" "$ESP_MNT_DIR/loader/entries"
 
-KERNEL_CMDLINE="root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200 usbcore.nousb"
+KERNEL_CMDLINE="root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200 usbcore.nousb rcupdate.rcu_cpu_stall_timeout=300"
 
 if [ -f "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" ]; then
     echo "[prebuilt] Installing Arch Linux ARM native systemd-bootaa64.efi as EFI/BOOT/BOOTAA64.EFI"
@@ -324,6 +324,42 @@ x-scheme-handler/http=henge-safari-bridge.desktop
 x-scheme-handler/https=henge-safari-bridge.desktop
 EOF
 
+# Pre-configure Xorg fbdev (/dev/fb0 efifb), SDDM on VT2 (so VT1 serial console never collides),
+# and a one-command henge-install-desktop helper for LXQt + SDDM.
+$SUDO install -d "$MNT_DIR/etc/X11/xorg.conf.d" "$MNT_DIR/etc/sddm.conf.d"
+$SUDO tee "$MNT_DIR/etc/X11/xorg.conf.d/10-fbdev.conf" >/dev/null <<'EOF'
+Section "Device"
+    Identifier "EFIFB"
+    Driver "fbdev"
+    Option "fbdev" "/dev/fb0"
+EndSection
+EOF
+
+$SUDO tee "$MNT_DIR/etc/sddm.conf.d/hengelinux.conf" >/dev/null <<'EOF'
+[General]
+DisplayServer=x11
+
+[X11]
+MinimumVT=2
+ServerArguments=-nolisten tcp vt2
+EOF
+
+$SUDO tee "$MNT_DIR/usr/local/bin/henge-install-desktop" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[henge-linux] Installing LXQt desktop, SDDM, and Xorg fbdev driver for /dev/fb0..."
+pacman -Sy --needed --noconfirm lxqt sddm xorg-server xorg-xinit xf86-video-fbdev ttf-dejavu
+if ! id -u arch >/dev/null 2>&1; then
+    useradd -m -G wheel -s /bin/bash arch
+    echo "arch:arch" | chpasswd
+    echo "[henge-linux] Created desktop user 'arch' (password: 'arch')."
+fi
+systemctl enable --now sddm
+chvt 2 || true
+echo "[henge-linux] SDDM started on VT2 (login: arch / password: arch)."
+EOF
+$SUDO chmod 0755 "$MNT_DIR/usr/local/bin/henge-install-desktop"
+
 # Ensure serial (ttyAMA0) mirrors live onto tty1 (Metal display), networking, and DNS are enabled
 $SUDO mkdir -p \
     "$MNT_DIR/etc/systemd/system/getty.target.wants" \
@@ -394,6 +430,13 @@ try:
     raw[6][termios.VTIME] = 0
     termios.tcsetattr(stdin_fd, termios.TCSANOW, raw)
 
+    def tty1_is_active() -> bool:
+        try:
+            with open("/sys/class/tty/tty0/active", "rb") as f:
+                return f.read().strip() in (b"tty1", b"")
+        except OSError:
+            return True
+
     while True:
         rlist, _, _ = select.select([stdin_fd, master_fd], [], [])
         if stdin_fd in rlist:
@@ -411,7 +454,8 @@ try:
             if not out:
                 break
             os.write(stdout_fd, out)
-            os.write(tty1_fd, out)
+            if tty1_is_active():
+                os.write(tty1_fd, out)
 finally:
     termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_attrs)
     os.close(master_fd)

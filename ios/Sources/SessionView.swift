@@ -86,13 +86,18 @@ struct SessionView: View {
         return active > 0 ? active : profile.ramMiB
     }
 
+    private var displayCpuCount: Int {
+        let active = Int(HengeVMBridge.shared.activeCpuCount)
+        return active > 0 ? active : profile.cpuCount
+    }
+
     private var topStatusBar: some View {
         HStack(spacing: 6) {
             HingeSensorView(posture: $posture)
 
             Spacer(minLength: 2)
 
-            Text("\(displayRamMiB)M·\(profile.cpuCount)c")
+            Text("\(displayRamMiB)M·\(displayCpuCount)c")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
