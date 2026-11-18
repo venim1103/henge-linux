@@ -39,6 +39,7 @@ struct SessionView: View {
                 MetalFramebufferRepresentable(
                     lifecycle: lifecycle,
                     focusKeyboard: $focusSoftwareKeyboard,
+                    suppressSoftwareKeyboard: !focusSoftwareKeyboard,
                     onCharacterTyped: {
                         releaseActiveModifiers()
                     }
@@ -265,6 +266,17 @@ struct SessionView: View {
 final class MetalDisplaySurfaceView: UIView, UIKeyInput {
     var onFocusChanged: ((Bool) -> Void)?
     var onCharacterTyped: (() -> Void)?
+    /// When true, `inputView` returns an empty `UIView` so the view remains first
+    /// responder for Bluetooth/hardware keyboard `pressesBegan` events without
+    /// popping up the on-screen iOS software keyboard.
+    var suppressSoftwareKeyboard: Bool = true {
+        didSet {
+            if oldValue != suppressSoftwareKeyboard, isFirstResponder {
+                reloadInputViews()
+            }
+        }
+    }
+    private let emptyInputView = UIView(frame: .zero)
     private var pendingKeystrokes: [(usage: UInt8, shift: Bool)] = []
     private var isDrainingKeystrokes = false
 
@@ -278,6 +290,10 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
 
     override var canBecomeFirstResponder: Bool {
         true
+    }
+
+    override var inputView: UIView? {
+        suppressSoftwareKeyboard ? emptyInputView : nil
     }
 
     var keyboardType: UIKeyboardType {
@@ -351,9 +367,21 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
         addGestureRecognizer(pan)
     }
 
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil && !isFirstResponder {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil, !self.isFirstResponder else { return }
+                _ = self.becomeFirstResponder()
+            }
+        }
+    }
+
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
-        onFocusChanged?(ok)
+        if !suppressSoftwareKeyboard {
+            onFocusChanged?(ok)
+        }
         return ok
     }
 
@@ -526,6 +554,9 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
     }
 
     @objc private func handleCanvasTap(_ gr: UITapGestureRecognizer) {
+        if !isFirstResponder {
+            _ = becomeFirstResponder()
+        }
         let (nx, ny) = normalizedPoint(gr.location(in: self))
         HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 1, wheel: 0)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
@@ -650,14 +681,18 @@ struct TrackpadSurfaceRepresentable: UIViewRepresentable {
 struct MetalFramebufferRepresentable: UIViewRepresentable {
     @ObservedObject var lifecycle: MetalLifecycleGuard
     @Binding var focusKeyboard: Bool
+    var suppressSoftwareKeyboard: Bool
     var onCharacterTyped: (() -> Void)?
 
     func makeUIView(context: Context) -> MetalDisplaySurfaceView {
         let view = MetalDisplaySurfaceView(frame: .zero)
+        view.suppressSoftwareKeyboard = suppressSoftwareKeyboard
         view.onFocusChanged = { isFocused in
             DispatchQueue.main.async {
-                if focusKeyboard != isFocused {
-                    focusKeyboard = isFocused
+                if !isFocused && focusKeyboard {
+                    focusKeyboard = false
+                } else if isFocused && !view.suppressSoftwareKeyboard && !focusKeyboard {
+                    focusKeyboard = true
                 }
             }
         }
@@ -673,17 +708,11 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     func updateUIView(_ uiView: MetalDisplaySurfaceView, context: Context) {
         _ = lifecycle.isPaused
         uiView.onCharacterTyped = onCharacterTyped
-        let wantsFocus = focusKeyboard
-        if wantsFocus && !uiView.isFirstResponder {
+        uiView.suppressSoftwareKeyboard = suppressSoftwareKeyboard
+        if !uiView.isFirstResponder {
             DispatchQueue.main.async {
                 if !uiView.isFirstResponder {
                     _ = uiView.becomeFirstResponder()
-                }
-            }
-        } else if !wantsFocus && uiView.isFirstResponder {
-            DispatchQueue.main.async {
-                if uiView.isFirstResponder {
-                    _ = uiView.resignFirstResponder()
                 }
             }
         }
