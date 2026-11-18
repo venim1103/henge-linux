@@ -109,6 +109,49 @@ def main() -> int:
         print(f"[patch] {fb_metal_m}: header already applied")
     patch_file(
         fb_metal_m,
+        "uint32_t row_bytes = w * 4u;",
+        """static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride) {
+    uint64_t hash = ((uint64_t)w << 32) ^ h ^ stride;
+    uint32_t step_y = h > 128 ? h / 128 : 1;
+    for (uint32_t y = 0; y < h; y += step_y) {
+        const uint64_t *row = (const uint64_t *)(px + (size_t)y * stride);
+        uint32_t qwords = (w * 4) / 8;
+        uint32_t step_x = qwords > 64 ? qwords / 64 : 1;
+        for (uint32_t x = 0; x < qwords; x += step_x) {
+            hash = (hash ^ row[x]) * 0x9e3779b97f4a7c15ull;
+        }
+    }
+    return hash ? hash : 1;
+}""",
+        """static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride) {
+    uint64_t hash = ((uint64_t)w << 32) ^ h ^ stride;
+    uint32_t row_bytes = w * 4u;
+    if ((((uintptr_t)px & 7u) == 0u) && ((stride & 7u) == 0u)) {
+        uint32_t qwords = row_bytes >> 3;
+        BOOL has_tail32 = (row_bytes & 4u) != 0u;
+        for (uint32_t y = 0; y < h; y++) {
+            const uint64_t *row = (const uint64_t *)(const void *)(px + (size_t)y * stride);
+            for (uint32_t x = 0; x < qwords; x++) {
+                hash = (hash ^ row[x]) * 0x9e3779b97f4a7c15ull;
+            }
+            if (has_tail32) {
+                const uint32_t *tail = (const uint32_t *)(const void *)(row + qwords);
+                hash = (hash ^ (uint64_t)(*tail)) * 0x9e3779b97f4a7c15ull;
+            }
+        }
+    } else {
+        for (uint32_t y = 0; y < h; y++) {
+            const uint8_t *row = px + (size_t)y * stride;
+            for (uint32_t x = 0; x < row_bytes; x++) {
+                hash = (hash ^ (uint64_t)row[x]) * 0x9e3779b97f4a7c15ull;
+            }
+        }
+    }
+    return hash ? hash : 1;
+}""",
+    )
+    patch_file(
+        fb_metal_m,
         "_hengeUnlockedTick",
         """- (void)tick {
     @autoreleasepool {""",
