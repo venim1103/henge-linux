@@ -15,9 +15,9 @@ struct MachineProfile: Identifiable, Hashable {
         MachineProfile(
             id: "iphone-8gb",
             name: "iPhone Pro (8 GB RAM)",
-            subtitle: "iPhone 16 Pro · 2.5 GiB guest RAM · 2 vCPU (RCU-stall & Jetsam safe)",
+            subtitle: "iPhone 16 Pro · 2.5 GiB guest RAM · 4 vCPU · Safe Jetsam headroom",
             ramMiB: 2560,
-            cpuCount: 2
+            cpuCount: 4
         ),
         MachineProfile(
             id: "iphone-duo",
@@ -29,9 +29,9 @@ struct MachineProfile: Identifiable, Hashable {
         MachineProfile(
             id: "ipad-pro",
             name: "M-Series iPad Pro (16 GB)",
-            subtitle: "6.0 GiB guest RAM · 4 vCPU · External USB-C display mode",
+            subtitle: "6.0 GiB guest RAM · 6 vCPU · External USB-C display mode",
             ramMiB: 6144,
-            cpuCount: 4
+            cpuCount: 6
         )
     ]
 }
@@ -355,9 +355,8 @@ struct HengeLinuxApp: App {
                                     gpuBackend: gpuMode
                                 )
                                 let actualMiB = HengeVMBridge.shared.activeRamMiB
-                                let actualCpus = Int(HengeVMBridge.shared.activeCpuCount)
-                                if actualMiB > 0 && (actualMiB < effectiveRamMiB || actualCpus < selectedProfile.cpuCount) {
-                                    bootWarning = "Jetsam/RCU guard clamped VM to \(actualMiB) MiB · \(actualCpus) vCPU (standard Mach ledger)."
+                                if actualMiB > 0 && actualMiB < effectiveRamMiB {
+                                    bootWarning = "Jetsam guard clamped guest RAM from \(effectiveRamMiB) MiB to \(actualMiB) MiB (standard Mach ledger)."
                                 } else {
                                     bootWarning = nil
                                 }

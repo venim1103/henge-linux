@@ -72,9 +72,9 @@ iOS 26/27 Trusted Execution Monitor (`TXM`) blocks anonymous executable memory (
 
 1. Open **StikDebug** (with **LocalDevVPN** active and `henge-jit.js` assigned to `HengeLinux`) and tap **HengeLinux** to launch it with the debugger attached.
 2. In **HengeLinux**, pick your **Hardware Profile**:
-   - **iPhone Pro (8 GB RAM):** `2,560 MiB` (2.5 GiB) · `2 vCPU` *(recommended for iPhone 16 Pro / 17 Pro 8 GB; automatically clamped to `1,664 MiB · 2 vCPU` under standard Mach ledger to prevent Jetsam kills and 4-vCPU RCU stalls during large `pacman` transactions)*
+   - **iPhone Pro (8 GB RAM):** `2,560 MiB` (2.5 GiB) · `4 vCPU` *(recommended for iPhone 16 Pro / 17 Pro 8 GB; RAM automatically clamped to `1,664 MiB` under standard Mach ledger to prevent Jetsam kills during large `pacman` transactions)*
    - **iPhone Duo / 12 GB Pro:** `4,608 MiB` (4.5 GiB) · `4 vCPU`
-   - **M-Series iPad Pro (16 GB):** `6,144 MiB` (6.0 GiB) · `4 vCPU`
+   - **M-Series iPad Pro (16 GB):** `6,144 MiB` (6.0 GiB) · `6 vCPU`
 3. Leave **Display Adapter** set to **2D UEFI GOP (Metal)** for initial bring-up.
 4. Tap **Boot Arch Linux**.
    - On first boot, `HengeLinux` unpacks `archlinux.hvsparse` into an APFS sparse `archlinux.img` on a background thread (`Unpacking Disk Image...`).
