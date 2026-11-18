@@ -222,6 +222,9 @@ if [ -d "$MNT_DIR/usr/share/locale" ]; then
         ! -name 'en' ! -name 'en_*' ! -name 'C.UTF-8' ! -name 'locale.alias' \
         -exec rm -rf {} +
 fi
+if [ -f "$MNT_DIR/etc/pacman.conf" ]; then
+    $SUDO sed -i '/^#NoExtract/a NoExtract   = usr/share/man/* usr/share/doc/* usr/share/info/* usr/share/gtk-doc/* usr/share/help/* usr/share/i18n/* usr/lib/firmware/* !usr/lib/firmware/regulatory.db*' "$MNT_DIR/etc/pacman.conf"
+fi
 
 echo "[prebuilt] Populating FAT32 EFI System Partition (systemd-boot BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
 $SUDO mount -o loop "$ESP_IMG" "$ESP_MNT_DIR"
@@ -330,15 +333,120 @@ $SUDO mkdir -p \
 $SUDO tee "$MNT_DIR/usr/local/bin/henge-dual-console" >/dev/null <<'EOF'
 #!/usr/bin/env bash
 # Mirror the PL011 serial TTY session (which receives all iPhone on-screen and
-# Bluetooth keyboard events) onto /dev/tty1 so the Metal display shows every
-# prompt and typed character in real time even when usbcore.nousb is active.
-if command -v script >/dev/null 2>&1 && [ -e /dev/tty1 ]; then
+# Bluetooth keyboard events) onto /dev/tty1 with zero stdio buffering so every
+# typed character renders immediately on the Metal display.
+if command -v python3 >/dev/null 2>&1 && [ -e /dev/tty1 ]; then
+    exec python3 - <<'PY'
+import errno
+import fcntl
+import os
+import pty
+import select
+import sys
+import termios
+
+tty1_fd = os.open("/dev/tty1", os.O_WRONLY | os.O_NOCTTY)
+master_fd, slave_fd = pty.openpty()
+
+try:
+    winsz = fcntl.ioctl(tty1_fd, termios.TIOCGWINSZ, b"\x00" * 8)
+    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsz)
+except OSError:
+    pass
+
+pid = os.fork()
+if pid == 0:
+    os.close(tty1_fd)
+    os.close(master_fd)
+    os.setsid()
+    fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+    os.dup2(slave_fd, 0)
+    os.dup2(slave_fd, 1)
+    os.dup2(slave_fd, 2)
+    if slave_fd > 2:
+        os.close(slave_fd)
+    os.execv("/sbin/agetty", [
+        "agetty",
+        "--noclear",
+        "--autologin",
+        "root",
+        "-o",
+        "-p -f -- \\u",
+        "115200",
+        "-",
+        "linux",
+    ])
+
+os.close(slave_fd)
+stdin_fd = sys.stdin.fileno()
+stdout_fd = sys.stdout.fileno()
+old_attrs = termios.tcgetattr(stdin_fd)
+
+try:
+    raw = list(old_attrs)
+    raw[0] &= ~(termios.IGNBRK | termios.BRKINT | termios.PARMRK | termios.ISTRIP |
+                termios.INLCR | termios.IGNCR | termios.ICRNL | termios.IXON)
+    raw[1] &= ~termios.OPOST
+    raw[2] &= ~(termios.CSIZE | termios.PARENB)
+    raw[2] |= termios.CS8
+    raw[3] &= ~(termios.ECHO | termios.ECHONL | termios.ICANON | termios.ISIG | termios.IEXTEN)
+    raw[6][termios.VMIN] = 1
+    raw[6][termios.VTIME] = 0
+    termios.tcsetattr(stdin_fd, termios.TCSANOW, raw)
+
+    while True:
+        rlist, _, _ = select.select([stdin_fd, master_fd], [], [])
+        if stdin_fd in rlist:
+            data = os.read(stdin_fd, 1024)
+            if not data:
+                break
+            os.write(master_fd, data)
+        if master_fd in rlist:
+            try:
+                out = os.read(master_fd, 4096)
+            except OSError as exc:
+                if exc.errno == errno.EIO:
+                    break
+                raise
+            if not out:
+                break
+            os.write(stdout_fd, out)
+            os.write(tty1_fd, out)
+finally:
+    termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_attrs)
+    os.close(master_fd)
+    os.close(tty1_fd)
+    try:
+        _, status = os.waitpid(pid, 0)
+        sys.exit(os.waitstatus_to_exitcode(status))
+    except ChildProcessError:
+        sys.exit(0)
+PY
+elif command -v script >/dev/null 2>&1 && [ -e /dev/tty1 ]; then
     exec script -q -f -c "/sbin/agetty --noclear --autologin root -o '-p -f -- \\u' 115200 - linux" /dev/tty1
 else
     exec /sbin/agetty --noclear --autologin root -o '-p -f -- \u' 115200 - linux
 fi
 EOF
 $SUDO chmod 0755 "$MNT_DIR/usr/local/bin/henge-dual-console"
+
+$SUDO tee "$MNT_DIR/etc/systemd/system/henge-pacman-keyring.service" >/dev/null <<'EOF'
+[Unit]
+Description=Initialize Arch Linux ARM Pacman GPG Keyring
+ConditionPathExists=!/etc/pacman.d/gnupg/trustdb.gpg
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/pacman-key --init
+ExecStart=/usr/bin/pacman-key --populate archlinuxarm
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+$SUDO ln -sf /etc/systemd/system/henge-pacman-keyring.service \
+    "$MNT_DIR/etc/systemd/system/multi-user.target.wants/henge-pacman-keyring.service"
 
 if [ -f "$MNT_DIR/usr/lib/systemd/system/serial-getty@.service" ]; then
     $SUDO ln -sf /usr/lib/systemd/system/serial-getty@.service \

@@ -417,6 +417,19 @@ static void henge_on_vm_exit(int reason) {
     uint64_t alignedBytes = henge_align_guest_ram_bytes(cappedRequestMiB, 8192U);
     bool ledgerExempt = false;
     void *ramPtr = henge_alloc_ledger_exempt_ram((size_t)alignedBytes, &ledgerExempt);
+    /*
+     * On iOS 26+, VM_LEDGER_FLAG_NO_FOOTPRINT requires active P_TRACED or
+     * com.apple.private.memorystatus. When detached (CS_DEBUGGED=1, ptraced=0),
+     * allocation falls back to the standard Mach ledger (~3 GiB Jetsam kill
+     * limit). Cap standard-ledger guest RAM to 1,792 MiB so RAM + 384 MiB JIT
+     * + host buffers stay safely under Jetsam during heavy workloads (pacman).
+     */
+    if (ramPtr != nullptr && !ledgerExempt && alignedBytes > (1792ULL * 1024ULL * 1024ULL)) {
+        henge_free_ledger_exempt_ram(ramPtr, (size_t)alignedBytes);
+        cappedRequestMiB = 1792U;
+        alignedBytes = henge_align_guest_ram_bytes(cappedRequestMiB, 8192U);
+        ramPtr = henge_alloc_ledger_exempt_ram((size_t)alignedBytes, &ledgerExempt);
+    }
     if (!ramPtr) {
         NSString *msg = @"Failed to allocate 16 KiB-aligned guest RAM.";
         _statusText = msg;

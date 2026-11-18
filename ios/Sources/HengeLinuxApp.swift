@@ -356,7 +356,7 @@ struct HengeLinuxApp: App {
                                 )
                                 let actualMiB = HengeVMBridge.shared.activeRamMiB
                                 if actualMiB > 0 && actualMiB < effectiveRamMiB {
-                                    bootWarning = "Untethered Jetsam guard clamped RAM from \(effectiveRamMiB) MiB to \(actualMiB) MiB."
+                                    bootWarning = "Jetsam guard clamped guest RAM from \(effectiveRamMiB) MiB to \(actualMiB) MiB (standard Mach ledger)."
                                 } else {
                                     bootWarning = nil
                                 }
