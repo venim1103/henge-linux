@@ -321,12 +321,20 @@ x-scheme-handler/http=henge-safari-bridge.desktop
 x-scheme-handler/https=henge-safari-bridge.desktop
 EOF
 
-# Ensure serial (ttyAMA0), networking, and DNS services are enabled
-$SUDO mkdir -p "$MNT_DIR/etc/systemd/system/getty.target.wants" "$MNT_DIR/etc/systemd/system/multi-user.target.wants"
+# Ensure serial (ttyAMA0), tty1 auto-login, networking, and DNS services are enabled
+$SUDO mkdir -p \
+    "$MNT_DIR/etc/systemd/system/getty.target.wants" \
+    "$MNT_DIR/etc/systemd/system/multi-user.target.wants" \
+    "$MNT_DIR/etc/systemd/system/getty@tty1.service.d"
 if [ -f "$MNT_DIR/usr/lib/systemd/system/serial-getty@.service" ]; then
     $SUDO ln -sf /usr/lib/systemd/system/serial-getty@.service \
         "$MNT_DIR/etc/systemd/system/getty.target.wants/serial-getty@ttyAMA0.service"
 fi
+$SUDO tee "$MNT_DIR/etc/systemd/system/getty@tty1.service.d/autologin.conf" >/dev/null <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty -o '-p -f -- \\u' --noclear --autologin root %I $TERM
+EOF
 for unit in systemd-networkd.service systemd-resolved.service; do
     if [ -f "$MNT_DIR/usr/lib/systemd/system/$unit" ]; then
         $SUDO ln -sf "/usr/lib/systemd/system/$unit" \

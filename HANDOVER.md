@@ -56,7 +56,8 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `0b9287e`–`e55ec2c` | Applied all Milestone 5.7 `P2`–`P3` fixes across host C/ASM, `Makefile`, CI workflows (with explicit job timeouts), `THIRD_PARTY_NOTICES.md`, `tests/test_core.c`, guest scripts, and iOS Swift/JS layers |
 | `3d6a8fe`–`40f19cb` | Wired PL011 UART serial keyboard forwarding (`hv_pl011_receive`) in `ios/Sources/HengeVMBridge.mm`, matched QEMU `VERIFY_BOOT=1` PCIe slots (`00:01.0` `virtio-net-pci`, `00:02.0` `nvme` `WIN11IOS01`) to `HengeVM`, and persisted QEMU-initialized `verify_vars.fd` into `vars.fd` |
 | `cf6f1f0` | Milestone 5.8: fixed the ARM Generic Timer (`CNTVCT_EL0`) clock-domain deadlock in `scripts/apply_upstream_patches.py` (preserving Darwin `COMMPAGE_TIMEBASE_OFFSET` `0xfffffc088ull` in `core/translate.c` and aligning `core/dispatch.c` timer deadlines to `hv_counter()`) and restored `systemd-bootaa64.efi` (`timeout 0`, `console-mode keep`) in `scripts/build_prebuilt_archlinux_arm64.sh` (`CI Run #44243183836` green) |
-| `HEAD` | Synchronized `HANDOVER.md`, `PLAN.md`, `README.md`, and `docs/SETUP.md` with Milestone 5.8 clock-domain, PL011 UART keyboard, and prebuilt image state |
+| `ae1f7af` | Synchronized `HANDOVER.md`, `PLAN.md`, `README.md`, and `docs/SETUP.md` with Milestone 5.8 clock-domain, PL011 UART keyboard, and prebuilt image state |
+| `5ce42f2`–`HEAD` | Milestone 5.9: kept `MetalDisplaySurfaceView` permanently first responder with `inputView` suppression so Bluetooth keyboards deliver `pressesBegan` events immediately; added `usbcore.nousb` to eliminate the 90 s initrd xHCI enumeration stall; added `getty@tty1` root autologin and PL011 Paste forwarding |
 
 ---
 
