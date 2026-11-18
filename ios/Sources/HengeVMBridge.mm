@@ -120,6 +120,10 @@ static void henge_on_vm_exit(int reason) {
     return _activeRamMiB;
 }
 
+- (int)activeCpuCount {
+    return _activeCpuCount;
+}
+
 - (NSString *)statusText {
     return _statusText;
 }

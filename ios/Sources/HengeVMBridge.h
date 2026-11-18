@@ -22,6 +22,7 @@ NS_SWIFT_UI_ACTOR
 @property (nonatomic, readonly) BOOL isVirgl3DActive;
 @property (nonatomic, readonly) BOOL hasSavedBackgroundSnapshot;
 @property (nonatomic, readonly) uint32_t activeRamMiB;
+@property (nonatomic, readonly) int activeCpuCount;
 @property (nonatomic, readonly, copy) NSString *statusText;
 @property (nonatomic, readonly) uint64_t framesPresented;
 @property (nonatomic, readonly) uint64_t consoleTotalBytes;
