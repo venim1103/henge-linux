@@ -223,7 +223,7 @@ if [ -d "$MNT_DIR/usr/share/locale" ]; then
         -exec rm -rf {} +
 fi
 
-echo "[prebuilt] Populating FAT32 EFI System Partition (direct EFI stub BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
+echo "[prebuilt] Populating FAT32 EFI System Partition (systemd-boot BOOTAA64.EFI + kernel + initramfs + startup.nsh)"
 $SUDO mount -o loop "$ESP_IMG" "$ESP_MNT_DIR"
 if [ -d "$MNT_DIR/boot" ]; then
     $SUDO cp -r --no-preserve=ownership,mode "$MNT_DIR/boot/." "$ESP_MNT_DIR/"
@@ -233,8 +233,13 @@ $SUDO mkdir -p "$MNT_DIR/boot" "$ESP_MNT_DIR/EFI/BOOT" "$ESP_MNT_DIR/loader/entr
 
 KERNEL_CMDLINE="root=UUID=${ROOT_UUID} rw rootwait earlycon=pl011,0x09000000 ignore_loglevel console=tty0 console=ttyAMA0,115200"
 
-if [ -f "$ESP_MNT_DIR/Image" ]; then
-    echo "[prebuilt] Installing direct CONFIG_EFI_STUB Linux Image as EFI/BOOT/BOOTAA64.EFI"
+if [ -f "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" ]; then
+    echo "[prebuilt] Installing Arch Linux ARM native systemd-bootaa64.efi as EFI/BOOT/BOOTAA64.EFI"
+    $SUDO cp --no-preserve=ownership,mode \
+        "$MNT_DIR/usr/lib/systemd/boot/efi/systemd-bootaa64.efi" \
+        "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
+elif [ -f "$ESP_MNT_DIR/Image" ]; then
+    echo "[prebuilt] Falling back to direct CONFIG_EFI_STUB Linux Image as EFI/BOOT/BOOTAA64.EFI"
     $SUDO cp --no-preserve=ownership,mode "$ESP_MNT_DIR/Image" "$ESP_MNT_DIR/EFI/BOOT/BOOTAA64.EFI"
 else
     echo "[prebuilt] ERROR: Missing /boot/Image in Arch Linux ARM64 rootfs." >&2
@@ -243,8 +248,8 @@ fi
 
 $SUDO tee "$ESP_MNT_DIR/loader/loader.conf" >/dev/null <<'EOF'
 default arch.conf
-timeout 1
-console-mode max
+timeout 0
+console-mode keep
 editor no
 EOF
 

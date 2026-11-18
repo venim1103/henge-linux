@@ -245,6 +245,9 @@ static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) 
     int r = is_stolen(rt) ? 15 : rt;
     if (type == 1) put(e, 0xd5033fdfu);                                  /* isb; then CNTVCT_EL0 */
     put(e, (type == 1 ? 0xd53be040u : type == 2 ? 0xd53be0c0u : 0xd53cfac0u) | (uint32_t)r);
+    put_lit(e, 6, COMMPAGE_TIMEBASE_OFFSET);
+    put(e, LDR_X(6, 6, 0));
+    put(e, ADD_LSL(r, r, 6, 0));
     put_lit(e, 6, (uint64_t)(uintptr_t)hengelinux_negative_counter_offset_ptr());
     put(e, LDR_X(6, 6, 0));
     put(e, ADD_LSL(r, r, 6, 0));
@@ -252,6 +255,28 @@ static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) 
     if (el0) e->ool[slow].join = e->n;
     return 1;
 }""",
+    )
+
+    dispatch_c = upstream / "core/dispatch.c"
+    patch_file(
+        dispatch_c,
+        "cpu->timer_due && hv_counter() >= cpu->timer_due",
+        "    if (cpu->timer_due && mach_absolute_time() >= cpu->timer_due) { if (m->stats_interval) m->stats.fr_fail[3]++; return NULL; }",
+        "    if (cpu->timer_due && hv_counter() >= cpu->timer_due) { if (m->stats_interval) m->stats.fr_fail[3]++; return NULL; }",
+    )
+    patch_file(
+        dispatch_c,
+        "uint64_t now = hv_counter();",
+        """    if (!m->tick) return -1; /* nothing could ever wake us */
+    uint64_t now = mach_absolute_time();""",
+        """    if (!m->tick) return -1; /* nothing could ever wake us */
+    uint64_t now = hv_counter();""",
+    )
+    patch_file(
+        dispatch_c,
+        "next_due && hv_counter() >= next_due",
+        "        if (m->tick && (kicked || (++since_tick >= 64 && (since_tick = 0, next_due && mach_absolute_time() >= next_due)))) {",
+        "        if (m->tick && (kicked || (++since_tick >= 64 && (since_tick = 0, next_due && hv_counter() >= next_due)))) {",
     )
 
     return 0
