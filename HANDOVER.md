@@ -63,7 +63,8 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `e45890e` | Clamped standard-ledger RAM to `1,664 MiB`, gated `henge-dual-console` `/dev/tty1` mirroring on `/sys/class/tty/tty0/active == tty1`, and pre-configured `/etc/X11/xorg.conf.d/10-fbdev.conf`, `/etc/sddm.conf.d/hengelinux.conf` (`vt2`), `rcupdate.rcu_cpu_stall_timeout=300`, and `/usr/local/bin/henge-install-desktop` in `scripts/build_prebuilt_archlinux_arm64.sh` (`Prebuilt Guest Image` Run `#44362659824` green) |
 | `6822c14`–`dd45fa9` | Restored full `4` / `6` vCPU counts in `HengeVMBridge.mm` and `HengeLinuxApp.swift` and exposed `activeCpuCount` on `HengeVMBridge` (`CI Run #44384058356` green) |
 | `4809648` | Added user-editable Guest RAM controls (`512`–`10,240 MiB` numeric field, slider, stepper, and quick-pick chips) in `HengeLinuxApp.swift` and removed silent `1,664 MiB` clamping in `HengeVMBridge.mm` |
-| `HEAD` | Added `/dev/uinput` HID pointer/keyboard bridge (`henge-uinput-bridge.service` + OSC `9999` PL011 framing in `HengeVMBridge.mm`) and SDDM `vt2` autologin (`user: arch`) in `scripts/build_prebuilt_archlinux_arm64.sh` so X11/LXQt receives full mouse, touch, and keyboard input even with `usbcore.nousb` |
+| `09c3525` | Added `/dev/uinput` HID pointer/keyboard bridge (`henge-uinput-bridge.service` + OSC `9999` PL011 framing in `HengeVMBridge.mm`) and SDDM `vt2` autologin (`user: arch`) in `scripts/build_prebuilt_archlinux_arm64.sh` so X11/LXQt receives full mouse, touch, and keyboard input even with `usbcore.nousb` |
+| `HEAD` | Filtered OSC `9999` HID escape sequences from serial log view (`DebugConsoleSheetView`) and expanded `SessionView` modifier strip with full special keys (`Backspace`, `Delete`, `Home`, `End`, `PgUp`, `PgDn`, `F1`–`F4`, `F11`, `F12`, and `CAD`) |
 
 ---
 

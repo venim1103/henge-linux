@@ -149,15 +149,24 @@ struct SessionView: View {
             HStack(spacing: 8) {
                 hidPulseButton("Esc", usage: 0x29)
                 hidPulseButton("Tab", usage: 0x2B)
+                hidPulseButton("Bck", usage: 0x2A)
+                hidPulseButton("Del", usage: 0x4C)
                 modifierToggle("Ctrl", usage: 0xE0, isOn: $ctrlActive)
                 modifierToggle("Alt", usage: 0xE2, isOn: $altActive)
                 modifierToggle("Super", usage: 0xE3, isOn: $superActive)
-                hidPulseButton("↑", usage: 0x52)
-                hidPulseButton("↓", usage: 0x51)
                 hidPulseButton("←", usage: 0x50)
                 hidPulseButton("→", usage: 0x4F)
+                hidPulseButton("↑", usage: 0x52)
+                hidPulseButton("↓", usage: 0x51)
+                hidPulseButton("Home", usage: 0x4A)
+                hidPulseButton("End", usage: 0x4D)
+                hidPulseButton("PgUp", usage: 0x4B)
+                hidPulseButton("PgDn", usage: 0x4E)
                 hidPulseButton("F1", usage: 0x3A)
                 hidPulseButton("F2", usage: 0x3B)
+                hidPulseButton("F3", usage: 0x3C)
+                hidPulseButton("F4", usage: 0x3D)
+                hidPulseButton("F11", usage: 0x44)
                 hidPulseButton("F12", usage: 0x45)
                 Button("Paste") {
                     if let clip = UIPasteboard.general.string, !clip.isEmpty {
@@ -167,7 +176,7 @@ struct SessionView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .font(.caption.monospaced())
-                Button("Ctrl+Alt+Del") {
+                Button("CAD") {
                     HengeVMBridge.shared.sendCtrlAltDel()
                 }
                 .buttonStyle(.bordered)

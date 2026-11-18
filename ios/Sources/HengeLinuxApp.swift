@@ -675,7 +675,7 @@ struct DebugConsoleSheetView: View {
         options: []
     )
     private static let oscEscapeRegex = try? NSRegularExpression(
-        pattern: "\\x1B\\][^\\x07\\x1B]*(?:\\x07|\\x1B\\\\)",
+        pattern: "\\x1B\\](?:9999;[^\\x07\\x1B]*|[^\\x07\\x1B]*)(?:\\x07|\\x1B\\\\)",
         options: []
     )
 
