@@ -46,6 +46,8 @@ struct HengeLinuxApp: App {
     @StateObject private var lifecycle = MetalLifecycleGuard()
     @StateObject private var jitClient = SelfDebugJITClient()
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
+    @AppStorage("customGuestRamMiB") private var customGuestRamMiB: Int = 1664
+    @State private var ramInputText: String = ""
     @State private var isRunning: Bool = false
     @State private var isPreparingDisk: Bool = false
     @State private var isImportingFile: Bool = false
@@ -143,6 +145,11 @@ struct HengeLinuxApp: App {
                 lastPushedClipboard = hostClip
                 HengeVMBridge.shared.pushHostClipboard(hostClip)
             }
+            .onAppear {
+                if ramInputText.isEmpty {
+                    ramInputText = "\(effectiveRamMiB)"
+                }
+            }
             .onOpenURL { url in
                 do {
                     bootWarning = try jitClient.importFiles(from: [url], forceAsPairingPlist: false)
@@ -191,6 +198,8 @@ struct HengeLinuxApp: App {
                     ForEach(MachineProfile.presets) { preset in
                         Button {
                             selectedProfile = preset
+                            customGuestRamMiB = preset.ramMiB
+                            ramInputText = "\(preset.ramMiB)"
                         } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
@@ -201,7 +210,7 @@ struct HengeLinuxApp: App {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if preset == selectedProfile {
+                                if preset == selectedProfile && Int(effectiveRamMiB) == preset.ramMiB {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundStyle(.blue)
                                 }
@@ -209,6 +218,92 @@ struct HengeLinuxApp: App {
                         }
                         .buttonStyle(.plain)
                     }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Text("Guest RAM (MiB)")
+                                .font(.subheadline.weight(.medium))
+                            Spacer()
+                            TextField("MiB", text: $ramInputText)
+                                .keyboardType(.numberPad)
+                                .multilineTextAlignment(.trailing)
+                                .monospacedDigit()
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 92)
+                                .onChange(of: ramInputText) { _, newValue in
+                                    let digits = newValue.filter(\.isNumber)
+                                    if let parsed = Int(digits), parsed > 0 {
+                                        let clamped = min(
+                                            max(parsed, Int(HENGE_MIN_GUEST_RAM_MIB)),
+                                            Int(HENGE_MAX_GUEST_RAM_MIB)
+                                        )
+                                        customGuestRamMiB = clamped
+                                    }
+                                }
+                                .onSubmit {
+                                    ramInputText = "\(effectiveRamMiB)"
+                                }
+                            Stepper(
+                                "",
+                                value: Binding(
+                                    get: { Int(effectiveRamMiB) },
+                                    set: { newVal in
+                                        let clamped = min(
+                                            max(newVal, Int(HENGE_MIN_GUEST_RAM_MIB)),
+                                            Int(HENGE_MAX_GUEST_RAM_MIB)
+                                        )
+                                        customGuestRamMiB = clamped
+                                        ramInputText = "\(clamped)"
+                                    }
+                                ),
+                                in: Int(HENGE_MIN_GUEST_RAM_MIB)...Int(HENGE_MAX_GUEST_RAM_MIB),
+                                step: 128
+                            )
+                            .labelsHidden()
+                        }
+
+                        Slider(
+                            value: Binding(
+                                get: { Double(min(Int(effectiveRamMiB), sliderMaxRamMiB)) },
+                                set: { newVal in
+                                    let stepped = Int((newVal / 128.0).rounded()) * 128
+                                    let clamped = min(
+                                        max(stepped, Int(HENGE_MIN_GUEST_RAM_MIB)),
+                                        sliderMaxRamMiB
+                                    )
+                                    customGuestRamMiB = clamped
+                                    ramInputText = "\(clamped)"
+                                }
+                            ),
+                            in: Double(HENGE_MIN_GUEST_RAM_MIB)...Double(sliderMaxRamMiB),
+                            step: 128
+                        )
+
+                        HStack(spacing: 6) {
+                            ForEach([1024, 1664, 2048, 2560, 4096], id: \.self) { mib in
+                                Button("\(mib)") {
+                                    customGuestRamMiB = mib
+                                    ramInputText = "\(mib)"
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.mini)
+                                .tint(Int(effectiveRamMiB) == mib ? .blue : .secondary)
+                            }
+                            Spacer()
+                            Text("\(String(format: "%.2f", Double(effectiveRamMiB) / 1024.0)) GiB")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Text(
+                            effectiveRamMiB > 1792
+                                ? "Above ~1,792 MiB without LEDGER_NO_FOOTPRINT may hit iOS's ~3 GiB standard-ledger Jetsam kill limit."
+                                : "16 KiB page-aligned (512–10,240 MiB). Default 1,664 MiB leaves safe standard-ledger headroom."
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(effectiveRamMiB > 1792 ? .orange : .secondary)
+                    }
+                    .padding(.vertical, 4)
                 }
 
                 Section("Graphics & TXM Self-Debugger") {
@@ -397,14 +492,21 @@ struct HengeLinuxApp: App {
         }
     }
 
-    private var deviceCapMiB: UInt32 {
-        let physicalMiB = UInt64(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024)
-        let sixtyPercent = UInt32((physicalMiB * 60) / 100)
-        return min(max(sixtyPercent, 2048), 8192)
+    private var sliderMaxRamMiB: Int {
+        let physicalMiB = Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024))
+        return min(max(physicalMiB, 4096), Int(HENGE_MAX_GUEST_RAM_MIB))
+    }
+
+    private var clampedCustomRamMiB: UInt32 {
+        let clamped = min(
+            max(customGuestRamMiB, Int(HENGE_MIN_GUEST_RAM_MIB)),
+            Int(HENGE_MAX_GUEST_RAM_MIB)
+        )
+        return UInt32(clamped)
     }
 
     private var alignedBytes: UInt64 {
-        henge_align_guest_ram_bytes(UInt32(selectedProfile.ramMiB), deviceCapMiB)
+        henge_align_guest_ram_bytes(clampedCustomRamMiB, HENGE_MAX_GUEST_RAM_MIB)
     }
 
     private var effectiveRamMiB: UInt32 {

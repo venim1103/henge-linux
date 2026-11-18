@@ -61,7 +61,9 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `8584928` | Milestone 5.10: clamped standard-ledger guest RAM to `1,792 MiB` in `HengeVMBridge.mm` when `VM_LEDGER_FLAG_NO_FOOTPRINT` is unavailable (preventing ~3 GiB Jetsam kills during `pacman -Syu`), replaced `script -q -f` with an unbuffered Python PTY-to-`/dev/tty1` relay in `henge-dual-console`, and added first-boot `henge-pacman-keyring.service` + `pacman.conf` `NoExtract` |
 | `0c812db` | Patched `quick_frame_hash()` in `devices/fb_metal.m` via `scripts/apply_upstream_patches.py` to hash every scanline and 64-bit word instead of striding every 12 pixels, eliminating single-glyph display lag on typed characters |
 | `e45890e` | Clamped standard-ledger RAM to `1,664 MiB`, gated `henge-dual-console` `/dev/tty1` mirroring on `/sys/class/tty/tty0/active == tty1`, and pre-configured `/etc/X11/xorg.conf.d/10-fbdev.conf`, `/etc/sddm.conf.d/hengelinux.conf` (`vt2`), `rcupdate.rcu_cpu_stall_timeout=300`, and `/usr/local/bin/henge-install-desktop` in `scripts/build_prebuilt_archlinux_arm64.sh` (`Prebuilt Guest Image` Run `#44362659824` green) |
-| `HEAD` | Restored full `4` / `6` vCPU counts in `HengeVMBridge.mm` and `HengeLinuxApp.swift` (removing the 2-vCPU clamp while keeping `2D UEFI GOP` + `1,664 MiB` standard-ledger Jetsam headroom) and re-triggered macOS `.ipa` CI build |
+| `6822c14`–`dd45fa9` | Restored full `4` / `6` vCPU counts in `HengeVMBridge.mm` and `HengeLinuxApp.swift` and exposed `activeCpuCount` on `HengeVMBridge` (`CI Run #44384058356` green) |
+| `4809648` | Added user-editable Guest RAM controls (`512`–`10,240 MiB` numeric field, slider, stepper, and quick-pick chips) in `HengeLinuxApp.swift` and removed silent `1,664 MiB` clamping in `HengeVMBridge.mm` |
+| `HEAD` | Added `/dev/uinput` HID pointer/keyboard bridge (`henge-uinput-bridge.service` + OSC `9999` PL011 framing in `HengeVMBridge.mm`) and SDDM `vt2` autologin (`user: arch`) in `scripts/build_prebuilt_archlinux_arm64.sh` so X11/LXQt receives full mouse, touch, and keyboard input even with `usbcore.nousb` |
 
 ---
 

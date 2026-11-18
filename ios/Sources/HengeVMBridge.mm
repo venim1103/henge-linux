@@ -413,29 +413,12 @@ static void henge_on_vm_exit(int reason) {
         return NO;
     }
 
-    uint32_t cappedRequestMiB = ramMiB;
-    if (!henge_txm_is_cs_debugged() && cappedRequestMiB > 1536U) {
-        cappedRequestMiB = 1536U;
-    }
-
-    uint64_t alignedBytes = henge_align_guest_ram_bytes(cappedRequestMiB, 8192U);
+    uint64_t alignedBytes = henge_align_guest_ram_bytes(ramMiB, HENGE_MAX_GUEST_RAM_MIB);
     bool ledgerExempt = false;
     void *ramPtr = henge_alloc_ledger_exempt_ram((size_t)alignedBytes, &ledgerExempt);
-    /*
-     * On iOS 26+, VM_LEDGER_FLAG_NO_FOOTPRINT requires active P_TRACED or
-     * com.apple.private.memorystatus. When detached (CS_DEBUGGED=1, ptraced=0),
-     * allocation falls back to the standard Mach ledger (~3 GiB Jetsam kill
-     * limit). Cap standard-ledger guest RAM to 1,664 MiB so RAM + 384 MiB JIT
-     * + host buffers stay safely under Jetsam during heavy workloads (pacman).
-     */
-    if (ramPtr != nullptr && !ledgerExempt && alignedBytes > (1664ULL * 1024ULL * 1024ULL)) {
-        henge_free_ledger_exempt_ram(ramPtr, (size_t)alignedBytes);
-        cappedRequestMiB = 1664U;
-        alignedBytes = henge_align_guest_ram_bytes(cappedRequestMiB, 8192U);
-        ramPtr = henge_alloc_ledger_exempt_ram((size_t)alignedBytes, &ledgerExempt);
-    }
     if (!ramPtr) {
-        NSString *msg = @"Failed to allocate 16 KiB-aligned guest RAM.";
+        NSString *msg = [NSString stringWithFormat:@"Failed to allocate %llu MiB of 16 KiB-aligned guest RAM.",
+                         alignedBytes / (1024ULL * 1024ULL)];
         _statusText = msg;
         if (error) {
             *error = [NSError errorWithDomain:HengeVMErrorDomain
@@ -709,9 +692,16 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
             }
         }
         hv_winvm_key_hid(usage, pressed ? 1 : 0);
-        if (pressed && !(usage >= 0xE0 && usage <= 0xE7)) {
-            HvWinVirt *board = hv_winvm_board();
-            if (board != nullptr && board->uart != nullptr) {
+        HvWinVirt *board = hv_winvm_board();
+        if (board != nullptr && board->uart != nullptr) {
+            char osc[48];
+            int n = std::snprintf(osc, sizeof(osc), "\x1b]9999;K %02x %d\x07", usage, pressed ? 1 : 0);
+            if (n > 0) {
+                for (int i = 0; i < n; ++i) {
+                    hv_pl011_receive(board->uart, static_cast<uint8_t>(osc[i]));
+                }
+            }
+            if (pressed && !(usage >= 0xE0 && usage <= 0xE7)) {
                 henge_forward_hid_to_pl011(board->uart, usage, _hidModifiers);
             }
         }
@@ -745,6 +735,21 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_running) {
         hv_winvm_tablet(xNorm, yNorm, buttons, wheel);
+        HvWinVirt *board = hv_winvm_board();
+        if (board != nullptr && board->uart != nullptr) {
+            double cx = (xNorm < 0.0) ? 0.0 : ((xNorm > 1.0) ? 1.0 : xNorm);
+            double cy = (yNorm < 0.0) ? 0.0 : ((yNorm > 1.0) ? 1.0 : yNorm);
+            int absX = static_cast<int>(cx * 32767.0 + 0.5);
+            int absY = static_cast<int>(cy * 32767.0 + 0.5);
+            char osc[64];
+            int n = std::snprintf(osc, sizeof(osc), "\x1b]9999;P %d %d %u %d\x07",
+                                  absX, absY, (unsigned)buttons, (int)wheel);
+            if (n > 0) {
+                for (int i = 0; i < n; ++i) {
+                    hv_pl011_receive(board->uart, static_cast<uint8_t>(osc[i]));
+                }
+            }
+        }
     }
 #else
     (void)xNorm;

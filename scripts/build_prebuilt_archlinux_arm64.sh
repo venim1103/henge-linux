@@ -324,7 +324,8 @@ x-scheme-handler/http=henge-safari-bridge.desktop
 x-scheme-handler/https=henge-safari-bridge.desktop
 EOF
 
-# Pre-configure Xorg fbdev (/dev/fb0 efifb), SDDM on VT2 (so VT1 serial console never collides),
+# Pre-configure Xorg fbdev (/dev/fb0 efifb), SDDM autologin on VT2 (so VT1 serial console never collides),
+# a serial-to-uinput HID bridge (so iOS touch/trackpad/keyboard work in X11 even with usbcore.nousb),
 # and a one-command henge-install-desktop helper for LXQt + SDDM.
 $SUDO install -d "$MNT_DIR/etc/X11/xorg.conf.d" "$MNT_DIR/etc/sddm.conf.d"
 $SUDO tee "$MNT_DIR/etc/X11/xorg.conf.d/10-fbdev.conf" >/dev/null <<'EOF'
@@ -336,6 +337,10 @@ EndSection
 EOF
 
 $SUDO tee "$MNT_DIR/etc/sddm.conf.d/hengelinux.conf" >/dev/null <<'EOF'
+[Autologin]
+User=arch
+Session=lxqt
+
 [General]
 DisplayServer=x11
 
@@ -344,19 +349,175 @@ MinimumVT=2
 ServerArguments=-nolisten tcp vt2
 EOF
 
+$SUDO tee "$MNT_DIR/usr/local/bin/henge-uinput-bridge" >/dev/null <<'EOF'
+#!/usr/bin/env python3
+"""Inject iOS touch/trackpad pointer and HID keyboard events into Linux /dev/uinput
+so X11/LXQt receives full mouse + keyboard input even when usbcore.nousb is active."""
+import ctypes
+import fcntl
+import os
+import select
+import struct
+import sys
+import time
+
+UI_SET_EVBIT = 0x40045564
+UI_SET_KEYBIT = 0x40045565
+UI_SET_RELBIT = 0x40045566
+UI_SET_ABSBIT = 0x40045567
+UI_DEV_SETUP = 0x405C5503
+UI_ABS_SETUP = 0x401C5504
+UI_DEV_CREATE = 0x5501
+UI_DEV_DESTROY = 0x5502
+
+EV_SYN = 0x00
+EV_KEY = 0x01
+EV_REL = 0x02
+EV_ABS = 0x03
+SYN_REPORT = 0x00
+
+REL_WHEEL = 0x08
+ABS_X = 0x00
+ABS_Y = 0x01
+BTN_LEFT = 0x110
+BTN_RIGHT = 0x111
+BTN_MIDDLE = 0x112
+BTN_TOOL_FINGER = 0x145
+BTN_TOUCH = 0x14A
+
+HID_TO_EVDEV = {
+    0x04: 30, 0x05: 48, 0x06: 46, 0x07: 32, 0x08: 18, 0x09: 33, 0x0A: 34, 0x0B: 35,
+    0x0C: 23, 0x0D: 36, 0x0E: 37, 0x0F: 38, 0x10: 50, 0x11: 49, 0x12: 24, 0x13: 25,
+    0x14: 16, 0x15: 19, 0x16: 31, 0x17: 20, 0x18: 22, 0x19: 47, 0x1A: 17, 0x1B: 45,
+    0x1C: 21, 0x1D: 44,
+    0x1E: 2, 0x1F: 3, 0x20: 4, 0x21: 5, 0x22: 6, 0x23: 7, 0x24: 8, 0x25: 9, 0x26: 10, 0x27: 11,
+    0x28: 28, 0x29: 1, 0x2A: 14, 0x2B: 15, 0x2C: 57,
+    0x2D: 12, 0x2E: 13, 0x2F: 26, 0x30: 27, 0x31: 43, 0x33: 39, 0x34: 40, 0x35: 41,
+    0x36: 51, 0x37: 52, 0x38: 53, 0x39: 58,
+    0x3A: 59, 0x3B: 60, 0x3C: 61, 0x3D: 62, 0x3E: 63, 0x3F: 64, 0x40: 65, 0x41: 66,
+    0x42: 67, 0x43: 68, 0x44: 87, 0x45: 88,
+    0x49: 110, 0x4A: 102, 0x4B: 104, 0x4C: 111, 0x4D: 107, 0x4E: 109,
+    0x4F: 106, 0x50: 105, 0x51: 108, 0x52: 103,
+    0x54: 98, 0x55: 55, 0x56: 74, 0x57: 78, 0x58: 96,
+    0x59: 79, 0x5A: 80, 0x5B: 81, 0x5C: 75, 0x5D: 76, 0x5E: 77,
+    0x5F: 71, 0x60: 72, 0x61: 73, 0x62: 82, 0x63: 83,
+    0xE0: 29, 0xE1: 42, 0xE2: 56, 0xE3: 125, 0xE4: 97, 0xE5: 54, 0xE6: 100, 0xE7: 126,
+}
+
+def emit(fd, ev_type, code, value):
+    now = time.time()
+    sec = int(now)
+    usec = int((now - sec) * 1_000_000)
+    os.write(fd, struct.pack("@llHHi", sec, usec, ev_type, code, value))
+
+def create_uinput():
+    fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+    for ev in (EV_KEY, EV_ABS, EV_REL):
+        fcntl.ioctl(fd, UI_SET_EVBIT, ev)
+    for btn in (BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_TOUCH, BTN_TOOL_FINGER):
+        fcntl.ioctl(fd, UI_SET_KEYBIT, btn)
+    for keycode in set(HID_TO_EVDEV.values()):
+        fcntl.ioctl(fd, UI_SET_KEYBIT, keycode)
+    fcntl.ioctl(fd, UI_SET_RELBIT, REL_WHEEL)
+    for axis in (ABS_X, ABS_Y):
+        fcntl.ioctl(fd, UI_SET_ABSBIT, axis)
+        abs_setup = struct.pack("@Hiiiiii", axis, 0, 0, 32767, 0, 0, 0)
+        fcntl.ioctl(fd, UI_ABS_SETUP, abs_setup)
+    dev_setup = struct.pack("@HHHH80sI", 0x06, 0x1234, 0x5678, 1, b"HengeLinux Virtual HID", 0)
+    fcntl.ioctl(fd, UI_DEV_SETUP, dev_setup)
+    fcntl.ioctl(fd, UI_DEV_CREATE)
+    return fd
+
+def main():
+    fifo_path = "/run/henge-hid.fifo"
+    if os.path.exists(fifo_path):
+        os.unlink(fifo_path)
+    os.mkfifo(fifo_path, 0o600)
+    ufd = create_uinput()
+    prev_buttons = 0
+    rfd = os.open(fifo_path, os.O_RDWR | os.O_NONBLOCK)
+    buf = b""
+    try:
+        while True:
+            select.select([rfd], [], [])
+            chunk = os.read(rfd, 4096)
+            if not chunk:
+                continue
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                parts = line.decode("ascii", "ignore").strip().split()
+                if not parts:
+                    continue
+                if parts[0] == "P" and len(parts) == 5:
+                    x = max(0, min(32767, int(parts[1])))
+                    y = max(0, min(32767, int(parts[2])))
+                    buttons = int(parts[3])
+                    wheel = int(parts[4])
+                    emit(ufd, EV_ABS, ABS_X, x)
+                    emit(ufd, EV_ABS, ABS_Y, y)
+                    for bit, btn in ((1, BTN_LEFT), (2, BTN_RIGHT), (4, BTN_MIDDLE)):
+                        was = (prev_buttons & bit) != 0
+                        now_b = (buttons & bit) != 0
+                        if was != now_b:
+                            emit(ufd, EV_KEY, btn, 1 if now_b else 0)
+                    prev_buttons = buttons
+                    if wheel != 0:
+                        emit(ufd, EV_REL, REL_WHEEL, wheel)
+                    emit(ufd, EV_SYN, SYN_REPORT, 0)
+                elif parts[0] == "K" and len(parts) == 3:
+                    usage = int(parts[1], 16)
+                    pressed = 1 if int(parts[2]) != 0 else 0
+                    code = HID_TO_EVDEV.get(usage)
+                    if code is not None:
+                        emit(ufd, EV_KEY, code, pressed)
+                        emit(ufd, EV_SYN, SYN_REPORT, 0)
+    finally:
+        fcntl.ioctl(ufd, UI_DEV_DESTROY)
+        os.close(ufd)
+        os.close(rfd)
+
+if __name__ == "__main__":
+    main()
+EOF
+$SUDO chmod 0755 "$MNT_DIR/usr/local/bin/henge-uinput-bridge"
+
+$SUDO tee "$MNT_DIR/etc/systemd/system/henge-uinput-bridge.service" >/dev/null <<'EOF'
+[Unit]
+Description=HengeLinux Virtual uinput Pointer & Keyboard Bridge
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/henge-uinput-bridge
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+$SUDO ln -sf /etc/systemd/system/henge-uinput-bridge.service \
+    "$MNT_DIR/etc/systemd/system/multi-user.target.wants/henge-uinput-bridge.service"
+
 $SUDO tee "$MNT_DIR/usr/local/bin/henge-install-desktop" >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "[henge-linux] Installing LXQt desktop, SDDM, and Xorg fbdev driver for /dev/fb0..."
 pacman -Sy --needed --noconfirm lxqt sddm xorg-server xorg-xinit xf86-video-fbdev ttf-dejavu
 if ! id -u arch >/dev/null 2>&1; then
-    useradd -m -G wheel -s /bin/bash arch
+    useradd -m -G wheel,video,input,audio -s /bin/bash arch
     echo "arch:arch" | chpasswd
     echo "[henge-linux] Created desktop user 'arch' (password: 'arch')."
+else
+    usermod -aG wheel,video,input,audio arch || true
 fi
+printf 'exec startlxqt\n' > /home/arch/.xinitrc
+chown arch:arch /home/arch/.xinitrc
+systemctl enable --now henge-uinput-bridge.service || true
+systemctl set-default graphical.target
 systemctl enable --now sddm
 chvt 2 || true
-echo "[henge-linux] SDDM started on VT2 (login: arch / password: arch)."
+echo "[henge-linux] SDDM autologin started on VT2 (user: arch)."
 EOF
 $SUDO chmod 0755 "$MNT_DIR/usr/local/bin/henge-install-desktop"
 
@@ -437,13 +598,43 @@ try:
         except OSError:
             return True
 
+    def forward_hid_escape_to_uinput(chunk: bytes) -> bytes:
+        # Intercept OSC 9999 HID frames (\x1b]9999;...\x07) sent by HengeVMBridge
+        # when VT2 (X11/LXQt) is active and write them to /run/henge-hid.fifo.
+        out = bytearray()
+        idx = 0
+        marker = b"\x1b]9999;"
+        while idx < len(chunk):
+            pos = chunk.find(marker, idx)
+            if pos == -1:
+                out.extend(chunk[idx:])
+                break
+            out.extend(chunk[idx:pos])
+            end = chunk.find(b"\x07", pos + len(marker))
+            if end == -1:
+                out.extend(chunk[pos:])
+                break
+            payload = chunk[pos + len(marker):end]
+            try:
+                fd = os.open("/run/henge-hid.fifo", os.O_WRONLY | os.O_NONBLOCK)
+                try:
+                    os.write(fd, payload + b"\n")
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass
+            idx = end + 1
+        return bytes(out)
+
     while True:
         rlist, _, _ = select.select([stdin_fd, master_fd], [], [])
         if stdin_fd in rlist:
             data = os.read(stdin_fd, 1024)
             if not data:
                 break
-            os.write(master_fd, data)
+            data = forward_hid_escape_to_uinput(data)
+            if data and tty1_is_active():
+                os.write(master_fd, data)
         if master_fd in rlist:
             try:
                 out = os.read(master_fd, 4096)
