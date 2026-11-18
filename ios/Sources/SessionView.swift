@@ -388,6 +388,9 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
     override func resignFirstResponder() -> Bool {
         pendingKeystrokes.removeAll()
         isDrainingKeystrokes = false
+        for mod: UInt8 in 0xE0...0xE7 {
+            HengeVMBridge.shared.sendHidKeyUsage(mod, pressed: false)
+        }
         let ok = super.resignFirstResponder()
         onFocusChanged?(false)
         return ok
@@ -519,8 +522,9 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
         case 124: return (0x31, true) // |
         case 59: return (0x33, false) // ;
         case 58: return (0x33, true)  // :
-        case 39: return (0x34, false) // '
-        case 34: return (0x34, true)  // "
+        case 39, 0x2018, 0x2019: return (0x34, false) // ' and curly single quotes
+        case 34, 0x201C, 0x201D: return (0x34, true)  // " and curly double quotes
+        case 0x2013, 0x2014: return (0x2D, false)     // en-dash / em-dash -> -
         case 96: return (0x35, false) // `
         case 126: return (0x35, true) // ~
         case 44: return (0x36, false) // ,

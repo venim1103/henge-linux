@@ -664,6 +664,17 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
     case 0x50: sendBytes("\x1B[D", 3); break;   /* Left */
     case 0x51: sendBytes("\x1B[B", 3); break;   /* Down */
     case 0x52: sendBytes("\x1B[A", 3); break;   /* Up */
+    case 0x54: hv_pl011_receive(uart, '/'); break;  /* Keypad / */
+    case 0x55: hv_pl011_receive(uart, '*'); break;  /* Keypad * */
+    case 0x56: hv_pl011_receive(uart, '-'); break;  /* Keypad - */
+    case 0x57: hv_pl011_receive(uart, '+'); break;  /* Keypad + */
+    case 0x58: hv_pl011_receive(uart, '\r'); break; /* Keypad Enter */
+    case 0x59: case 0x5A: case 0x5B: case 0x5C: case 0x5D:
+    case 0x5E: case 0x5F: case 0x60: case 0x61:
+        hv_pl011_receive(uart, static_cast<uint8_t>('1' + (usage - 0x59)));
+        break;
+    case 0x62: hv_pl011_receive(uart, '0'); break;  /* Keypad 0 */
+    case 0x63: hv_pl011_receive(uart, '.'); break;  /* Keypad . */
     default: break;
     }
 }

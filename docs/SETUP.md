@@ -80,8 +80,8 @@ iOS 26/27 Trusted Execution Monitor (`TXM`) blocks anonymous executable memory (
    - On first boot, `HengeLinux` unpacks `archlinux.hvsparse` into an APFS sparse `archlinux.img` on a background thread (`Unpacking Disk Image...`).
    - `henge-jit.js` blesses the `384 MiB` dual-mapped RX/RW JIT pool (`< 0x7000000000`) and detaches cleanly (`CS_DEBUGGED` remains active for the session).
 5. **Allow 30–60 seconds on cold boot past TianoCore (`Start boot option`):**
-   - `systemd-bootaa64.efi` (`timeout 0`, `console-mode keep`) launches `\Image` + `\initramfs-linux.img` automatically with zero keypresses required, and `HengeVMBridge` forwards on-screen / hardware keystrokes to both USB xHCI and the PL011 serial console (`ttyAMA0`).
-   - On a cold boot, the ARM64 dynamic binary translator compiles the kernel decompression and `initramfs` unpack from scratch before Linux's framebuffer (`simpledrm`/`fbcon`) and serial console (`ttyAMA0`) display the login prompt (`root` / `root`).
+   - `systemd-bootaa64.efi` (`timeout 0`, `console-mode keep`) launches `\Image` + `\initramfs-linux.img` (`usbcore.nousb`) automatically with zero keypresses required.
+   - `henge-dual-console` mirrors the PL011 serial session (`ttyAMA0`) directly onto the main Metal display (`tty1`) and auto-logs into `root@hengelinux:~#`, so both the on-screen iPhone keyboard (`⌨️` toolbar button) and external Bluetooth keyboards echo immediately on the main screen.
 
 ---
 

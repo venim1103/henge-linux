@@ -321,20 +321,37 @@ x-scheme-handler/http=henge-safari-bridge.desktop
 x-scheme-handler/https=henge-safari-bridge.desktop
 EOF
 
-# Ensure serial (ttyAMA0), tty1 auto-login, networking, and DNS services are enabled
+# Ensure serial (ttyAMA0) mirrors live onto tty1 (Metal display), networking, and DNS are enabled
 $SUDO mkdir -p \
     "$MNT_DIR/etc/systemd/system/getty.target.wants" \
     "$MNT_DIR/etc/systemd/system/multi-user.target.wants" \
-    "$MNT_DIR/etc/systemd/system/getty@tty1.service.d"
+    "$MNT_DIR/etc/systemd/system/serial-getty@ttyAMA0.service.d"
+
+$SUDO tee "$MNT_DIR/usr/local/bin/henge-dual-console" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+# Mirror the PL011 serial TTY session (which receives all iPhone on-screen and
+# Bluetooth keyboard events) onto /dev/tty1 so the Metal display shows every
+# prompt and typed character in real time even when usbcore.nousb is active.
+if command -v script >/dev/null 2>&1 && [ -e /dev/tty1 ]; then
+    exec script -q -f -c "/sbin/agetty --noclear --autologin root -o '-p -f -- \\u' 115200 - linux" /dev/tty1
+else
+    exec /sbin/agetty --noclear --autologin root -o '-p -f -- \u' 115200 - linux
+fi
+EOF
+$SUDO chmod 0755 "$MNT_DIR/usr/local/bin/henge-dual-console"
+
 if [ -f "$MNT_DIR/usr/lib/systemd/system/serial-getty@.service" ]; then
     $SUDO ln -sf /usr/lib/systemd/system/serial-getty@.service \
         "$MNT_DIR/etc/systemd/system/getty.target.wants/serial-getty@ttyAMA0.service"
 fi
-$SUDO tee "$MNT_DIR/etc/systemd/system/getty@tty1.service.d/autologin.conf" >/dev/null <<'EOF'
+$SUDO tee "$MNT_DIR/etc/systemd/system/serial-getty@ttyAMA0.service.d/dual-console.conf" >/dev/null <<'EOF'
 [Service]
 ExecStart=
-ExecStart=-/sbin/agetty -o '-p -f -- \\u' --noclear --autologin root %I $TERM
+ExecStart=-/usr/local/bin/henge-dual-console
 EOF
+# Prevent getty@tty1 from competing with henge-dual-console on /dev/tty1
+$SUDO ln -sf /dev/null "$MNT_DIR/etc/systemd/system/getty@tty1.service"
+
 for unit in systemd-networkd.service systemd-resolved.service; do
     if [ -f "$MNT_DIR/usr/lib/systemd/system/$unit" ]; then
         $SUDO ln -sf "/usr/lib/systemd/system/$unit" \
