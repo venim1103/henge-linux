@@ -79,9 +79,9 @@ iOS 26/27 Trusted Execution Monitor (`TXM`) blocks anonymous executable memory (
 4. Tap **Boot Arch Linux**.
    - On first boot, `HengeLinux` unpacks `archlinux.hvsparse` into an APFS sparse `archlinux.img` on a background thread (`Unpacking Disk Image...`).
    - `henge-jit.js` blesses the `384 MiB` dual-mapped RX/RW JIT pool (`< 0x7000000000`) and detaches cleanly (`CS_DEBUGGED` remains active for the session).
-5. **Wait 30–60 seconds at the TianoCore UEFI splash (`Start boot option`):**
-   - When TianoCore displays `Start boot option`, UEFI has handed off to `\EFI\BOOT\BOOTAA64.EFI`.
-   - On a cold boot, the ARM64 dynamic binary translator compiles the kernel decompression and `initramfs` unpack from scratch before Linux's framebuffer (`simpledrm`/`fbcon`) takes over the screen.
+5. **Allow 30–60 seconds on cold boot past TianoCore (`Start boot option`):**
+   - `systemd-bootaa64.efi` (`timeout 0`, `console-mode keep`) launches `\Image` + `\initramfs-linux.img` automatically with zero keypresses required, and `HengeVMBridge` forwards on-screen / hardware keystrokes to both USB xHCI and the PL011 serial console (`ttyAMA0`).
+   - On a cold boot, the ARM64 dynamic binary translator compiles the kernel decompression and `initramfs` unpack from scratch before Linux's framebuffer (`simpledrm`/`fbcon`) and serial console (`ttyAMA0`) display the login prompt (`root` / `root`).
 
 ---
 
@@ -137,7 +137,8 @@ Inside the Archboot QEMU console:
   - `HengeLinux` was launched without `henge-jit.js` bound in StikDebug. Force-quit `HengeLinux`, open **StikDebug**, **long-press `HengeLinux` -> Assign Script -> `henge-jit.js`**, ensure **LocalDevVPN** is on, and relaunch `HengeLinux` from StikDebug.
 - **`HengeLinux` folder does not appear in `Files ▸ On My iPhone`:**
   - Use the in-app **Import Guest Files...** and **Import pairing.plist...** buttons (they read directly from `Downloads` / `iCloud Drive` via iOS security-scoped URLs and verify files in **App Container Files (`Documents/`)**). If you upgraded from an older `.ipa`, delete and reinstall `HengeLinux` once via SideStore so iOS registers `CFBundleDocumentTypes`.
-- **Stuck on TianoCore `Start boot option`:**
-  - Wait 30–60 seconds on cold boot for initial DBT translation. If it still does not advance, tap **Stop**, tap **Boot Arch Linux**, and press **`Esc`** immediately on the TianoCore logo to open **Boot Manager -> EFI Internal Shell**, then boot `/Image` directly via `CONFIG_EFI_STUB` (`fs0:\Image root=UUID=<ROOT_UUID> rw rootwait console=tty0 console=ttyAMA0,115200` or `fs0:\startup.nsh`).
+- **Stuck on TianoCore `Start boot option` or keys not responding in UEFI:**
+  - Make sure you have installed the latest **`HengeLinux-unsigned.ipa`** (`cf6f1f0` or newer, which fixes the Darwin `COMMPAGE_TIMEBASE_OFFSET` ARM timer clock-domain deadlock and forwards keys to PL011 UART `ttyAMA0`) **and** re-imported the latest `archlinux.hvsparse` and `vars.fd` from [`latest-ipa`](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa).
+  - Wait 30–60 seconds on cold boot for initial DBT translation. If you want to inspect the UEFI menu manually, tap **Stop**, tap **Boot Arch Linux**, and press **`Esc`** or **`F2`** on the TianoCore logo to open **Boot Manager -> EFI Internal Shell** (`fs0:\startup.nsh`).
 - **RAM clamped to `1536 MiB`:**
   - `CS_DEBUGGED` was not active when `Boot Arch Linux` was tapped, so the untethered Jetsam guard capped RAM at `1,536 MiB` to prevent a ~3 GB Mach ledger kill. Launch through StikDebug with `henge-jit.js` assigned to unlock full `2,560–6,144 MiB` `LEDGER_NO_FOOTPRINT` RAM. *(Note: On iOS 26+, telemetry may still report `standard ledger` once `P_TRACED` detaches; `2,560 MiB` fits safely within an 8 GB iPhone's Jetsam ceiling.)*
