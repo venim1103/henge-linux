@@ -567,49 +567,96 @@ private struct HidHoldKeyBody: View {
     }
 }
 
-private final class ZeroHeightInputView: UIView {
-    override var intrinsicContentSize: CGSize {
-        .zero
+/// Dedicated hidden `UIKeyInput` proxy view that becomes first responder ONLY
+/// when the user explicitly toggles the on-screen software keyboard. Keeping
+/// `UIKeyInput` off `MetalDisplaySurfaceView` prevents UIKit from retaining a
+/// ghost keyboard safe-area inset when the software keyboard is dismissed.
+private final class SoftwareKeyboardInputProxyView: UIView, UIKeyInput {
+    var onInsertText: ((String) -> Void)?
+    var onDeleteBackward: (() -> Void)?
+    var onPressesBegan: ((Set<UIPress>, UIPressesEvent?) -> Bool)?
+    var onPressesEnded: ((Set<UIPress>, UIPressesEvent?) -> Bool)?
+    var onResignedFirstResponder: (() -> Void)?
+
+    override var canBecomeFirstResponder: Bool { true }
+    var hasText: Bool { true }
+
+    var keyboardType: UIKeyboardType {
+        get { .asciiCapable }
+        set {}
+    }
+    var smartInsertDeleteType: UITextSmartInsertDeleteType {
+        get { .no }
+        set {}
+    }
+    var autocorrectionType: UITextAutocorrectionType {
+        get { .no }
+        set {}
+    }
+    var autocapitalizationType: UITextAutocapitalizationType {
+        get { .none }
+        set {}
+    }
+    var spellCheckingType: UITextSpellCheckingType {
+        get { .no }
+        set {}
+    }
+    var smartQuotesType: UITextSmartQuotesType {
+        get { .no }
+        set {}
+    }
+    var smartDashesType: UITextSmartDashesType {
+        get { .no }
+        set {}
+    }
+
+    func insertText(_ text: String) {
+        onInsertText?(text)
+    }
+
+    func deleteBackward() {
+        onDeleteBackward?()
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if onPressesBegan?(presses, event) != true {
+            super.pressesBegan(presses, with: event)
+        }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if onPressesEnded?(presses, event) != true {
+            super.pressesEnded(presses, with: event)
+        }
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        pressesEnded(presses, with: event)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        onResignedFirstResponder?()
+        return ok
     }
 }
 
-final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuInteractionDelegate {
+final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDelegate {
     var onFocusChanged: ((Bool) -> Void)?
     var onCharacterTyped: (() -> Void)?
-    /// When true, `inputView` returns a zero-height `UIView` so the view remains first
-    /// responder for Bluetooth/hardware keyboard `pressesBegan` events without
-    /// popping up the on-screen iOS software keyboard.
+    /// Controls whether the hidden `SoftwareKeyboardInputProxyView` is first
+    /// responder (showing the iOS software keyboard). When `true` (suppressed),
+    /// the proxy resigns so UIKit collapses the keyboard safe area to 0, while
+    /// `MetalDisplaySurfaceView` itself remains first responder for Bluetooth
+    /// hardware keyboard `pressesBegan` events without triggering a keyboard.
     var suppressSoftwareKeyboard: Bool = true {
         didSet {
             guard oldValue != suppressSoftwareKeyboard else { return }
-            if suppressSoftwareKeyboard {
-                // Resigning first responder forces UIKit/SwiftUI to collapse the
-                // system keyboard safe-area inset immediately (reloadInputViews alone
-                // leaves a ghost keyboard-sized gap at the bottom on iOS 18–26).
-                if isFirstResponder {
-                    isCyclingResponderForKeyboardDismiss = true
-                    _ = resignFirstResponder()
-                    isCyclingResponderForKeyboardDismiss = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                        guard let self, self.window != nil, self.suppressSoftwareKeyboard, !self.isFirstResponder else { return }
-                        _ = self.becomeFirstResponder()
-                    }
-                }
-            } else {
-                if isFirstResponder {
-                    reloadInputViews()
-                } else if window != nil {
-                    _ = becomeFirstResponder()
-                }
-            }
+            syncResponderState()
         }
     }
-    private let emptyInputView: UIView = {
-        let v = ZeroHeightInputView(frame: .zero)
-        v.translatesAutoresizingMaskIntoConstraints = false
-        return v
-    }()
-    private var isCyclingResponderForKeyboardDismiss = false
+    private let softwareKeyboardProxy = SoftwareKeyboardInputProxyView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+    private var isProgrammaticResponderChange = false
     private var editMenuInteraction: UIEditMenuInteraction?
     private var pendingKeystrokes: [(usage: UInt8, shift: Bool)] = []
     private var isDrainingKeystrokes = false
@@ -626,47 +673,22 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
         true
     }
 
-    override var inputView: UIView? {
-        suppressSoftwareKeyboard ? emptyInputView : nil
-    }
-
-    var keyboardType: UIKeyboardType {
-        get { .asciiCapable }
-        set {}
-    }
-
-    var smartInsertDeleteType: UITextSmartInsertDeleteType {
-        get { .no }
-        set {}
-    }
-
-    var autocorrectionType: UITextAutocorrectionType {
-        get { .no }
-        set {}
-    }
-
-    var autocapitalizationType: UITextAutocapitalizationType {
-        get { .none }
-        set {}
-    }
-
-    var spellCheckingType: UITextSpellCheckingType {
-        get { .no }
-        set {}
-    }
-
-    var smartQuotesType: UITextSmartQuotesType {
-        get { .no }
-        set {}
-    }
-
-    var smartDashesType: UITextSmartDashesType {
-        get { .no }
-        set {}
-    }
-
-    var hasText: Bool {
-        true
+    private func syncResponderState() {
+        guard window != nil else { return }
+        if suppressSoftwareKeyboard {
+            if softwareKeyboardProxy.isFirstResponder {
+                isProgrammaticResponderChange = true
+                _ = softwareKeyboardProxy.resignFirstResponder()
+                isProgrammaticResponderChange = false
+            }
+            if !isFirstResponder {
+                _ = becomeFirstResponder()
+            }
+        } else {
+            if !softwareKeyboardProxy.isFirstResponder {
+                _ = softwareKeyboardProxy.becomeFirstResponder()
+            }
+        }
     }
 
     override init(frame: CGRect) {
@@ -682,6 +704,32 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
     private func setupInteraction() {
         backgroundColor = .black
         isMultipleTouchEnabled = true
+
+        softwareKeyboardProxy.isUserInteractionEnabled = false
+        softwareKeyboardProxy.alpha = 0.0
+        softwareKeyboardProxy.onInsertText = { [weak self] text in
+            self?.insertText(text)
+        }
+        softwareKeyboardProxy.onDeleteBackward = { [weak self] in
+            self?.deleteBackward()
+        }
+        softwareKeyboardProxy.onPressesBegan = { [weak self] presses, event in
+            self?.handleHardwarePresses(presses, pressed: true) ?? false
+        }
+        softwareKeyboardProxy.onPressesEnded = { [weak self] presses, event in
+            self?.handleHardwarePresses(presses, pressed: false) ?? false
+        }
+        softwareKeyboardProxy.onResignedFirstResponder = { [weak self] in
+            guard let self else { return }
+            if !self.isProgrammaticResponderChange {
+                self.onFocusChanged?(false)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.window != nil, self.suppressSoftwareKeyboard, !self.isFirstResponder else { return }
+                    _ = self.becomeFirstResponder()
+                }
+            }
+        }
+        addSubview(softwareKeyboardProxy)
 
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleCanvasTap(_:)))
         singleTap.numberOfTapsRequired = 1
@@ -718,35 +766,20 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil && !isFirstResponder {
+        if window != nil {
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.window != nil, !self.isFirstResponder else { return }
-                _ = self.becomeFirstResponder()
+                self?.syncResponderState()
             }
         }
-    }
-
-    override func becomeFirstResponder() -> Bool {
-        let ok = super.becomeFirstResponder()
-        if !suppressSoftwareKeyboard {
-            onFocusChanged?(ok)
-        }
-        return ok
     }
 
     override func resignFirstResponder() -> Bool {
-        if !isCyclingResponderForKeyboardDismiss {
-            pendingKeystrokes.removeAll()
-            isDrainingKeystrokes = false
-            for mod: UInt8 in 0xE0...0xE7 {
-                HengeVMBridge.shared.sendHidKeyUsage(mod, pressed: false)
-            }
+        pendingKeystrokes.removeAll()
+        isDrainingKeystrokes = false
+        for mod: UInt8 in 0xE0...0xE7 {
+            HengeVMBridge.shared.sendHidKeyUsage(mod, pressed: false)
         }
-        let ok = super.resignFirstResponder()
-        if !isCyclingResponderForKeyboardDismiss {
-            onFocusChanged?(false)
-        }
-        return ok
+        return super.resignFirstResponder()
     }
 
     deinit {
@@ -776,28 +809,25 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
 
     // MARK: - Hardware Keyboard (UIResponder presses)
 
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    private func handleHardwarePresses(_ presses: Set<UIPress>, pressed: Bool) -> Bool {
         var handled = false
         for press in presses {
             if let key = press.key, let usage = Self.hidUsage(from: key.keyCode) {
-                HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: true)
+                HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: pressed)
                 handled = true
             }
         }
-        if !handled {
+        return handled
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !handleHardwarePresses(presses, pressed: true) {
             super.pressesBegan(presses, with: event)
         }
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        var handled = false
-        for press in presses {
-            if let key = press.key, let usage = Self.hidUsage(from: key.keyCode) {
-                HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: false)
-                handled = true
-            }
-        }
-        if !handled {
+        if !handleHardwarePresses(presses, pressed: false) {
             super.pressesEnded(presses, with: event)
         }
     }
@@ -921,7 +951,7 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
     }
 
     @objc private func handleCanvasTap(_ gr: UITapGestureRecognizer) {
-        if !isFirstResponder {
+        if suppressSoftwareKeyboard && !isFirstResponder {
             _ = becomeFirstResponder()
         }
         let (nx, ny) = normalizedPoint(gr.location(in: self))
@@ -958,7 +988,7 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
         let (nx, ny) = normalizedPoint(gr.location(in: self))
         switch gr.state {
         case .began:
-            if !isFirstResponder {
+            if suppressSoftwareKeyboard && !isFirstResponder {
                 _ = becomeFirstResponder()
             }
             let feedback = UIImpactFeedbackGenerator(style: .light)
@@ -975,7 +1005,7 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
 
     @objc private func handleCanvasLongPress(_ gr: UILongPressGestureRecognizer) {
         guard gr.state == .began else { return }
-        if !isFirstResponder {
+        if suppressSoftwareKeyboard && !isFirstResponder {
             _ = becomeFirstResponder()
         }
         let feedback = UIImpactFeedbackGenerator(style: .medium)
@@ -1177,13 +1207,6 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
         _ = lifecycle.isPaused
         uiView.onCharacterTyped = onCharacterTyped
         uiView.suppressSoftwareKeyboard = suppressSoftwareKeyboard
-        if !uiView.isFirstResponder && !suppressSoftwareKeyboard {
-            DispatchQueue.main.async {
-                if !uiView.isFirstResponder {
-                    _ = uiView.becomeFirstResponder()
-                }
-            }
-        }
         if context.coordinator.lastLayoutTrigger != layoutTrigger {
             context.coordinator.lastLayoutTrigger = layoutTrigger
             uiView.setNeedsLayout()
