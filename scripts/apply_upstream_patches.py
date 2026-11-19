@@ -38,13 +38,99 @@ def main() -> int:
         print(f"[patch] upstream directory not found: {upstream}", file=sys.stderr)
         return 1
 
-    # 1. host/share.c: enforce <104-byte iOS sandbox AF_UNIX socket path
+    # 1. host/share.h & host/share.c: enforce <104-byte iOS sandbox AF_UNIX socket path
+    #    and serve offline guest additions at http://10.0.2.4/.henge/guest-tools/
+    share_h = upstream / "host/share.h"
+    patch_file(
+        share_h,
+        "HENGE_SHARE_HAS_GUEST_TOOLS",
+        "int hv_share_take_oauth_done(void);\n",
+        """int hv_share_take_oauth_done(void);
+
+#define HENGE_SHARE_HAS_GUEST_TOOLS 1
+void hv_share_set_guest_tools_dir(const char *dir);
+""",
+    )
+
     share_c = upstream / "host/share.c"
     patch_file(
         share_c,
         "henge_format_unix_socket_path",
         '#include "share.h"\n',
         '#include "share.h"\n#include "henge_platform.h"\n',
+    )
+    patch_file(
+        share_c,
+        "guest_tools_dir",
+        "static char agent_path[PATH_MAX];\n",
+        """static char agent_path[PATH_MAX];
+static char guest_tools_dir[PATH_MAX];
+
+void hv_share_set_guest_tools_dir(const char *dir) {
+    if (dir && dir[0]) {
+        snprintf(guest_tools_dir, sizeof guest_tools_dir, "%s", dir);
+    } else {
+        guest_tools_dir[0] = 0;
+    }
+}
+""",
+    )
+    patch_file(
+        share_c,
+        "serve_guest_tools",
+        """static int serve_henge(Conn *c, Request *r) {
+    const char *what = r->path + strlen("/.henge/");""",
+        """static int serve_guest_tools(Conn *c, Request *r, const char *name) {
+    if (body_discard(c, r) != 0) return -1;
+    if (!name || !name[0]) {
+        static const char listing[] =
+            "install.sh\\n"
+            "henge_guest_agent.c\\n"
+            "henge-xdg-open\\n"
+            "henge-guest-agent\\n";
+        return respond(c, r, 200, "OK", "Content-Type: text/plain; charset=utf-8\\r\\n", listing, sizeof listing - 1);
+    }
+    int allowed = !strcmp(name, "install.sh") ||
+                  !strcmp(name, "henge_guest_agent.c") ||
+                  !strcmp(name, "henge-xdg-open") ||
+                  !strcmp(name, "henge-guest-agent");
+    if (!allowed || !guest_tools_dir[0]) {
+        return respond_empty(c, r, 404, "Not Found");
+    }
+    char full_path[PATH_MAX];
+    int n = snprintf(full_path, sizeof full_path, "%s/%s", guest_tools_dir, name);
+    if (n <= 0 || (size_t)n >= sizeof full_path) {
+        return respond_empty(c, r, 404, "Not Found");
+    }
+    int fd = open(full_path, O_RDONLY);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 || st.st_size > SMALL_BODY_MAX) {
+        if (fd >= 0) close(fd);
+        return respond_empty(c, r, 404, "Not Found");
+    }
+    char *data = st.st_size > 0 ? malloc((size_t)st.st_size) : NULL;
+    ssize_t got = st.st_size > 0 ? (data ? pread(fd, data, (size_t)st.st_size, 0) : -1) : 0;
+    close(fd);
+    if (got != st.st_size) {
+        free(data);
+        return respond_empty(c, r, 500, "Internal Server Error");
+    }
+    const char *ctype = !strcmp(name, "henge-guest-agent")
+        ? "Content-Type: application/octet-stream\\r\\n"
+        : "Content-Type: text/plain; charset=utf-8\\r\\n";
+    int rc = respond(c, r, 200, "OK", ctype, data, (size_t)got);
+    free(data);
+    return rc;
+}
+
+static int serve_henge(Conn *c, Request *r) {
+    const char *what = r->path + strlen("/.henge/");
+    if (!strncmp(what, "guest-tools/", 12) && !strcmp(r->method, "GET")) {
+        return serve_guest_tools(c, r, what + 12);
+    }
+    if (!strcmp(what, "guest-tools") && !strcmp(r->method, "GET")) {
+        return serve_guest_tools(c, r, "");
+    }""",
     )
     patch_file(
         share_c,

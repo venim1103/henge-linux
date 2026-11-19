@@ -5,11 +5,24 @@ permissions:
 
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Guest distro profile to build (arch, void, alpine, debian)'
+        required: false
+        default: 'arch'
+        type: choice
+        options:
+          - arch
+          - void
+          - alpine
+          - debian
   push:
     branches: [main]
     paths:
       - 'guest/**'
       - 'scripts/build_prebuilt_archlinux_arm64.sh'
+      - 'scripts/build_guest_image.sh'
+      - 'scripts/profiles/**'
       - 'tools/hvsparse.c'
       - '.github/workflows/prebuilt-guest-image.yml'
 
@@ -42,10 +55,12 @@ jobs:
             libarchive-tools \
             mount \
             mtools \
+            musl-tools \
             parted \
             qemu-efi-aarch64 \
             qemu-system-aarch64 \
             qemu-system-arm \
+            qemu-utils \
             systemd-boot-efi \
             systemd-ukify \
             python3-pefile \
@@ -54,31 +69,33 @@ jobs:
             xz-utils \
             zstd
           dpkg-query -W -f='${Package}=${Version}\n' binutils dosfstools e2fsprogs gdisk mtools parted qemu-efi-aarch64 qemu-system-aarch64 systemd-boot-efi || true
-      - name: Build code.fd, vars.fd, and archlinux.hvsparse
+      - name: Build code.fd, vars.fd, and guest .hvsparse image
         env:
           VERIFY_BOOT: "1"
-        run: bash scripts/build_prebuilt_archlinux_arm64.sh
+          PROFILE: ${{ inputs.profile || 'arch' }}
+        run: bash scripts/build_guest_image.sh --profile "$PROFILE" --out-dir build/prebuilt
       - name: Upload prebuilt guest image artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: HengeLinux-archlinux-arm64-guest
+          name: HengeLinux-${{ inputs.profile || 'arch' }}-arm64-guest
           path: |
             build/prebuilt/code.fd
             build/prebuilt/vars.fd
-            build/prebuilt/archlinux.hvsparse
+            build/prebuilt/*.hvsparse
             build/prebuilt/SHA256SUMS.txt
-      - name: Attach code.fd, vars.fd, and archlinux.hvsparse to latest-ipa Release
+      - name: Attach code.fd, vars.fd, and guest .hvsparse to latest-ipa Release
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SHORT_SHA="$(git rev-parse --short HEAD)"
+          SPARSE_FILE="$(ls build/prebuilt/*.hvsparse | head -n 1)"
           for attempt in 1 2 3 4 5; do
             if gh release view latest-ipa >/dev/null 2>&1; then
               if gh release upload latest-ipa \
                 build/prebuilt/code.fd \
                 build/prebuilt/vars.fd \
-                build/prebuilt/archlinux.hvsparse \
+                "$SPARSE_FILE" \
                 build/prebuilt/SHA256SUMS.txt \
                 --clobber; then
                 exit 0
@@ -87,10 +104,10 @@ jobs:
               if gh release create latest-ipa \
                 build/prebuilt/code.fd \
                 build/prebuilt/vars.fd \
-                build/prebuilt/archlinux.hvsparse \
+                "$SPARSE_FILE" \
                 build/prebuilt/SHA256SUMS.txt \
-                --title "HengeLinux Unsigned IPA & Arch Linux Guest Image (${SHORT_SHA})" \
-                --notes "Pre-built Arch Linux ARM64 guest image (\`archlinux.hvsparse\`, \`code.fd\`, \`vars.fd\`) and unsigned iOS bundle." \
+                --title "HengeLinux Unsigned IPA & ARM64 Guest Image (${SHORT_SHA})" \
+                --notes "Pre-built ARM64 Linux guest image (\`$(basename "$SPARSE_FILE")\`, \`code.fd\`, \`vars.fd\`) and unsigned iOS bundle." \
                 --target main \
                 --prerelease; then
                 exit 0

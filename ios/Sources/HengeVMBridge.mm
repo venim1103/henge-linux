@@ -575,6 +575,12 @@ static void henge_on_vm_exit(int reason) {
     }
     _shareDirStr = sharedDir.path.fileSystemRepresentation;
     _shareSockStr = shareSockPath;
+#if defined(HENGE_SHARE_HAS_GUEST_TOOLS)
+    NSString *resourcePath = NSBundle.mainBundle.resourcePath;
+    if (resourcePath != nil && resourcePath.length > 0) {
+        hv_share_set_guest_tools_dir(resourcePath.fileSystemRepresentation);
+    }
+#endif
 
     HvWinVmConfig cfg;
     std::memset(&cfg, 0, sizeof(cfg));

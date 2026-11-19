@@ -70,6 +70,12 @@ targets:
       - path: Sources
       - path: Resources
         buildPhase: resources
+      - path: ../guest/install.sh
+        buildPhase: resources
+      - path: ../guest/henge_guest_agent.c
+        buildPhase: resources
+      - path: ../guest/henge-xdg-open
+        buildPhase: resources
     info:
       path: Info.plist
       properties:

@@ -21,7 +21,7 @@ BUILD_DIR := build
 UPSTREAM_DIR := .upstream/WindowsiOS
 TLB_STAMP := $(BUILD_DIR)/.tlb_bits_$(HV_TLB_PAGE_BITS)
 
-.PHONY: all clean test-core hvsparse ios-lib ios-lib-full sync-upstream ios-project prebuilt-guest-image
+.PHONY: all clean test-core hvsparse guest-agent ios-lib ios-lib-full sync-upstream ios-project prebuilt-guest-image
 
 all: test-core hvsparse
 
@@ -44,6 +44,15 @@ $(BUILD_DIR)/hvsparse: tools/hvsparse.c | $(BUILD_DIR)
 -include $(BUILD_DIR)/*.d $(BUILD_DIR)/ios/*.d
 
 hvsparse: $(BUILD_DIR)/hvsparse
+
+$(BUILD_DIR)/henge-guest-agent: guest/henge_guest_agent.c | $(BUILD_DIR)
+	@if [ "$(UNAME_S)" = "Linux" ]; then \
+		$(CC) -O2 -Wall -Wextra -Werror guest/henge_guest_agent.c -o $(BUILD_DIR)/henge-guest-agent; \
+	else \
+		echo "[guest-agent] Skipping Linux-only guest agent build on $(UNAME_S)"; \
+	fi
+
+guest-agent: $(BUILD_DIR)/henge-guest-agent
 
 test-core: $(BUILD_DIR)/test_core
 	./$(BUILD_DIR)/test_core
@@ -190,7 +199,7 @@ ios-project:
 	xcodegen generate --spec ios/project.yml
 
 prebuilt-guest-image: hvsparse
-	bash ./scripts/build_prebuilt_archlinux_arm64.sh
+	bash ./scripts/build_guest_image.sh --profile $(or $(PROFILE),arch)
 
 clean:
 	rm -rf $(BUILD_DIR) ios/HengeLinux.xcodeproj

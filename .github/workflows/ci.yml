@@ -46,17 +46,30 @@ jobs:
           cmp build/empty.bin build/empty_unpacked.bin
       - name: Run 16 KiB TLB fast-path tests
         run: make clean && make HV_TLB_PAGE_BITS=14 test-core hvsparse
-      - name: Validate guest bridge, upstream patcher, & provisioning scripts
+      - name: Validate guest agent (glibc + static musl), installer, upstream patcher, & distro profiles
         run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
           gcc -O2 -Wall -Wextra -Werror guest/henge_dual_console.c -o build/henge-dual-console
+          gcc -O2 -Wall -Wextra -Werror guest/henge_guest_agent.c -o build/henge-guest-agent
+          ./build/henge-guest-agent --version
+          musl-gcc -O2 -Wall -Wextra -Werror -static guest/henge_guest_agent.c -o build/henge-guest-agent-musl
+          ./build/henge-guest-agent-musl --version
+          sh -n guest/install.sh
+          sh guest/install.sh --dry-run
           python3 -m py_compile guest/henge-xdg-open scripts/apply_upstream_patches.py
           bash -n guest/setup-arch-bridge.sh
           bash -n scripts/sync_upstream.sh
           bash -n scripts/build_ios_deps.sh
           bash -n scripts/provision_archlinux_arm64.sh
           bash -n scripts/build_prebuilt_archlinux_arm64.sh
+          bash -n scripts/build_guest_image.sh
+          bash -n scripts/profiles/arch.sh scripts/profiles/void.sh scripts/profiles/alpine.sh scripts/profiles/debian.sh
           bash scripts/provision_archlinux_arm64.sh --dry-run
           bash scripts/build_prebuilt_archlinux_arm64.sh --dry-run
+          for p in arch debian alpine void; do
+            bash scripts/build_guest_image.sh --profile "$p" --dry-run
+          done
           bash scripts/sync_upstream.sh
 
   ios-build:
