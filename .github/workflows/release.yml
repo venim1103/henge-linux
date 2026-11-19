@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.1)'
+        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.2)'
         required: true
-        default: 'v0.2.1'
+        default: 'v0.2.2'
         type: string
 
 concurrency:
@@ -229,11 +229,11 @@ jobs:
           Built from commit \`${SHORT_SHA}\` on ${BUILD_DATE}. Full-system ARM64 (\`aarch64\`) multi-distro Linux virtualization on non-jailbroken iOS 18.0 – iOS 27+ devices without \`Hypervisor.framework\`.
 
           ### Highlights
-          - **Fixed PCIe VirtIO Device Attachment:** Resolved the \`devices/winvirt.c\` patch marker collision so \`virtio-input\` (keyboard + absolute tablet), secondary \`virtio-blk\`, \`2D VirtIO-GPU KMS\`, and the per-VM \`xHCI\` toggle attach cleanly on every VM.
-          - **Alpine & Minimal Distro \`CIDATA\` Fix:** Switched generated cloud-init user shells from \`/bin/bash\` to POSIX \`/bin/sh\` so Alpine Linux and minimal ARM64 cloud images open interactive login shells out of the box.
-          - **Hold-Capable Special Keys & Display Paste/Context Menu:** Non-modifier special keys (\`Esc\`, \`Bck\`, \`Del\`, arrows, \`F1\`–\`F12\`, etc.) now support holding down for native key repeat; \`Paste\` types directly into the Display tab without auto-pasting on tab switches; long-pressing the Display canvas opens a native **Paste / Copy Serial Log / Desktop…** menu.
-          - **Streamlined Single-Row Icon Top Bar & Split Deck Fix:** Compacted \`SessionView\`'s top toolbar into a single icon-only row and fixed the special-keys HUD toggle inside Split Deck mode.
-          - **Full Phase 6 Platform:** iOS 18.0 – iOS 27+ dual-mode JIT (\`CLASSIC\` / \`TXM_BROKER\`, stock StikDebug \`universal.js\`, \`stikdebug://enable-jit\`), Multi-VM \`vm.json\`, streaming QCOW2 unpacker, FAT16 \`CIDATA\` seeder, interactive \`ttyAMA0\` terminal, offline \`musl\` guest agent, and 2D VirtIO-GPU KMS + EDID 1.4.
+          - **Zstd-Compressed QCOW2 & El Torito 2048B ISO Support:** Cross-compiled static \`libzstd.a\` (\`v1.5.7\`) into the iOS bundle so modern Zstd-compressed ARM64 cloud images (e.g. Fedora 41+) unpack natively on-device; added automatic \`2048\`-byte logical-sector detection for pure El Torito optical ISOs alongside \`512\`-byte isohybrid/CIDATA images.
+          - **Live 2D VirtIO-GPU KMS Viewport Resize:** Forwarding iPhone/iPad viewport and orientation changes from \`SessionView\` to \`hv_winvm_set_virtio_gpu_size()\` with \`VIRTIO_GPU_EVENT_DISPLAY\` configuration interrupts for dynamic guest KMS resolutions.
+          - **Hold-to-Repeat Special Keys & \`EV_REP\` Keyboard Support:** Held repeatable special keys (\`←\`, \`→\`, \`↑\`, \`↓\`, \`Bck\`, \`Del\`, \`Tab\`, \`PgUp\`, \`PgDn\`, etc.) now emit host-paced repeat pulses (\`~350 ms\` delay, \`~15.4 Hz\`) across PL011 UART, UEFI, \`virtio-input\`, \`xHCI\`, and \`uinput\`; advertised \`EV_REP\` (\`0x14\`) on \`virtio-input\` for hardware Bluetooth keyboards.
+          - **Start-Screen About Tab & Build Metadata:** Added a **Machines / About** tab bar on launch showing the installed app version, build channel (\`Release\` / \`Nightly\`), short Git commit hash, UTC build timestamp, copy button, and runtime capabilities.
+          - **Bundled Static ARM64 Guest Agent & Runtime Hardening:** CI now compiles and bundles a static \`aarch64-linux-musl\` \`henge-guest-agent\` directly inside \`HengeLinux.app\` for offline installation on minimal distros without \`gcc\`, plus a \`UserDefaults\` JIT selftest crash sentinel and boot-time Darwin commpage timebase sanity check.
 
           ### Quick Setup (iOS 18.0+)
           1. Download and sign **\`HengeLinux-unsigned.ipa\`** with **SideStore** or **AltStore**.
