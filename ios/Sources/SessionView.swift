@@ -424,7 +424,7 @@ private struct HidHoldKeyBody: View {
     }
 }
 
-final class MetalDisplaySurfaceView: UIView, UIKeyInput, UIEditMenuInteractionDelegate {
+final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuInteractionDelegate {
     var onFocusChanged: ((Bool) -> Void)?
     var onCharacterTyped: (() -> Void)?
     /// When true, `inputView` returns an empty `UIView` so the view remains first
