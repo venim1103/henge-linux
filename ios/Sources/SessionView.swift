@@ -16,6 +16,12 @@ struct SessionView: View {
         case display = "Display"
         case terminal = "ttyAMA0"
         var id: String { rawValue }
+        var iconName: String {
+            switch self {
+            case .display: return "display"
+            case .terminal: return "terminal"
+            }
+        }
     }
 
     private struct PasteRequest: Equatable {
@@ -113,80 +119,64 @@ struct SessionView: View {
         }
     }
 
-    private var displayRamMiB: Int {
-        let active = Int(HengeVMBridge.shared.activeRamMiB)
-        return active > 0 ? active : profile.ramMiB
-    }
-
-    private var displayCpuCount: Int {
-        let active = Int(HengeVMBridge.shared.activeCpuCount)
-        return active > 0 ? active : profile.cpuCount
-    }
-
     private var topStatusBar: some View {
-        VStack(spacing: 5) {
-            HStack(spacing: 8) {
-                Picker("View", selection: $activeTab) {
-                    ForEach(SessionTab.allCases) { tab in
-                        Text(tab.rawValue).tag(tab)
-                    }
+        HStack(spacing: 8) {
+            Picker("View", selection: $activeTab) {
+                ForEach(SessionTab.allCases) { tab in
+                    Image(systemName: tab.iconName)
+                        .accessibilityLabel(tab.rawValue)
+                        .tag(tab)
                 }
-                .pickerStyle(.segmented)
-                .frame(minWidth: 148, maxWidth: 184)
-                .layoutPriority(1)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 92)
 
-                Spacer(minLength: 4)
+            if activeTab == .display {
+                HingeSensorView(posture: $posture)
+            }
 
-                Text("\(displayRamMiB)M·\(displayCpuCount)c")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+            Spacer(minLength: 4)
 
-                Button("Stop", role: .destructive) {
-                    focusSoftwareKeyboard = false
-                    releaseActiveModifiers()
-                    HengeVMBridge.shared.stopGuest()
-                    onStopSession()
+            Button {
+                showDebugConsole = true
+            } label: {
+                Image(systemName: "doc.text.magnifyingglass")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .accessibilityLabel("Debug & Telemetry Logs")
+
+            if activeTab == .display {
+                Button {
+                    focusSoftwareKeyboard.toggle()
+                } label: {
+                    Image(systemName: focusSoftwareKeyboard ? "keyboard.fill" : "keyboard")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-            }
-
-            HStack(spacing: 6) {
-                HingeSensorView(posture: $posture)
-
-                Spacer(minLength: 4)
+                .accessibilityLabel("Toggle Keyboard")
 
                 Button {
-                    showDebugConsole = true
+                    showModifierBar.toggle()
                 } label: {
-                    Image(systemName: "doc.text.magnifyingglass")
+                    Image(systemName: showModifierBar ? "slider.horizontal.below.rectangle" : "slider.horizontal.3")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
-                .accessibilityLabel("Debug & Telemetry Logs")
-
-                if activeTab == .display {
-                    Button {
-                        focusSoftwareKeyboard.toggle()
-                    } label: {
-                        Image(systemName: focusSoftwareKeyboard ? "keyboard.fill" : "keyboard")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-
-                    Button {
-                        showModifierBar.toggle()
-                    } label: {
-                        Image(systemName: showModifierBar ? "slider.horizontal.below.rectangle" : "slider.horizontal.3")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                }
+                .accessibilityLabel("Toggle Special Keys")
             }
+
+            Button(role: .destructive) {
+                focusSoftwareKeyboard = false
+                releaseActiveModifiers()
+                HengeVMBridge.shared.stopGuest()
+                onStopSession()
+            } label: {
+                Image(systemName: "stop.fill")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .accessibilityLabel("Stop VM")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -254,7 +244,9 @@ struct SessionView: View {
 
     private var clamshellInputDeck: some View {
         VStack(spacing: 8) {
-            compactModifierStrip
+            if showModifierBar {
+                compactModifierStrip
+            }
 
             GeometryReader { padGeo in
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
