@@ -57,6 +57,9 @@ struct SessionView: View {
                         suppressSoftwareKeyboard: !focusSoftwareKeyboard,
                         pendingPasteID: pendingPaste?.id,
                         pendingPasteText: pendingPaste?.text,
+                        onPasteConsumed: {
+                            pendingPaste = nil
+                        },
                         onCharacterTyped: {
                             releaseActiveModifiers()
                         }
@@ -81,7 +84,11 @@ struct SessionView: View {
             .sheet(isPresented: $showDebugConsole) {
                 DebugConsoleSheetView()
             }
+            .onChange(of: activeTab) { _, _ in
+                pendingPaste = nil
+            }
             .onDisappear {
+                pendingPaste = nil
                 releaseActiveModifiers()
             }
         }
@@ -800,24 +807,35 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
         menuFor configuration: UIEditMenuConfiguration,
         suggestedActions: [UIMenuElement]
     ) -> UIMenu? {
-        let selectAllAction = UIAction(title: "Select All") { [weak self] _ in
-            self?.sendHidChord(modifiers: [0xE0], key: 0x04) // Ctrl+A
-        }
-        let copyAction = UIAction(title: "Copy") { [weak self] _ in
-            self?.sendHidChord(modifiers: [0xE0], key: 0x06) // Ctrl+C
-            self?.pullGuestClipboardAfterCopy()
-        }
-        let copyTermAction = UIAction(title: "Copy (Term)") { [weak self] _ in
-            self?.sendHidChord(modifiers: [0xE0, 0xE1], key: 0x06) // Ctrl+Shift+C
-            self?.pullGuestClipboardAfterCopy()
-        }
         let pasteAction = UIAction(title: "Paste") { [weak self] _ in
             if let clip = UIPasteboard.general.string, !clip.isEmpty {
                 HengeVMBridge.shared.pushHostClipboard(clip)
                 self?.insertText(clip)
             }
         }
-        return UIMenu(children: [selectAllAction, copyAction, copyTermAction, pasteAction])
+        let copySerialAction = UIAction(title: "Copy Serial Log") { _ in
+            let log = HengeVMBridge.shared.copyConsoleLog()
+            if !log.isEmpty {
+                UIPasteboard.general.string = log
+            }
+        }
+        let desktopMenu = UIMenu(
+            title: "Desktop…",
+            children: [
+                UIAction(title: "Select All (Ctrl+A)") { [weak self] _ in
+                    self?.sendHidChord(modifiers: [0xE0], key: 0x04)
+                },
+                UIAction(title: "Copy (Ctrl+C)") { [weak self] _ in
+                    self?.sendHidChord(modifiers: [0xE0], key: 0x06)
+                    self?.pullGuestClipboardAfterCopy()
+                },
+                UIAction(title: "Copy Terminal (Ctrl+Shift+C)") { [weak self] _ in
+                    self?.sendHidChord(modifiers: [0xE0, 0xE1], key: 0x06)
+                    self?.pullGuestClipboardAfterCopy()
+                }
+            ]
+        )
+        return UIMenu(children: [pasteAction, copySerialAction, desktopMenu])
     }
 }
 
@@ -921,6 +939,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     var suppressSoftwareKeyboard: Bool
     var pendingPasteID: UUID?
     var pendingPasteText: String?
+    var onPasteConsumed: (() -> Void)?
     var onCharacterTyped: (() -> Void)?
 
     func makeCoordinator() -> Coordinator {
@@ -968,6 +987,10 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
            context.coordinator.lastHandledPasteID != pasteID {
             context.coordinator.lastHandledPasteID = pasteID
             uiView.insertText(pasteText)
+            let consumed = onPasteConsumed
+            DispatchQueue.main.async {
+                consumed?()
+            }
         }
     }
 
