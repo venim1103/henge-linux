@@ -32,11 +32,11 @@ $(TLB_STAMP): | $(BUILD_DIR)
 	@rm -f $(BUILD_DIR)/.tlb_bits_*
 	@touch $@
 
-HOST_SRCS := host/henge_platform.c host/henge_txm_jit.c host/henge_virtio_gpu.c
+HOST_SRCS := host/henge_platform.c host/henge_txm_jit.c host/henge_virtio_gpu.c host/henge_qcow2.c host/henge_cidata.c
 HOST_ASM  := $(if $(filter aarch64 arm64,$(UNAME_M)),host/henge_brk.S,)
 
 $(BUILD_DIR)/test_core: tests/test_core.c $(HOST_SRCS) $(HOST_ASM) $(TLB_STAMP) | $(BUILD_DIR)
-	$(CC) $(CFLAGS_COMMON) -pthread tests/test_core.c $(HOST_SRCS) $(HOST_ASM) -o $(BUILD_DIR)/test_core
+	$(CC) $(CFLAGS_COMMON) -pthread tests/test_core.c $(HOST_SRCS) $(HOST_ASM) -lz -o $(BUILD_DIR)/test_core
 
 $(BUILD_DIR)/hvsparse: tools/hvsparse.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) tools/hvsparse.c -o $(BUILD_DIR)/hvsparse
@@ -93,7 +93,9 @@ IOS_HOST_OBJS := \
 	$(BUILD_DIR)/ios/henge_platform.o \
 	$(BUILD_DIR)/ios/henge_txm_jit.o \
 	$(BUILD_DIR)/ios/henge_brk.o \
-	$(BUILD_DIR)/ios/henge_virtio_gpu.o
+	$(BUILD_DIR)/ios/henge_virtio_gpu.o \
+	$(BUILD_DIR)/ios/henge_qcow2.o \
+	$(BUILD_DIR)/ios/henge_cidata.o
 
 UPSTREAM_CORE_OBJS := $(patsubst $(UPSTREAM_DIR)/core/%.c,$(BUILD_DIR)/ios/up_core_%.o,$(UPSTREAM_CORE_SRCS))
 UPSTREAM_HOST_OBJS := $(patsubst $(UPSTREAM_DIR)/host/%.c,$(BUILD_DIR)/ios/up_host_%.o,$(UPSTREAM_HOST_SRCS))

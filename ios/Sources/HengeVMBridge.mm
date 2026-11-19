@@ -4,6 +4,7 @@
 #include "henge_platform.h"
 #include "henge_txm_jit.h"
 #include "henge_virtio_gpu.h"
+#include "henge_qcow2.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -245,22 +246,33 @@ static void henge_on_vm_exit(int reason) {
 
     NSString *diskName = (primaryDiskName.length > 0) ? primaryDiskName : @"disk0.img";
     NSURL *primaryURL = [machineDir URLByAppendingPathComponent:diskName];
-    BOOL isSparseName = [diskName.lowercaseString hasSuffix:@".hvsparse"];
-    NSString *rawName = isSparseName
-        ? [[diskName stringByDeletingPathExtension] stringByAppendingPathExtension:@"img"]
-        : diskName;
+    BOOL primaryExists = [fm fileExistsAtPath:primaryURL.path];
+    HengeImageFormat detectedFmt = primaryExists
+        ? henge_detect_image_format(primaryURL.path.fileSystemRepresentation)
+        : HENGE_IMG_FORMAT_UNKNOWN;
+    BOOL isSparseArchive = (detectedFmt == HENGE_IMG_FORMAT_HVSPARSE) ||
+                           [diskName.lowercaseString hasSuffix:@".hvsparse"];
+    BOOL isQcow2Image = (detectedFmt == HENGE_IMG_FORMAT_QCOW2) ||
+                        [diskName.lowercaseString hasSuffix:@".qcow2"];
+
+    NSString *rawName = diskName;
+    if (isSparseArchive) {
+        rawName = [[diskName stringByDeletingPathExtension] stringByAppendingPathExtension:@"img"];
+    } else if (isQcow2Image) {
+        rawName = [[diskName stringByDeletingPathExtension] stringByAppendingString:@".raw.img"];
+    }
     NSURL *rawDiskURL = [machineDir URLByAppendingPathComponent:rawName];
 
-    BOOL hasSparse = isSparseName && [fm fileExistsAtPath:primaryURL.path];
+    BOOL hasArchive = (isSparseArchive || isQcow2Image) && primaryExists;
     BOOL hasRaw = [fm fileExistsAtPath:rawDiskURL.path];
-    if (!hasSparse && !hasRaw && [fm fileExistsAtPath:[machineDir URLByAppendingPathComponent:@"archlinux.img"].path]) {
+    if (!hasArchive && !hasRaw && [fm fileExistsAtPath:[machineDir URLByAppendingPathComponent:@"archlinux.img"].path]) {
         rawDiskURL = [machineDir URLByAppendingPathComponent:@"archlinux.img"];
         hasRaw = YES;
     }
 
     if (![fm fileExistsAtPath:codePath] ||
         ![fm fileExistsAtPath:varsPath] ||
-        (!hasSparse && !hasRaw)) {
+        (!hasArchive && !hasRaw)) {
         NSString *msg = [NSString stringWithFormat:@"Missing guest files for this VM (need code.fd, vars.fd, and %@).", diskName];
         _statusText = msg;
         NSError *err = [NSError errorWithDomain:HengeVMErrorDomain
@@ -270,39 +282,56 @@ static void henge_on_vm_exit(int reason) {
         return;
     }
 
-#if HENGE_HAS_UPSTREAM_ENGINE
-    if (hasSparse) {
-        NSDictionary *sparseAttrs = [fm attributesOfItemAtPath:primaryURL.path error:nil];
-        unsigned long long sparseSize = [sparseAttrs[NSFileSize] unsignedLongLongValue];
+    if (hasArchive) {
+        NSDictionary *srcAttrs = [fm attributesOfItemAtPath:primaryURL.path error:nil];
+        unsigned long long srcSize = [srcAttrs[NSFileSize] unsignedLongLongValue];
         BOOL needsUnpack = !hasRaw;
         if (hasRaw) {
             NSDictionary *rawAttrs = [fm attributesOfItemAtPath:rawDiskURL.path error:nil];
-            NSDate *sparseMod = sparseAttrs[NSFileModificationDate];
+            NSDate *srcMod = srcAttrs[NSFileModificationDate];
             NSDate *rawMod = rawAttrs[NSFileModificationDate];
             unsigned long long rawSize = [rawAttrs[NSFileSize] unsignedLongLongValue];
-            if (rawSize == 0ULL || (sparseMod != nil && rawMod != nil && [sparseMod compare:rawMod] == NSOrderedDescending)) {
+            if (rawSize == 0ULL || (srcMod != nil && rawMod != nil && [srcMod compare:rawMod] == NSOrderedDescending)) {
                 needsUnpack = YES;
             }
         }
         if (needsUnpack) {
             _statusText = [NSString stringWithFormat:@"Unpacking %@ disk image...", diskName];
             NSString *unpackMsg = [NSString stringWithFormat:
-                @"[bridge] Unpacking %@ (%llu bytes) -> %@...",
-                diskName, sparseSize, rawDiskURL.lastPathComponent];
+                @"[bridge] Unpacking %@ (%s, %llu bytes) -> %@...",
+                diskName, isQcow2Image ? "QCOW2" : "HVSPARSE", srcSize, rawDiskURL.lastPathComponent];
             hengelinux_console_append_line(unpackMsg.UTF8String);
-            std::string sparseStr = primaryURL.path.fileSystemRepresentation;
+            std::string srcStr = primaryURL.path.fileSystemRepresentation;
             std::string rawStr = rawDiskURL.path.fileSystemRepresentation;
+            BOOL unpackQcow2 = isQcow2Image;
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                 std::remove(rawStr.c_str());
-                int rc = hv_sparse_unpack(sparseStr.c_str(), rawStr.c_str(), nullptr, nullptr);
+                char errBuf[256] = {0};
+                int rc = -1;
+                if (unpackQcow2) {
+                    /* Ensure at least 8 GiB virtual size for cloud images (e.g. Fedora Cloud Base). */
+                    rc = henge_qcow2_unpack_to_raw(srcStr.c_str(), rawStr.c_str(), 8ULL << 30, errBuf, sizeof(errBuf));
+                } else {
+#if HENGE_HAS_UPSTREAM_ENGINE
+                    rc = hv_sparse_unpack(srcStr.c_str(), rawStr.c_str(), nullptr, nullptr);
+                    if (rc != 0) {
+                        std::snprintf(errBuf, sizeof(errBuf), "hv_sparse_unpack failed");
+                    }
+#else
+                    std::snprintf(errBuf, sizeof(errBuf), "Upstream HVSPARSE unpacker not linked");
+#endif
+                }
                 if (rc != 0) {
                     std::remove(rawStr.c_str());
                 }
+                NSString *detail = (errBuf[0] != '\0') ? [NSString stringWithUTF8String:errBuf] : nil;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (rc != 0) {
-                        NSString *msg = [NSString stringWithFormat:@"Failed to unpack %@ into sparse raw NVMe disk image.", diskName];
+                        NSString *msg = detail
+                            ? [NSString stringWithFormat:@"Failed to unpack %@: %@", diskName, detail]
+                            : [NSString stringWithFormat:@"Failed to unpack %@ into sparse raw NVMe disk image.", diskName];
                         self->_statusText = msg;
-                        hengelinux_console_append_line("[bridge] ERROR: hv_sparse_unpack failed");
+                        hengelinux_console_append_line([[NSString stringWithFormat:@"[bridge] ERROR: %@", msg] UTF8String]);
                         NSError *err = [NSError errorWithDomain:HengeVMErrorDomain
                                                            code:1007
                                                        userInfo:@{NSLocalizedDescriptionKey: msg}];
@@ -316,7 +345,6 @@ static void henge_on_vm_exit(int reason) {
             return;
         }
     }
-#endif
     completion(YES, nil);
 }
 
@@ -394,10 +422,21 @@ static void henge_on_vm_exit(int reason) {
     NSURL *varsURL = [NSURL fileURLWithPath:varsPath];
     NSString *diskName = (primaryDiskName.length > 0) ? primaryDiskName : @"disk0.img";
     NSURL *primaryURL = [machineDir URLByAppendingPathComponent:diskName];
-    BOOL isSparseName = [diskName.lowercaseString hasSuffix:@".hvsparse"];
-    NSString *rawName = isSparseName
-        ? [[diskName stringByDeletingPathExtension] stringByAppendingPathExtension:@"img"]
-        : diskName;
+    BOOL primaryExists = [fm fileExistsAtPath:primaryURL.path];
+    HengeImageFormat detectedFmt = primaryExists
+        ? henge_detect_image_format(primaryURL.path.fileSystemRepresentation)
+        : HENGE_IMG_FORMAT_UNKNOWN;
+    BOOL isSparseArchive = (detectedFmt == HENGE_IMG_FORMAT_HVSPARSE) ||
+                           [diskName.lowercaseString hasSuffix:@".hvsparse"];
+    BOOL isQcow2Image = (detectedFmt == HENGE_IMG_FORMAT_QCOW2) ||
+                        [diskName.lowercaseString hasSuffix:@".qcow2"];
+
+    NSString *rawName = diskName;
+    if (isSparseArchive) {
+        rawName = [[diskName stringByDeletingPathExtension] stringByAppendingPathExtension:@"img"];
+    } else if (isQcow2Image) {
+        rawName = [[diskName stringByDeletingPathExtension] stringByAppendingString:@".raw.img"];
+    }
     NSURL *rawDiskURL = [machineDir URLByAppendingPathComponent:rawName];
     NSURL *snapURL = [machineDir URLByAppendingPathComponent:@"suspend.state"];
     _snapshotPathStr = snapURL.path.fileSystemRepresentation;
@@ -407,16 +446,16 @@ static void henge_on_vm_exit(int reason) {
     BOOL hadPriorSnapshot = (henge_vm_snapshot_read(_snapshotPathStr.c_str(), &prevSnapshot, nullptr, 0U) == 0);
     (void)hadPriorSnapshot;
 
-    BOOL hasSparse = isSparseName && [fm fileExistsAtPath:primaryURL.path];
+    BOOL hasArchive = (isSparseArchive || isQcow2Image) && primaryExists;
     BOOL hasRaw = [fm fileExistsAtPath:rawDiskURL.path];
-    if (!hasSparse && !hasRaw && [fm fileExistsAtPath:[machineDir URLByAppendingPathComponent:@"archlinux.img"].path]) {
+    if (!hasArchive && !hasRaw && [fm fileExistsAtPath:[machineDir URLByAppendingPathComponent:@"archlinux.img"].path]) {
         rawDiskURL = [machineDir URLByAppendingPathComponent:@"archlinux.img"];
         hasRaw = YES;
     }
 
     if (![fm fileExistsAtPath:codeURL.path] ||
         ![fm fileExistsAtPath:varsURL.path] ||
-        (!hasSparse && !hasRaw)) {
+        (!hasArchive && !hasRaw)) {
         NSString *msg = [NSString stringWithFormat:@"Missing guest files for this VM (need code.fd, vars.fd, and %@).", diskName];
         _statusText = msg;
         if (error) {
@@ -428,28 +467,38 @@ static void henge_on_vm_exit(int reason) {
     }
 
 #if HENGE_HAS_UPSTREAM_ENGINE
-    /* Unpack HVSPARSE archive into an APFS sparse raw image on first boot or
-     * whenever the archive is newer than the unpacked raw disk. */
-    if (hasSparse) {
+    /* Unpack HVSPARSE or QCOW2 archive into an APFS sparse raw image on first
+     * boot or whenever the archive is newer than the unpacked raw disk. */
+    if (hasArchive) {
         BOOL needsUnpack = !hasRaw;
         if (hasRaw) {
-            NSDictionary *sparseAttrs = [fm attributesOfItemAtPath:primaryURL.path error:nil];
+            NSDictionary *srcAttrs = [fm attributesOfItemAtPath:primaryURL.path error:nil];
             NSDictionary *rawAttrs = [fm attributesOfItemAtPath:rawDiskURL.path error:nil];
-            NSDate *sparseMod = sparseAttrs[NSFileModificationDate];
+            NSDate *srcMod = srcAttrs[NSFileModificationDate];
             NSDate *rawMod = rawAttrs[NSFileModificationDate];
             unsigned long long rawSize = [rawAttrs[NSFileSize] unsignedLongLongValue];
-            if (rawSize == 0ULL || (sparseMod != nil && rawMod != nil && [sparseMod compare:rawMod] == NSOrderedDescending)) {
+            if (rawSize == 0ULL || (srcMod != nil && rawMod != nil && [srcMod compare:rawMod] == NSOrderedDescending)) {
                 needsUnpack = YES;
             }
         }
         if (needsUnpack) {
             [fm removeItemAtURL:rawDiskURL error:nil];
-            if (hv_sparse_unpack(primaryURL.path.fileSystemRepresentation,
-                                 rawDiskURL.path.fileSystemRepresentation,
-                                 nullptr,
-                                 nullptr) != 0) {
+            char unpackErr[256] = {0};
+            int unpackRc = isQcow2Image
+                ? henge_qcow2_unpack_to_raw(primaryURL.path.fileSystemRepresentation,
+                                            rawDiskURL.path.fileSystemRepresentation,
+                                            8ULL << 30,
+                                            unpackErr,
+                                            sizeof(unpackErr))
+                : hv_sparse_unpack(primaryURL.path.fileSystemRepresentation,
+                                   rawDiskURL.path.fileSystemRepresentation,
+                                   nullptr,
+                                   nullptr);
+            if (unpackRc != 0) {
                 [fm removeItemAtURL:rawDiskURL error:nil];
-                NSString *msg = [NSString stringWithFormat:@"Failed to unpack %@ into sparse raw NVMe disk image.", diskName];
+                NSString *msg = (unpackErr[0] != '\0')
+                    ? [NSString stringWithFormat:@"Failed to unpack %@: %s", diskName, unpackErr]
+                    : [NSString stringWithFormat:@"Failed to unpack %@ into sparse raw NVMe disk image.", diskName];
                 _statusText = msg;
                 if (error) {
                     *error = [NSError errorWithDomain:HengeVMErrorDomain

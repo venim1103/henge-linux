@@ -56,6 +56,13 @@ struct HengeLinuxApp: App {
     @State private var showNewVMSheet: Bool = false
     @State private var newVMName: String = ""
     @State private var newVMDistroTag: String = "debian"
+    @State private var newVMCreateBlankDisk: Bool = false
+    @State private var newVMBlankDiskGiB: Int = 16
+    @State private var newVMGenerateCidata: Bool = true
+    @State private var cidataUsername: String = "linux"
+    @State private var cidataPassword: String = "linux"
+    @State private var cidataHostname: String = "hengelinux"
+    @State private var showCidataSheet: Bool = false
     @State private var fileImportMode: FileImportMode = .pairingPlist
     @State private var bootWarning: String?
     @State private var bootErrorAlert: String?
@@ -106,6 +113,31 @@ struct HengeLinuxApp: App {
                                     Text(opt.label).tag(opt.tag)
                                 }
                             }
+                            .onChange(of: newVMDistroTag) { _, tag in
+                                newVMCreateBlankDisk = (tag == "linux")
+                                newVMGenerateCidata = ["debian", "ubuntu", "fedora", "alpine", "opensuse"].contains(tag)
+                            }
+                            Text(VMConfig.quickHint(for: newVMDistroTag))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Section("Storage & Cloud-Init") {
+                            Toggle("Create Blank Sparse Disk (for Live/Netinstall ISO)", isOn: $newVMCreateBlankDisk)
+                            if newVMCreateBlankDisk {
+                                Stepper("Virtual Disk Size: \(newVMBlankDiskGiB) GiB", value: $newVMBlankDiskGiB, in: 4...64, step: 4)
+                            }
+                            Toggle("Generate Offline CIDATA NoCloud Seed", isOn: $newVMGenerateCidata)
+                            if newVMGenerateCidata {
+                                TextField("Hostname", text: $cidataHostname)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                TextField("Username", text: $cidataUsername)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                TextField("Password", text: $cidataPassword)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                            }
                         }
                         Section("Defaults") {
                             LabeledContent("Guest RAM", value: "\(effectiveRamMiB) MiB")
@@ -131,12 +163,67 @@ struct HengeLinuxApp: App {
                                         ramMiB: Int(effectiveRamMiB),
                                         cpuCount: selectedProfile.cpuCount
                                     )
+                                    if newVMCreateBlankDisk {
+                                        try vmStore.createBlankDisk(for: created, sizeGiB: newVMBlankDiskGiB)
+                                    }
+                                    if newVMGenerateCidata {
+                                        _ = try vmStore.generateCidataSeed(
+                                            for: vmStore.selectedMachine,
+                                            hostname: cidataHostname,
+                                            username: cidataUsername,
+                                            password: cidataPassword
+                                        )
+                                    }
                                     jitClient.refreshFileStatus()
                                     bootWarning = "Created VM '\(created.name)' in Machines/\(created.id)/."
                                     newVMName = ""
                                     showNewVMSheet = false
                                 } catch {
                                     bootErrorAlert = "Create VM failed: \(error.localizedDescription)"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showCidataSheet) {
+                NavigationStack {
+                    Form {
+                        Section("Cloud-Init NoCloud (FAT16 CIDATA)") {
+                            TextField("Hostname", text: $cidataHostname)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            TextField("Username", text: $cidataUsername)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            TextField("Password", text: $cidataPassword)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            Text("Attaches a 2 MiB FAT16 volume labeled CIDATA (/meta-data, /user-data, /network-config) onto disk1 for Debian, Ubuntu, Fedora, Alpine, and openSUSE cloud images.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .navigationTitle("Generate CIDATA Seed")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { showCidataSheet = false }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Generate") {
+                                do {
+                                    let url = try vmStore.generateCidataSeed(
+                                        for: vmStore.selectedMachine,
+                                        hostname: cidataHostname,
+                                        username: cidataUsername,
+                                        password: cidataPassword
+                                    )
+                                    jitClient.refreshFileStatus()
+                                    bootWarning = "Generated \(url.lastPathComponent) (CIDATA FAT16) for \(vmStore.selectedMachine.name)."
+                                    showCidataSheet = false
+                                } catch {
+                                    bootErrorAlert = "CIDATA generation failed: \(error.localizedDescription)"
                                 }
                             }
                         }
@@ -512,7 +599,35 @@ struct HengeLinuxApp: App {
                         fileImportMode = .guestFiles
                         isImportingFile = true
                     } label: {
-                        Label("Import Disk / ISO / Firmware (.hvsparse / .img / .iso / .fd)...", systemImage: "folder.badge.plus")
+                        Label("Import Disk / QCOW2 / ISO / Firmware...", systemImage: "folder.badge.plus")
+                    }
+                    Button {
+                        showCidataSheet = true
+                    } label: {
+                        Label("Generate Cloud-Init CIDATA Seed...", systemImage: "externaldrive.badge.plus")
+                    }
+                    Button {
+                        do {
+                            let cloned = try vmStore.cloneMachine(activeVM)
+                            jitClient.refreshFileStatus()
+                            bootWarning = "Cloned VM '\(activeVM.name)' -> '\(cloned.name)' (APFS CoW)."
+                        } catch {
+                            bootErrorAlert = "Clone failed: \(error.localizedDescription)"
+                        }
+                    } label: {
+                        Label("Clone VM (APFS Copy-on-Write)", systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        do {
+                            let reclaimed = try vmStore.compactPrimaryDisk(for: activeVM)
+                            jitClient.refreshFileStatus()
+                            let mib = Double(reclaimed) / (1024.0 * 1024.0)
+                            bootWarning = String(format: "Compacted disk for %@ (%.1f MiB zero blocks punched).", activeVM.name, mib)
+                        } catch {
+                            bootErrorAlert = "Compact failed: \(error.localizedDescription)"
+                        }
+                    } label: {
+                        Label("Compact Sparse Disk (F_PUNCHHOLE)", systemImage: "arrow.down.right.and.arrow.up.left")
                     }
                 }
 

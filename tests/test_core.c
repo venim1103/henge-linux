@@ -6,6 +6,10 @@
 #include "henge_platform.h"
 #include "henge_txm_jit.h"
 #include "henge_virtio_gpu.h"
+#include "henge_qcow2.h"
+#include "henge_cidata.h"
+
+#include <zlib.h>
 
 #include <pthread.h>
 #include <stdio.h>
@@ -424,6 +428,230 @@ static void test_console_log_capture(void) {
     remove(log_path);
 }
 
+static void write_be32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)((v >> 24) & 0xFFU);
+    p[1] = (uint8_t)((v >> 16) & 0xFFU);
+    p[2] = (uint8_t)((v >> 8) & 0xFFU);
+    p[3] = (uint8_t)(v & 0xFFU);
+}
+
+static void write_be64(uint8_t *p, uint64_t v) {
+    write_be32(p, (uint32_t)(v >> 32));
+    write_be32(p + 4, (uint32_t)(v & 0xFFFFFFFFULL));
+}
+
+static void test_qcow2_and_storage_tools(void) {
+    const char *qcow2_path = "build/test_v3.qcow2";
+    const char *raw_path = "build/test_v3_out.raw";
+    const char *clone_path = "build/test_v3_clone.raw";
+    const char *iso_path = "build/test_dummy.iso";
+    const char *ext_path = "build/test_extl2.qcow2";
+    const char *ext_raw = "build/test_extl2.raw";
+    const char *bad_path = "build/test_encrypted.qcow2";
+    char err[256] = {0};
+
+    /* 1. Synthesize a QCOW2 v3 image with 16 KiB clusters (cluster_bits=14),
+     *    3 guest clusters (48 KiB virtual):
+     *      cluster 0: uncompressed pattern
+     *      cluster 1: unallocated (sparse zero hole)
+     *      cluster 2: raw-deflate zlib-compressed pattern
+     */
+    const size_t cs = 16384U;
+    uint8_t *c0 = (uint8_t *)calloc(1U, cs);
+    uint8_t *c2 = (uint8_t *)calloc(1U, cs);
+    HENGE_CHECK(c0 != NULL && c2 != NULL);
+    for (size_t i = 0U; i < cs; i++) {
+        c0[i] = (uint8_t)((i * 7U + 3U) & 0xFFU);
+        c2[i] = (uint8_t)((i / 64U) ^ 0xA5U);
+    }
+
+    uint8_t comp_out[16384];
+    z_stream zs;
+    memset(&zs, 0, sizeof(zs));
+    HENGE_CHECK(deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) == Z_OK);
+    zs.next_in = c2;
+    zs.avail_in = (uInt)cs;
+    zs.next_out = comp_out;
+    zs.avail_out = (uInt)sizeof(comp_out);
+    HENGE_CHECK(deflate(&zs, Z_FINISH) == Z_STREAM_END);
+    size_t comp_len = sizeof(comp_out) - (size_t)zs.avail_out;
+    deflateEnd(&zs);
+    HENGE_CHECK(comp_len > 0U && comp_len < cs);
+
+    /* Layout:
+     *   0x00000: header (1 cluster)
+     *   0x04000: L1 table (1 cluster)
+     *   0x08000: L2 table (1 cluster)
+     *   0x0C000: cluster 0 uncompressed data (1 cluster)
+     *   0x10000: cluster 2 compressed data (at sector-aligned offset 0x10000)
+     */
+    size_t total_img = cs * 4U + ((comp_len + 511U) & ~511U);
+    uint8_t *qimg = (uint8_t *)calloc(1U, total_img);
+    HENGE_CHECK(qimg != NULL);
+    write_be32(qimg + 0, 0x514649FBU);
+    write_be32(qimg + 4, 3U);            /* version 3 */
+    write_be32(qimg + 20, 14U);          /* cluster_bits = 14 (16 KiB) */
+    write_be64(qimg + 24, cs * 3ULL);    /* virtual_size = 48 KiB */
+    write_be32(qimg + 36, 1U);           /* l1_size = 1 */
+    write_be64(qimg + 40, cs * 1ULL);    /* l1_offset = 0x4000 */
+    write_be64(qimg + 72, 0ULL);         /* incompat = 0 */
+    write_be32(qimg + 100, 104U);        /* header_length = 104 */
+
+    write_be64(qimg + cs * 1U, cs * 2ULL); /* L1[0] -> L2 at 0x8000 */
+    write_be64(qimg + cs * 2U + 0U, cs * 3ULL); /* L2[0] -> uncompressed at 0xC000 */
+    write_be64(qimg + cs * 2U + 8U, 0ULL);      /* L2[1] -> sparse hole */
+
+    uint64_t coffset = cs * 4ULL;
+    uint64_t nb_csectors = (comp_len + 511U) / 512U;
+    uint32_t csize_shift = 62U - (14U - 8U); /* 56 */
+    uint64_t comp_l2 = (1ULL << 62) | ((nb_csectors - 1ULL) << csize_shift) | coffset;
+    write_be64(qimg + cs * 2U + 16U, comp_l2);
+
+    memcpy(qimg + cs * 3U, c0, cs);
+    memcpy(qimg + coffset, comp_out, comp_len);
+
+    FILE *fp = fopen(qcow2_path, "wb");
+    HENGE_CHECK(fp != NULL);
+    HENGE_CHECK(fwrite(qimg, 1U, total_img, fp) == total_img);
+    fclose(fp);
+
+    HENGE_CHECK(henge_detect_image_format(qcow2_path) == HENGE_IMG_FORMAT_QCOW2);
+    HengeQcow2Info qinfo;
+    HENGE_CHECK(henge_qcow2_inspect(qcow2_path, &qinfo, err, sizeof(err)) == 0);
+    HENGE_CHECK(qinfo.version == 3U && qinfo.cluster_bits == 14U && qinfo.virtual_size == cs * 3ULL);
+
+    HENGE_CHECK(henge_qcow2_unpack_to_raw(qcow2_path, raw_path, 0ULL, err, sizeof(err)) == 0);
+    HENGE_CHECK(henge_detect_image_format(raw_path) == HENGE_IMG_FORMAT_RAW);
+
+    uint8_t *verify = (uint8_t *)malloc(cs * 3U);
+    HENGE_CHECK(verify != NULL);
+    fp = fopen(raw_path, "rb");
+    HENGE_CHECK(fp != NULL);
+    HENGE_CHECK(fread(verify, 1U, cs * 3U, fp) == cs * 3U);
+    fclose(fp);
+    HENGE_CHECK(memcmp(verify, c0, cs) == 0);
+    for (size_t i = 0U; i < cs; i++) {
+        HENGE_CHECK(verify[cs + i] == 0U);
+    }
+    HENGE_CHECK(memcmp(verify + cs * 2U, c2, cs) == 0);
+
+    /* 2. Clone & compact tests */
+    HENGE_CHECK(henge_clone_file_apfs(raw_path, clone_path, err, sizeof(err)) == 0);
+    uint64_t reclaimed = 0ULL;
+    HENGE_CHECK(henge_compact_sparse_file(clone_path, &reclaimed, err, sizeof(err)) == 0);
+
+    /* 3. Extended L2 subcluster test (incompat bit 4, 16-byte L2 entries) */
+    uint8_t *eimg = (uint8_t *)calloc(1U, cs * 4U);
+    HENGE_CHECK(eimg != NULL);
+    write_be32(eimg + 0, 0x514649FBU);
+    write_be32(eimg + 4, 3U);
+    write_be32(eimg + 20, 14U);
+    write_be64(eimg + 24, cs);
+    write_be32(eimg + 36, 1U);
+    write_be64(eimg + 40, cs * 1ULL);
+    write_be64(eimg + 72, (1ULL << 4)); /* Extended L2 */
+    write_be32(eimg + 100, 104U);
+    write_be64(eimg + cs * 1U, cs * 2ULL);
+    write_be64(eimg + cs * 2U + 0U, cs * 3ULL);
+    /* Allocate subcluster 0 and subcluster 2; mark subcluster 2 zeroed -> only subcluster 0 copied */
+    write_be64(eimg + cs * 2U + 8U, ((1ULL << 2) << 32) | (1ULL << 0) | (1ULL << 2));
+    memset(eimg + cs * 3U, 0x5AU, 512U);
+    memset(eimg + cs * 3U + 1024U, 0x7BU, 512U);
+    fp = fopen(ext_path, "wb");
+    HENGE_CHECK(fp != NULL);
+    HENGE_CHECK(fwrite(eimg, 1U, cs * 4U, fp) == cs * 4U);
+    fclose(fp);
+    HENGE_CHECK(henge_qcow2_unpack_to_raw(ext_path, ext_raw, 0ULL, err, sizeof(err)) == 0);
+    fp = fopen(ext_raw, "rb");
+    HENGE_CHECK(fp != NULL);
+    HENGE_CHECK(fread(verify, 1U, cs, fp) == cs);
+    fclose(fp);
+    HENGE_CHECK(verify[0] == 0x5AU && verify[511] == 0x5AU);
+    HENGE_CHECK(verify[1024] == 0x00U && verify[1535] == 0x00U);
+
+    /* 4. Fail-closed encrypted QCOW2 rejection */
+    write_be32(qimg + 32, 1U); /* crypt_method = AES */
+    fp = fopen(bad_path, "wb");
+    HENGE_CHECK(fp != NULL);
+    HENGE_CHECK(fwrite(qimg, 1U, total_img, fp) == total_img);
+    fclose(fp);
+    HENGE_CHECK(henge_qcow2_inspect(bad_path, &qinfo, err, sizeof(err)) == -1);
+    HENGE_CHECK(henge_qcow2_unpack_to_raw(bad_path, raw_path, 0ULL, err, sizeof(err)) == -1);
+
+    /* 5. ISO9660 magic detection ("CD001" at 0x8001) */
+    uint8_t *iso = (uint8_t *)calloc(1U, 0x9000U);
+    HENGE_CHECK(iso != NULL);
+    memcpy(iso + 0x8001U, "CD001", 5U);
+    fp = fopen(iso_path, "wb");
+    HENGE_CHECK(fp != NULL);
+    HENGE_CHECK(fwrite(iso, 1U, 0x9000U, fp) == 0x9000U);
+    fclose(fp);
+    HENGE_CHECK(henge_detect_image_format(iso_path) == HENGE_IMG_FORMAT_ISO9660);
+
+    free(iso);
+    free(eimg);
+    free(verify);
+    free(qimg);
+    free(c0);
+    free(c2);
+    remove(qcow2_path);
+    remove(raw_path);
+    remove(clone_path);
+    remove(iso_path);
+    remove(ext_path);
+    remove(ext_raw);
+    remove(bad_path);
+}
+
+static void test_cidata_fat16_generator(void) {
+    const char *seed_path = "build/test_cidata.img";
+    char err[256] = {0};
+    HengeCidataConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instance_id = "henge-test-01";
+    cfg.hostname = "debian-ios";
+    cfg.username = "dev";
+    cfg.password = "secret123";
+    cfg.ssh_authorized_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey dev@ios";
+
+    HENGE_CHECK(henge_cidata_write_image(seed_path, &cfg, err, sizeof(err)) == 0);
+
+    FILE *fp = fopen(seed_path, "rb");
+    HENGE_CHECK(fp != NULL);
+    HENGE_CHECK(fseek(fp, 0L, SEEK_END) == 0);
+    long sz = ftell(fp);
+    HENGE_CHECK(sz == 4224L * 512L);
+    HENGE_CHECK(fseek(fp, 0L, SEEK_SET) == 0);
+
+    uint8_t *img = (uint8_t *)malloc((size_t)sz);
+    HENGE_CHECK(img != NULL);
+    HENGE_CHECK(fread(img, 1U, (size_t)sz, fp) == (size_t)sz);
+    fclose(fp);
+
+    /* Verify FAT16 BPB, boot signature, CIDATA volume label, and FAT16 type */
+    HENGE_CHECK(img[510] == 0x55U && img[511] == 0xAAU);
+    HENGE_CHECK(memcmp(img + 43, "CIDATA     ", 11U) == 0);
+    HENGE_CHECK(memcmp(img + 54, "FAT16   ", 8U) == 0);
+
+    /* Root directory starts at sector 1 + 2*17 = 35; entry 0 is volume label */
+    const uint8_t *root = img + 35U * 512U;
+    HENGE_CHECK(memcmp(root, "CIDATA     ", 11U) == 0 && root[11] == 0x08U);
+
+    /* Data region starts at sector 67; verify cloud-init payloads exist */
+    const char *data_region = (const char *)(img + 67U * 512U);
+    size_t data_bytes = (size_t)sz - 67U * 512U;
+    bool found_meta = false, found_user = false, found_net = false;
+    for (size_t i = 0U; i + 16U < data_bytes; i++) {
+        if (!found_meta && memcmp(data_region + i, "instance-id: henge-test-01", 26U) == 0) found_meta = true;
+        if (!found_user && memcmp(data_region + i, "#cloud-config\nhostname: debian-ios", 34U) == 0) found_user = true;
+        if (!found_net && memcmp(data_region + i, "dhcp4: true", 11U) == 0) found_net = true;
+    }
+    HENGE_CHECK(found_meta && found_user && found_net);
+
+    free(img);
+    remove(seed_path);
+}
+
 int main(void) {
     test_unix_socket_path_bounds();
     test_mmu_granule_decoding();
@@ -433,6 +661,8 @@ int main(void) {
     test_txm_jit_bounds_and_blessing();
     test_virtio_gpu_backends();
     test_console_log_capture();
-    printf("[PASS] test_core: all platform, MMU, RAM, lifecycle, TXM JIT, VirtIO-GPU, and console checks passed.\n");
+    test_qcow2_and_storage_tools();
+    test_cidata_fat16_generator();
+    printf("[PASS] test_core: all platform, MMU, RAM, lifecycle, TXM JIT, VirtIO-GPU, QCOW2, CIDATA, and console checks passed.\n");
     return 0;
 }
