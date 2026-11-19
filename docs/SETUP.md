@@ -1,6 +1,6 @@
 # `henge-linux` Setup & Sideloading Guide
 
-This guide walks through installing **`HengeLinux`** (`v0.2.0`) on a non-jailbroken iPhone or iPad (**iOS 18.0 – iOS 27+**), importing pre-built Arch Linux or unmodified ARM64 cloud/ISO Linux images, enabling JIT with **StikDebug** + **LocalDevVPN**, and using **2D VirtIO-GPU KMS**, the interactive **`ttyAMA0` terminal**, and the offline **Safari OAuth / WebDAV** guest agent.
+This guide walks through installing **`HengeLinux`** (`v0.2.1`) on a non-jailbroken iPhone or iPad (**iOS 18.0 – iOS 27+**), importing pre-built Arch Linux or unmodified ARM64 cloud/ISO Linux images, enabling JIT with **StikDebug** + **LocalDevVPN**, and using **2D VirtIO-GPU KMS**, the interactive **`ttyAMA0` terminal**, and the offline **Safari OAuth / WebDAV** guest agent.
 
 ---
 

@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.0)'
+        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.1)'
         required: true
-        default: 'v0.2.0'
+        default: 'v0.2.1'
         type: string
 
 concurrency:
@@ -188,10 +188,11 @@ jobs:
           Built from commit \`${SHORT_SHA}\` on ${BUILD_DATE}. Full-system ARM64 (\`aarch64\`) multi-distro Linux virtualization on non-jailbroken iOS 18.0 – iOS 27+ devices without \`Hypervisor.framework\`.
 
           ### Highlights
-          - **iOS 18.0 – iOS 27+ Dual-Mode JIT:** Supports both Classic dual-map JIT (iOS 18) and TXM Broker JIT (iOS 26/27+, compatible with stock StikDebug \`universal.js\` as well as \`henge-jit.js\`), with one-tap \`stikdebug://enable-jit\` deep-linking, LiveContainer awareness, and \`os_proc_available_memory()\` live Jetsam RAM advisories.
-          - **Multi-VM Manager & Unmodified ARM64 Distros:** Manages isolated VMs (\`Documents/Machines/<ID>/vm.json\`) with shared \`Documents/Firmware/\`, APFS \`clonefile\` cloning, and \`F_PUNCHHOLE\` compaction. Imports \`.hvsparse\`, \`.qcow2\` (in-app streaming unpacker), \`.raw\`/\`.img\`, and ARM64 Live/Netinstall \`.iso\` images by magic bytes, with an in-app FAT16 \`CIDATA\` cloud-init seed generator for Debian 13, Ubuntu 24.04/26.04, Fedora, Alpine, and openSUSE.
-          - **2D VirtIO-GPU KMS (EDID + Metal), VirtIO Input & Interactive \`ttyAMA0\` Terminal:** Native PCIe \`virtio-gpu\` (\`0x1af4:0x1050\`) 2D KMS + VESA EDID 1.4 display alongside 2D UEFI GOP, PCIe \`virtio-input\` keyboard + absolute tablet, hardened \`xhci_hcd\` controller, and an interactive \`ttyAMA0\` serial terminal tab in \`SessionView\`.
-          - **Portable Offline Guest Additions:** Single-binary \`musl\` C guest agent + POSIX \`install.sh\` (\`systemd\`/\`OpenRC\`/\`runit\`) served offline at \`http://10.0.2.4/.henge/guest-tools/\`, alongside the pre-built Arch Linux ARM64 image with one-command \`henge-install-desktop\` (LXQt + SDDM).
+          - **Fixed PCIe VirtIO Device Attachment:** Resolved the \`devices/winvirt.c\` patch marker collision so \`virtio-input\` (keyboard + absolute tablet), secondary \`virtio-blk\`, \`2D VirtIO-GPU KMS\`, and the per-VM \`xHCI\` toggle attach cleanly on every VM.
+          - **Alpine & Minimal Distro \`CIDATA\` Fix:** Switched generated cloud-init user shells from \`/bin/bash\` to POSIX \`/bin/sh\` so Alpine Linux and minimal ARM64 cloud images open interactive login shells out of the box.
+          - **Hold-Capable Special Keys & Display Paste/Context Menu:** Non-modifier special keys (\`Esc\`, \`Bck\`, \`Del\`, arrows, \`F1\`–\`F12\`, etc.) now support holding down for native key repeat; \`Paste\` types directly into the Display tab without auto-pasting on tab switches; long-pressing the Display canvas opens a native **Paste / Copy Serial Log / Desktop…** menu.
+          - **Streamlined Single-Row Icon Top Bar & Split Deck Fix:** Compacted \`SessionView\`'s top toolbar into a single icon-only row and fixed the special-keys HUD toggle inside Split Deck mode.
+          - **Full Phase 6 Platform:** iOS 18.0 – iOS 27+ dual-mode JIT (\`CLASSIC\` / \`TXM_BROKER\`, stock StikDebug \`universal.js\`, \`stikdebug://enable-jit\`), Multi-VM \`vm.json\`, streaming QCOW2 unpacker, FAT16 \`CIDATA\` seeder, interactive \`ttyAMA0\` terminal, offline \`musl\` guest agent, and 2D VirtIO-GPU KMS + EDID 1.4.
 
           ### Quick Setup (iOS 18.0+)
           1. Download and sign **\`HengeLinux-unsigned.ipa\`** with **SideStore** or **AltStore**.
