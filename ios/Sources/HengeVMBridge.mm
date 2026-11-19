@@ -395,16 +395,17 @@ static void henge_on_vm_exit(int reason) {
         }
     }
 
-    /* Acquire TXM dual-mapped RX/RW JIT pool BEFORE mapping multi-GB guest RAM
+    /* Acquire dual-mapped RX/RW JIT pool BEFORE mapping multi-GB guest RAM
      * so virtual address space around RX remains uncrowded for vm_remap. */
     HengeJitPool jitPool;
     std::memset(&jitPool, 0, sizeof(jitPool));
-    if (!henge_jit_acquire_pool((size_t)HENGE_DEFAULT_JIT_POOL_BYTES, true, &jitPool)) {
+    const size_t targetJitBytes = henge_recommended_jit_pool_bytes();
+    if (!henge_jit_acquire_pool(targetJitBytes, true, &jitPool)) {
         char jitErr[256] = {0};
         henge_jit_copy_status(jitErr, sizeof(jitErr));
         NSString *msg = (jitErr[0] != '\0')
-            ? [NSString stringWithFormat:@"TXM JIT pool not active (%s). Attach StikDebug (henge-jit.js) or LLDB, then tap Boot.", jitErr]
-            : @"TXM JIT pool not active. Attach StikDebug (henge-jit.js) or LLDB, then tap Boot.";
+            ? [NSString stringWithFormat:@"JIT pool not active (%s). Enable JIT via StikDebug or LLDB, then tap Boot.", jitErr]
+            : @"JIT pool not active. Enable JIT via StikDebug or LLDB, then tap Boot.";
         _statusText = msg;
         if (error) {
             *error = [NSError errorWithDomain:HengeVMErrorDomain

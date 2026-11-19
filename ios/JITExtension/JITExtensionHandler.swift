@@ -64,6 +64,7 @@ final class JITExtensionHandler: NSObject, NSExtensionRequestHandling {
         let vpnLoopback = (userInfo["vpnLoopback"] as? String) ?? "10.7.0.1"
         let debugserverPort = (userInfo["debugserverPort"] as? NSNumber)?.uint16Value ?? 0
         let appGroupID = (userInfo["appGroupID"] as? String) ?? Self.defaultAppGroupID
+        let requiresTxmBlessing = (userInfo["requiresTxmBlessing"] as? NSNumber)?.boolValue ?? true
 
         responseInfo["targetPID"] = targetPID
         responseInfo["poolBytes"] = poolBytes
@@ -115,6 +116,7 @@ final class JITExtensionHandler: NSObject, NSExtensionRequestHandling {
             poolBytes: poolBytes,
             vpnLoopback: vpnLoopback,
             debugserverPort: debugserverPort,
+            requiresTxmBlessing: requiresTxmBlessing,
             pairing: pairing
         )
 
@@ -178,10 +180,11 @@ final class JITExtensionHandler: NSObject, NSExtensionRequestHandling {
         poolBytes: UInt64,
         vpnLoopback: String,
         debugserverPort: UInt16,
+        requiresTxmBlessing: Bool,
         pairing: PairingRecordSummary
     ) -> BlessingOutcome {
         #if canImport(StikJIT) && canImport(Idevice)
-        _ = (targetPID, poolBytes, vpnLoopback, debugserverPort, pairing)
+        _ = (targetPID, poolBytes, vpnLoopback, debugserverPort, requiresTxmBlessing, pairing)
         return .failed(reason: "StikJIT/Idevice module linked; configure RSD debugproxy session entrypoint.")
         #else
         if debugserverPort > 0 {
@@ -189,7 +192,8 @@ final class JITExtensionHandler: NSObject, NSExtensionRequestHandling {
                 host: vpnLoopback,
                 port: debugserverPort,
                 targetPID: targetPID,
-                poolBytes: poolBytes
+                poolBytes: poolBytes,
+                requiresTxmBlessing: requiresTxmBlessing
             )
             return blesser.run()
         }
@@ -209,15 +213,17 @@ private final class GdbRspTxmBlesser {
     private let port: UInt16
     private let targetPID: Int32
     private let poolBytes: UInt64
+    private let requiresTxmBlessing: Bool
     private var fd: Int32 = -1
     private var noAckMode: Bool = false
     private var recvBuf = [UInt8]()
 
-    init(host: String, port: UInt16, targetPID: Int32, poolBytes: UInt64) {
+    init(host: String, port: UInt16, targetPID: Int32, poolBytes: UInt64, requiresTxmBlessing: Bool) {
         self.host = host
         self.port = port
         self.targetPID = targetPID
         self.poolBytes = poolBytes
+        self.requiresTxmBlessing = requiresTxmBlessing
     }
 
     deinit {
@@ -242,6 +248,12 @@ private final class GdbRspTxmBlesser {
               !attachReply.isEmpty,
               !attachReply.hasPrefix("E") else {
             return .failed(reason: "debugserver vAttach;\(pidHex) failed.")
+        }
+
+        // On iOS 18 (classic dual-map JIT), attaching and detaching sets persistent
+        // CS_DEBUGGED without executing brk #0xf00d or 16 KiB page-blessing writes.
+        if !requiresTxmBlessing {
+            return .blessed(rxBase: 0, pagesBlessed: 0, transport: "iOS 18 attach-detach (CS_DEBUGGED)")
         }
 
         var blessedRxBase: UInt64 = 0

@@ -11,13 +11,19 @@
 #include <stdatomic.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
 
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
+#include <dirent.h>
 #include <libkern/OSCacheControl.h>
 #include <mach/mach.h>
+#if TARGET_OS_IPHONE
+#include <os/proc.h>
+#endif
 #include <sys/sysctl.h>
 #include <sys/types.h>
 #include <sys/ucontext.h>
@@ -144,8 +150,135 @@ void henge_jit26_detach(void) {
 static pthread_mutex_t g_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_status_mutex = PTHREAD_MUTEX_INITIALIZER;
 static atomic_bool g_pool_live = false;
+static atomic_int g_jit_policy = HENGE_JIT_POLICY_AUTO;
 static HengeJitPool g_active_pool = {0};
 static char g_jit_status[256] = "Not initialized";
+
+void henge_jit_set_policy(HengeJitPolicy policy) {
+    int val = (int)policy;
+    if (val < HENGE_JIT_POLICY_AUTO || val > HENGE_JIT_POLICY_FORCE_TXM) {
+        val = HENGE_JIT_POLICY_AUTO;
+    }
+    atomic_store_explicit(&g_jit_policy, val, memory_order_release);
+}
+
+HengeJitPolicy henge_jit_get_policy(void) {
+    return (HengeJitPolicy)atomic_load_explicit(&g_jit_policy, memory_order_acquire);
+}
+
+int henge_ios_major_version(void) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    char ver[64] = {0};
+    size_t len = sizeof(ver) - 1U;
+    if (sysctlbyname("kern.osproductversion", ver, &len, NULL, 0) == 0 && ver[0] != '\0') {
+        return atoi(ver);
+    }
+    return 18;
+#else
+    return 0;
+#endif
+}
+
+bool henge_device_has_txm(void) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    if (henge_ios_major_version() < 26) {
+        return false;
+    }
+    const char *env_txm = getenv("HAS_TXM");
+    if (env_txm != NULL && env_txm[0] != '\0') {
+        return (strcmp(env_txm, "1") == 0 || strcmp(env_txm, "true") == 0 || strcmp(env_txm, "TRUE") == 0);
+    }
+    DIR *dir = opendir("/System/Volumes/Preboot");
+    if (dir == NULL) {
+        return true; /* Fail safe to TXM broker on iOS 26+ if Preboot is unreadable. */
+    }
+    bool found = false;
+    struct dirent *ent = NULL;
+    while ((ent = readdir(dir)) != NULL) {
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+        char path[512];
+        int n = snprintf(path, sizeof(path),
+                         "/System/Volumes/Preboot/%s/usr/standalone/firmware/FUD/Ap,TrustedExecutionMonitor.img4",
+                         ent->d_name);
+        if (n > 0 && (size_t)n < sizeof(path) && access(path, F_OK) == 0) {
+            found = true;
+            break;
+        }
+    }
+    closedir(dir);
+    return found;
+#else
+    return false;
+#endif
+}
+
+HengeJitMode henge_jit_detect_mode(void) {
+    HengeJitPolicy policy = henge_jit_get_policy();
+    if (policy == HENGE_JIT_POLICY_FORCE_CLASSIC) {
+        return HENGE_JIT_MODE_CLASSIC;
+    }
+    if (policy == HENGE_JIT_POLICY_FORCE_TXM) {
+        return HENGE_JIT_MODE_TXM_BROKER;
+    }
+    if (henge_ios_major_version() >= 26 && henge_device_has_txm()) {
+        return HENGE_JIT_MODE_TXM_BROKER;
+    }
+    return HENGE_JIT_MODE_CLASSIC;
+}
+
+bool henge_jit_requires_txm_low_va(void) {
+    if (atomic_load_explicit(&g_pool_live, memory_order_acquire)) {
+        return g_active_pool.mode == HENGE_JIT_MODE_TXM_BROKER;
+    }
+    return henge_jit_detect_mode() == HENGE_JIT_MODE_TXM_BROKER;
+}
+
+size_t henge_recommended_jit_pool_bytes(void) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    uint64_t memsize = 0ULL;
+    size_t len = sizeof(memsize);
+    if (sysctlbyname("hw.memsize", &memsize, &len, NULL, 0) == 0 && memsize > 0ULL) {
+        if (memsize <= (4ULL * 1024ULL * 1024ULL * 1024ULL) + (512ULL * 1024ULL * 1024ULL)) {
+            return (size_t)HENGE_MIN_JIT_POOL_BYTES;
+        }
+        if (memsize <= (6ULL * 1024ULL * 1024ULL * 1024ULL) + (512ULL * 1024ULL * 1024ULL)) {
+            return (size_t)HENGE_MID_JIT_POOL_BYTES;
+        }
+    }
+#endif
+    return (size_t)HENGE_DEFAULT_JIT_POOL_BYTES;
+}
+
+uint64_t henge_available_memory_bytes(void) {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    return (uint64_t)os_proc_available_memory();
+#else
+    return 0ULL;
+#endif
+}
+
+uint32_t henge_recommended_guest_ram_mib(size_t jit_pool_bytes) {
+    uint64_t avail = henge_available_memory_bytes();
+    if (avail == 0ULL) {
+        return 1664U;
+    }
+    const uint64_t headroom = 576ULL * 1024ULL * 1024ULL;
+    const uint64_t reserve = (uint64_t)jit_pool_bytes + headroom;
+    if (avail <= reserve + (uint64_t)HENGE_MIN_GUEST_RAM_MIB * 1024ULL * 1024ULL) {
+        return HENGE_MIN_GUEST_RAM_MIB;
+    }
+    uint64_t usable_mib = (avail - reserve) / (1024ULL * 1024ULL);
+    uint64_t stepped_mib = (usable_mib / 128ULL) * 128ULL;
+    if (stepped_mib < (uint64_t)HENGE_MIN_GUEST_RAM_MIB) {
+        return HENGE_MIN_GUEST_RAM_MIB;
+    }
+    if (stepped_mib > (uint64_t)HENGE_MAX_GUEST_RAM_MIB) {
+        return HENGE_MAX_GUEST_RAM_MIB;
+    }
+    return (uint32_t)stepped_mib;
+}
 
 static void set_jit_status(const char *fmt, ...) {
     pthread_mutex_lock(&g_status_mutex);
@@ -276,9 +409,70 @@ static bool verify_rx_rw_selftest(uint8_t *rx, uint8_t *rw, size_t bytes) {
     return true;
 }
 
+static bool acquire_classic_dual_map_locked(size_t bytes, HengeJitPool *out_pool) {
+    /* Reclaim the 384 MiB __DATA,__jit_hold reservation when not using TXM low-VA. */
+    release_low_va_hold(HENGE_DEFAULT_JIT_POOL_BYTES);
+
+    if (!henge_txm_is_cs_debugged()) {
+        set_jit_status("Waiting for JIT (CS_DEBUGGED); enable via StikDebug or JIT enabler");
+        return false;
+    }
+
+    vm_address_t rw = 0;
+    kern_return_t kr = vm_allocate(mach_task_self(), &rw, (vm_size_t)bytes, VM_FLAGS_ANYWHERE);
+    if (kr != KERN_SUCCESS || rw == 0) {
+        set_jit_status("Failed: classic vm_allocate RW (%s)", mach_error_string(kr));
+        return false;
+    }
+
+    vm_address_t rx = 0;
+    vm_prot_t cur_prot = VM_PROT_NONE;
+    vm_prot_t max_prot = VM_PROT_NONE;
+    kr = vm_remap(mach_task_self(), &rx, (vm_size_t)bytes, 0, VM_FLAGS_ANYWHERE,
+                  mach_task_self(), rw, FALSE, &cur_prot, &max_prot, VM_INHERIT_NONE);
+    if (kr != KERN_SUCCESS || rx == 0 || rx == rw) {
+        if (kr == KERN_SUCCESS && rx != 0 && rx != rw) {
+            vm_deallocate(mach_task_self(), rx, (vm_size_t)bytes);
+        }
+        vm_deallocate(mach_task_self(), rw, (vm_size_t)bytes);
+        set_jit_status("Failed: classic vm_remap RX alias (%s)", mach_error_string(kr));
+        return false;
+    }
+
+    kr = vm_protect(mach_task_self(), rx, (vm_size_t)bytes, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+    if (kr != KERN_SUCCESS) {
+        vm_deallocate(mach_task_self(), rx, (vm_size_t)bytes);
+        vm_deallocate(mach_task_self(), rw, (vm_size_t)bytes);
+        set_jit_status("Failed: classic vm_protect RX (%s, cur=0x%x max=0x%x)",
+                       mach_error_string(kr), (unsigned int)cur_prot, (unsigned int)max_prot);
+        return false;
+    }
+
+    if (!verify_rx_rw_selftest((uint8_t *)(uintptr_t)rx, (uint8_t *)(uintptr_t)rw, bytes)) {
+        vm_deallocate(mach_task_self(), rx, (vm_size_t)bytes);
+        vm_deallocate(mach_task_self(), rw, (vm_size_t)bytes);
+        set_jit_status("Failed: classic RX/RW execution selftest rejected");
+        return false;
+    }
+
+    g_active_pool.rx_base = (uintptr_t)rx;
+    g_active_pool.rw_base = (uintptr_t)rw;
+    g_active_pool.size = bytes;
+    g_active_pool.blessed = true;
+    g_active_pool.dual_mapped = true;
+    g_active_pool.mode = HENGE_JIT_MODE_CLASSIC;
+    atomic_store_explicit(&g_pool_live, true, memory_order_release);
+
+    set_jit_status("Active (%zu MiB Classic RX/RW)", bytes >> 20);
+    if (out_pool != NULL) {
+        *out_pool = g_active_pool;
+    }
+    return true;
+}
+
 bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_pool) {
     if (bytes == 0U) {
-        bytes = (size_t)HENGE_DEFAULT_JIT_POOL_BYTES;
+        bytes = henge_recommended_jit_pool_bytes();
     }
     bytes = (bytes + ((size_t)HENGE_HOST_PAGE_SIZE - 1U)) & ~((size_t)HENGE_HOST_PAGE_SIZE - 1U);
 
@@ -293,26 +487,39 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
 
     henge_jit_install_trap_guard();
 
-    if (!henge_txm_is_ptraced()) {
-        set_jit_status("Waiting for active debugger (P_TRACED)");
-        pthread_mutex_unlock(&g_pool_mutex);
-        return false;
+    HengeJitMode mode = henge_jit_detect_mode();
+    if (mode == HENGE_JIT_MODE_CLASSIC) {
+        if (acquire_classic_dual_map_locked(bytes, out_pool)) {
+            pthread_mutex_unlock(&g_pool_mutex);
+            return true;
+        }
+        /*
+         * On pre-TXM iOS 26+ hardware (e.g. M1 iPadOS 26.5.2), mprotect can
+         * return 0 while kernel protection still rejects execution; under AUTO
+         * policy, escalate to TXM broker if a debugger is actively attached.
+         */
+        if (!(henge_jit_get_policy() == HENGE_JIT_POLICY_AUTO &&
+              henge_ios_major_version() >= 26 &&
+              henge_txm_is_ptraced())) {
+            pthread_mutex_unlock(&g_pool_mutex);
+            return false;
+        }
+        restore_low_va_hold(HENGE_DEFAULT_JIT_POOL_BYTES);
     }
 
-    g_expecting_jit_trap = 1;
-    atomic_signal_fence(memory_order_seq_cst);
-    uint64_t probe = henge_jit26_probe();
-    atomic_signal_fence(memory_order_seq_cst);
-    g_expecting_jit_trap = 0;
-
-    if ((probe & 0xFFFFFFFFULL) != 0xE0000069ULL) {
-        set_jit_status("Debugger attached; waiting for brk #0x69 trap handler");
+    if (!henge_txm_is_ptraced()) {
+        set_jit_status("Waiting for active debugger (P_TRACED) for TXM JIT");
         pthread_mutex_unlock(&g_pool_mutex);
         return false;
     }
 
     release_low_va_hold(bytes);
 
+    /*
+     * Invoke brk #0xf00d directly once P_TRACED is verified (making brk #0x69
+     * optional) so both stock StikDebug universal.js and custom henge-jit.js
+     * bless the RX region cleanly.
+     */
     uintptr_t rx = 0U;
     for (int attempt = 0; attempt < 3; attempt++) {
         g_expecting_jit_trap = 1;
@@ -400,6 +607,7 @@ bool henge_jit_acquire_pool(size_t bytes, bool detach_after, HengeJitPool *out_p
     g_active_pool.size = bytes;
     g_active_pool.blessed = true;
     g_active_pool.dual_mapped = true;
+    g_active_pool.mode = HENGE_JIT_MODE_TXM_BROKER;
     atomic_store_explicit(&g_pool_live, true, memory_order_release);
 
     if (detach_after && henge_txm_is_ptraced()) {

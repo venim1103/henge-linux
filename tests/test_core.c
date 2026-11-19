@@ -251,6 +251,19 @@ static void test_txm_jit_bounds_and_blessing(void) {
     HengeJitPool queried_pool;
     HENGE_CHECK(henge_jit_current_pool(&queried_pool) == false);
     HENGE_CHECK(henge_jit_acquire_pool(0U, true, &queried_pool) == false);
+
+    /* Dual-mode JIT policy overrides and adaptive pool/RAM sizing checks. */
+    HENGE_CHECK(henge_jit_get_policy() == HENGE_JIT_POLICY_AUTO);
+    henge_jit_set_policy(HENGE_JIT_POLICY_FORCE_CLASSIC);
+    HENGE_CHECK(henge_jit_detect_mode() == HENGE_JIT_MODE_CLASSIC);
+    HENGE_CHECK(henge_jit_requires_txm_low_va() == false);
+    henge_jit_set_policy(HENGE_JIT_POLICY_FORCE_TXM);
+    HENGE_CHECK(henge_jit_detect_mode() == HENGE_JIT_MODE_TXM_BROKER);
+    HENGE_CHECK(henge_jit_requires_txm_low_va() == true);
+    henge_jit_set_policy(HENGE_JIT_POLICY_AUTO);
+    HENGE_CHECK(henge_recommended_jit_pool_bytes() >= HENGE_MIN_JIT_POOL_BYTES);
+    HENGE_CHECK(henge_recommended_guest_ram_mib(henge_recommended_jit_pool_bytes()) >= HENGE_MIN_GUEST_RAM_MIB);
+
     (void)henge_txm_is_ptraced();
     (void)henge_txm_is_cs_debugged();
 }

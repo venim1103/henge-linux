@@ -297,31 +297,43 @@ struct HengeLinuxApp: App {
                                 .foregroundStyle(.secondary)
                         }
 
-                        Text(
-                            effectiveRamMiB > 1792
-                                ? "Above ~1,792 MiB without LEDGER_NO_FOOTPRINT may hit iOS's ~3 GiB standard-ledger Jetsam kill limit."
-                                : "16 KiB page-aligned (512–10,240 MiB). Default 1,664 MiB leaves safe standard-ledger headroom."
-                        )
-                        .font(.caption2)
-                        .foregroundStyle(effectiveRamMiB > 1792 ? .orange : .secondary)
+                        Text(ramAdvisoryText)
+                            .font(.caption2)
+                            .foregroundStyle(effectiveRamMiB > safeRecommendedRamMiB ? .orange : .secondary)
                     }
                     .padding(.vertical, 4)
                 }
 
-                Section("Graphics & TXM Self-Debugger") {
+                Section("Graphics & JIT Engine") {
                     Picker("Display Adapter", selection: $jitClient.gpuBackend) {
                         ForEach(GpuDisplayBackend.allCases) { backend in
                             Text(backend.rawValue).tag(backend)
                         }
                     }
+                    Picker("JIT Strategy", selection: $jitClient.jitStrategy) {
+                        ForEach(JitStrategyOverride.allCases) { strategy in
+                            Text(strategy.label).tag(strategy)
+                        }
+                    }
                     Toggle("Auto-Sync Host Clipboard on Focus", isOn: $autoSyncClipboard)
-                    LabeledContent("TXM JIT Pool", value: "\(SelfDebugJITClient.defaultJitPoolMiB) MiB (< 0x7000000000)")
+                    LabeledContent("JIT Mode", value: SelfDebugJITClient.activeJitModeLabel)
+                    LabeledContent("JIT Pool", value: "\(SelfDebugJITClient.recommendedJitPoolMiB) MiB")
+                    if SelfDebugJITClient.isRunningInLiveContainer {
+                        LabeledContent("Container", value: "LiveContainer (Use StikDebug)")
+                    }
                     LabeledContent("Pairing File", value: jitClient.pairingStatusText)
                     LabeledContent("JIT Status", value: jitStatusLabel)
                     if let diag = jitClient.extensionDiagnostic, !diag.isEmpty {
                         Text(diag)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                    if let stikURL = SelfDebugJITClient.stikDebugEnableURL {
+                        Button {
+                            UIApplication.shared.open(stikURL)
+                        } label: {
+                            Label("Enable JIT via StikDebug", systemImage: "bolt.shield.fill")
+                        }
                     }
                     Button {
                         fileImportMode = .pairingPlist
@@ -494,9 +506,30 @@ struct HengeLinuxApp: App {
         }
     }
 
+    private var safeRecommendedRamMiB: UInt32 {
+        henge_recommended_guest_ram_mib(henge_recommended_jit_pool_bytes())
+    }
+
+    private var ramAdvisoryText: String {
+        let availBytes = henge_available_memory_bytes()
+        let rec = safeRecommendedRamMiB
+        if availBytes > 0 {
+            let availMiB = availBytes / (1024 * 1024)
+            if effectiveRamMiB > rec {
+                return "Above recommended \(rec) MiB (live Jetsam budget: \(availMiB) MiB) may trigger iOS memory termination."
+            }
+            return "16 KiB page-aligned · Live Jetsam headroom: \(availMiB) MiB (safe target ≤ \(rec) MiB)."
+        }
+        return effectiveRamMiB > 1792
+            ? "Above ~1,792 MiB without LEDGER_NO_FOOTPRINT may hit iOS's ~3 GiB standard-ledger Jetsam kill limit."
+            : "16 KiB page-aligned (512–10,240 MiB). Default 1,664 MiB leaves safe standard-ledger headroom."
+    }
+
     private var sliderMaxRamMiB: Int {
+        let availMiB = Int(henge_available_memory_bytes() / (1024 * 1024))
         let physicalMiB = Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024))
-        return min(max(physicalMiB, 4096), Int(HENGE_MAX_GUEST_RAM_MIB))
+        let upper = availMiB > 0 ? max(availMiB, 2048) : max(physicalMiB, 4096)
+        return min(upper, Int(HENGE_MAX_GUEST_RAM_MIB))
     }
 
     private var clampedCustomRamMiB: UInt32 {

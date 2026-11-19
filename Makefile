@@ -11,6 +11,7 @@ BREW_PREFIX := $(shell if [ -d /opt/homebrew ]; then echo /opt/homebrew; elif [ 
 #   12 = 4 KiB compatibility mode (boots both 4 KiB and 16 KiB Linux kernels)
 #   14 = 16 KiB fast-path mode (4x TLB reach for CONFIG_ARM64_16K_PAGES=y kernels)
 HV_TLB_PAGE_BITS ?= 12
+IOS_MIN_VERSION ?= 18.0
 REQUIRE_UPSTREAM ?= 0
 
 CC ?= cc
@@ -107,7 +108,7 @@ UPSTREAM_ALL_OBJS  := \
 
 ifeq ($(UNAME_S),Darwin)
 IOS_SDK := $(shell xcrun --sdk iphoneos --show-sdk-path)
-IOS_BASE := -O2 -arch arm64 -mios-version-min=26.0 -isysroot $(IOS_SDK) -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost -Werror=implicit-function-declaration -Werror=incompatible-pointer-types
+IOS_BASE := -O2 -arch arm64 -mios-version-min=$(IOS_MIN_VERSION) -isysroot $(IOS_SDK) -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost -Werror=implicit-function-declaration -Werror=incompatible-pointer-types
 IOS_CFLAGS := -std=c11 -Wall -Wextra -Werror $(IOS_BASE)
 IOS_UP_CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers $(IOS_BASE)
 ENG_INC := -I$(UPSTREAM_DIR)/core -I$(UPSTREAM_DIR)/host -I$(UPSTREAM_DIR)/devices -I$(UPSTREAM_DIR)/ios/deps/include -I$(UPSTREAM_DIR)/ios/deps/include/slirp -I$(UPSTREAM_DIR)/ios/deps/include/glib-2.0 -I$(UPSTREAM_DIR)/ios/deps/lib/glib-2.0/include
@@ -118,7 +119,7 @@ $(BUILD_DIR)/ios/%.o: host/%.c $(TLB_STAMP) | $(BUILD_DIR)
 
 $(BUILD_DIR)/ios/henge_brk.o: host/henge_brk.S $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
-	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$(IOS_SDK)" -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -c $< -o $@
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=$(IOS_MIN_VERSION) -isysroot "$(IOS_SDK)" -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -c $< -o $@
 
 $(BUILD_DIR)/ios/up_core_mmu.o: $(UPSTREAM_DIR)/core/mmu.c $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
@@ -126,7 +127,7 @@ $(BUILD_DIR)/ios/up_core_mmu.o: $(UPSTREAM_DIR)/core/mmu.c $(TLB_STAMP) | $(BUIL
 
 $(BUILD_DIR)/ios/up_host_enter.o: $(UPSTREAM_DIR)/host/enter.S $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios
-	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=26.0 -isysroot "$(IOS_SDK)" -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -c $< -o $@
+	xcrun --sdk iphoneos clang -arch arm64 -mios-version-min=$(IOS_MIN_VERSION) -isysroot "$(IOS_SDK)" -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -c $< -o $@
 
 $(BUILD_DIR)/ios/up_dev_fb_metal.o: $(UPSTREAM_DIR)/devices/fb_metal.m $(TLB_STAMP) | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/ios

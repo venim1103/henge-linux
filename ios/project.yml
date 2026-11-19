@@ -2,7 +2,7 @@ name: HengeLinux
 options:
   bundleIdPrefix: io.hengelinux
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "18.0"
   xcodeVersion: "26.0"
   createIntermediateGroups: true
 
@@ -75,6 +75,8 @@ targets:
       properties:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        LSApplicationQueriesSchemes:
+          - stikdebug
         CFBundleDocumentTypes:
           - CFBundleTypeName: HengeLinux Disk & Firmware Image
             LSHandlerRank: Alternate
@@ -111,6 +113,7 @@ targets:
       path: HengeLinux.entitlements
       properties:
         com.apple.developer.kernel.increased-memory-limit: true
+        com.apple.developer.kernel.extended-virtual-addressing: true
         com.apple.security.application-groups:
           - group.io.hengelinux.shared
     dependencies:
@@ -148,7 +151,7 @@ targets:
         INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
         INFOPLIST_KEY_UIBackgroundModes:
           - audio
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Arch Linux guest audio capture uses the iOS microphone when requested by guest applications."
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Linux guest audio capture uses the iOS microphone when requested by guest applications."
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone:

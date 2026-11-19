@@ -15,19 +15,46 @@ extern "C" {
 #define HENGE_TXM_MAX_VA       0x1000000000ULL
 #define HENGE_TXM_HARD_CEILING 0x7000000000ULL
 
-/* Default dual-mapped RX/RW JIT code cache size (384 MiB). */
+/* Default and adaptive dual-mapped RX/RW JIT code cache sizes. */
 #define HENGE_DEFAULT_JIT_POOL_BYTES (384ULL * 1024ULL * 1024ULL)
+#define HENGE_MIN_JIT_POOL_BYTES     (192ULL * 1024ULL * 1024ULL)
+#define HENGE_MID_JIT_POOL_BYTES     (256ULL * 1024ULL * 1024ULL)
 
 /* Byte-0 page blessing magic inspected by iOS 26/27 TXM on 16 KiB boundaries. */
 #define HENGE_TXM_BLESSING_MAGIC 0x69U
 
+typedef enum {
+    HENGE_JIT_MODE_CLASSIC    = 0,
+    HENGE_JIT_MODE_TXM_BROKER = 1,
+} HengeJitMode;
+
+typedef enum {
+    HENGE_JIT_POLICY_AUTO          = 0,
+    HENGE_JIT_POLICY_FORCE_CLASSIC = 1,
+    HENGE_JIT_POLICY_FORCE_TXM     = 2,
+} HengeJitPolicy;
+
 typedef struct {
-    uintptr_t rx_base;
-    uintptr_t rw_base;
-    size_t    size;
-    bool      blessed;
-    bool      dual_mapped;
+    uintptr_t    rx_base;
+    uintptr_t    rw_base;
+    size_t       size;
+    bool         blessed;
+    bool         dual_mapped;
+    HengeJitMode mode;
 } HengeJitPool;
+
+/* Runtime OS / TXM detection and dual-mode JIT strategy selection (iOS 18.0–27+). */
+void henge_jit_set_policy(HengeJitPolicy policy);
+HengeJitPolicy henge_jit_get_policy(void);
+int henge_ios_major_version(void);
+bool henge_device_has_txm(void);
+HengeJitMode henge_jit_detect_mode(void);
+bool henge_jit_requires_txm_low_va(void);
+
+/* Live Jetsam-aware memory and adaptive JIT pool sizing (os_proc_available_memory). */
+size_t henge_recommended_jit_pool_bytes(void);
+uint64_t henge_available_memory_bytes(void);
+uint32_t henge_recommended_guest_ram_mib(size_t jit_pool_bytes);
 
 /* Return true iff [base, base + size) lies within TXM's safe low-VA bounds. */
 bool henge_txm_is_valid_jit_range(uintptr_t base, size_t size);

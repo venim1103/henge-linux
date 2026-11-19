@@ -435,8 +435,8 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
     override func layoutSubviews() {
         super.layoutSubviews()
         guard let metalLayer else { return }
-        let scale = window?.screen.scale ?? UIScreen.main.scale
-        metalLayer.contentsScale = scale
+        let scale = window?.screen.scale ?? traitCollection.displayScale
+        metalLayer.contentsScale = scale > 0 ? scale : 2.0
         metalLayer.drawableSize = CGSize(
             width: max(bounds.width * scale, 1),
             height: max(bounds.height * scale, 1)

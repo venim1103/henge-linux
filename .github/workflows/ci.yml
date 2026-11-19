@@ -81,11 +81,11 @@ jobs:
         uses: actions/cache@3edfce9056124e459a23f683a21433670d47daca # @actions/cache 6.2.0
         with:
           path: .upstream/WindowsiOS/ios/deps
-          key: ios-arm64-deps-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/sync_upstream.sh', 'scripts/build_ios_deps.sh') }}
+          key: ios-arm64-deps-ios18-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/sync_upstream.sh', 'scripts/build_ios_deps.sh') }}
       - name: Build or validate iOS static dependencies (libffi, glib, libslirp)
-        run: bash scripts/build_ios_deps.sh
+        run: IOS_MIN_VERSION=18.0 bash scripts/build_ios_deps.sh
       - name: Run macOS platform tests & build full ios-lib
-        run: make REQUIRE_UPSTREAM=1 test-core hvsparse ios-lib
+        run: make REQUIRE_UPSTREAM=1 IOS_MIN_VERSION=18.0 test-core hvsparse ios-lib
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/project.yml
       - name: Build unsigned iphoneos bundle and package .ipa
@@ -119,6 +119,13 @@ jobs:
           assert pl.get("CFBundleShortVersionString"), f"missing CFBundleShortVersionString: {pl}"
           print("[verify] HengeLinuxJITExtension Info.plist valid:", ext)
           ' "$APP_PLIST" "$EXT_PLIST"
+          otool -l "$APP_BUNDLE/HengeLinux" | grep -A 3 "LC_BUILD_VERSION" | grep -q "minos 18.0" || {
+            echo "ERROR: Expected LC_BUILD_VERSION minos 18.0 in HengeLinux binary!" >&2
+            otool -l "$APP_BUNDLE/HengeLinux" | grep -A 4 "LC_BUILD_VERSION" >&2
+            exit 1
+          }
+          codesign --force --sign - --entitlements ios/JITExtension/HengeLinuxJITExtension.entitlements "$APP_BUNDLE/PlugIns/HengeLinuxJITExtension.appex"
+          codesign --force --sign - --entitlements ios/HengeLinux.entitlements "$APP_BUNDLE"
           mkdir -p build/ipa/Payload
           cp -R "$APP_BUNDLE" build/ipa/Payload/
           (cd build/ipa && zip -qr ../HengeLinux-unsigned.ipa Payload)

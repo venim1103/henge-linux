@@ -16,6 +16,30 @@ enum GpuDisplayBackend: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum JitStrategyOverride: Int, CaseIterable, Identifiable {
+    case auto = 0
+    case classic = 1
+    case txmBroker = 2
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: return "Auto (Recommended)"
+        case .classic: return "Classic Dual-Map (iOS 18)"
+        case .txmBroker: return "TXM Broker (iOS 26+)"
+        }
+    }
+
+    var cPolicy: HengeJitPolicy {
+        switch self {
+        case .auto: return HENGE_JIT_POLICY_AUTO
+        case .classic: return HENGE_JIT_POLICY_FORCE_CLASSIC
+        case .txmBroker: return HENGE_JIT_POLICY_FORCE_TXM
+        }
+    }
+}
+
 private struct PoolAcquireProbeResult: Sendable {
     let acquired: Bool
     let poolMiB: Int
@@ -43,6 +67,12 @@ struct ContainerFileEntry: Identifiable, Hashable, Sendable {
 final class SelfDebugJITClient: ObservableObject {
     @Published private(set) var state: JitActivationState = .idle
     @Published var gpuBackend: GpuDisplayBackend = .gop2D
+    @Published var jitStrategy: JitStrategyOverride = .auto {
+        didSet {
+            UserDefaults.standard.set(jitStrategy.rawValue, forKey: Self.jitStrategyDefaultsKey)
+            henge_jit_set_policy(jitStrategy.cPolicy)
+        }
+    }
     @Published private(set) var extensionDiagnostic: String?
     @Published private(set) var hasPairingFile: Bool = false
     @Published private(set) var pairingStatusText: String = "Missing (Optional)"
@@ -50,9 +80,45 @@ final class SelfDebugJITClient: ObservableObject {
     @Published private(set) var uefiStatusText: String = "Missing (Import code.fd & vars.fd)"
     @Published private(set) var containerFiles: [ContainerFileEntry] = []
 
+    static let jitStrategyDefaultsKey: String = "jitStrategyOverride"
     static let defaultJitPoolMiB: Int = 384
     static let defaultAppGroupIdentifier: String = "group.io.hengelinux.shared"
     static let defaultExtensionIdentifier: String = "io.hengelinux.app.jit-extension"
+
+    static var isRunningInLiveContainer: Bool {
+        getenv("LC_HOME_PATH") != nil
+    }
+
+    static var recommendedJitPoolMiB: Int {
+        max(192, Int(henge_recommended_jit_pool_bytes() / (1024 * 1024)))
+    }
+
+    static var activeJitModeLabel: String {
+        let major = henge_ios_major_version()
+        let mode = henge_jit_detect_mode()
+        if mode == HENGE_JIT_MODE_TXM_BROKER {
+            return "TXM Broker (iOS \(major))"
+        }
+        return "Classic Dual-Map (iOS \(major))"
+    }
+
+    static var stikDebugEnableURL: URL? {
+        guard let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty else {
+            return nil
+        }
+        var components = URLComponents()
+        components.scheme = "stikdebug"
+        components.host = "enable-jit"
+        var items = [
+            URLQueryItem(name: "bundle-id", value: bundleID),
+            URLQueryItem(name: "pid", value: "\(getpid())")
+        ]
+        if henge_jit_detect_mode() == HENGE_JIT_MODE_TXM_BROKER {
+            items.append(URLQueryItem(name: "script-name", value: "universal.js"))
+        }
+        components.queryItems = items
+        return components.url
+    }
 
     /// Resolves the embedded `.appex` bundle identifier dynamically so SideStore / AltStore
     /// free-account bundle ID rewrites (e.g. `io.hengelinux.app.<TEAMID>.jit-extension`) work.
@@ -84,6 +150,10 @@ final class SelfDebugJITClient: ObservableObject {
     }
 
     init() {
+        let savedRaw = UserDefaults.standard.integer(forKey: Self.jitStrategyDefaultsKey)
+        let savedStrategy = JitStrategyOverride(rawValue: savedRaw) ?? .auto
+        self.jitStrategy = savedStrategy
+        henge_jit_set_policy(savedStrategy.cPolicy)
         henge_jit_install_trap_guard()
         bootstrapSandboxFolders()
         syncPairingRecordToAppGroup()
@@ -429,26 +499,27 @@ final class SelfDebugJITClient: ObservableObject {
         extensionDiagnostic = nil
         let syncedToGroup = syncPairingRecordToAppGroup()
 
-        let poolBytes = Int(Self.defaultJitPoolMiB) * 1024 * 1024
+        let poolBytes = Self.recommendedJitPoolMiB * 1024 * 1024
+        let requiresTxm = (henge_jit_detect_mode() == HENGE_JIT_MODE_TXM_BROKER)
 
-        // Fast path: if an external debugger (LLDB or StikDebug) is already attached,
-        // acquire and bless the 384 MiB RX/RW pool immediately without spawning the extension.
+        // Fast path: if CS_DEBUGGED (iOS 18 classic) or an external debugger (StikDebug / LLDB)
+        // is already active, acquire the dual-mapped RX/RW pool immediately without spawning the extension.
         let fastProbe = await Self.probeAcquirePool(poolBytes: poolBytes, maxAttempts: 1, intervalNs: 0)
         if fastProbe.acquired {
             state = .blessed(poolMiB: fastProbe.poolMiB, ledgerExempt: fastProbe.ledgerExempt)
             return
         }
 
-        // In-app XPC path: invoke HengeLinuxJITExtension (com.apple.ar.viewer) concurrently
-        // with a background pool-acquisition polling loop so debugserver attaches to our PID
-        // and services brk #0x69 / brk #0xf00d traps on a worker thread.
-        if hasPairingFile && HengeJITExtensionBridge.isExtensionRuntimeAvailable() {
+        // In-app XPC path: skip embedded .appex inside LiveContainer (LC_HOME_PATH),
+        // which cannot spawn nested app extensions and routes JIT through StikDebug.
+        if !Self.isRunningInLiveContainer && hasPairingFile && HengeJITExtensionBridge.isExtensionRuntimeAvailable() {
             let activeAppGroupID = Self.resolvedAppGroupIdentifier
             var requestPayload: [String: Any] = [
                 "targetPID": NSNumber(value: getpid()),
                 "poolBytes": NSNumber(value: UInt64(poolBytes)),
                 "vpnLoopback": "10.7.0.1",
-                "appGroupID": activeAppGroupID
+                "appGroupID": activeAppGroupID,
+                "requiresTxmBlessing": NSNumber(value: requiresTxm)
             ]
             // Fallback when free Apple ID sideloading strips App Group containers.
             if !syncedToGroup, let fallbackData = try? Data(contentsOf: pairingFileURL) {
