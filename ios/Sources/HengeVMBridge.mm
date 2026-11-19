@@ -37,6 +37,7 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
     std::string _codePathStr;
     std::string _varsPathStr;
     std::string _diskPathStr;
+    std::string _disk1PathStr;
     std::string _shareDirStr;
     std::string _shareSockStr;
     std::string _snapshotPathStr;
@@ -109,9 +110,17 @@ static void henge_on_vm_exit(int reason) {
 
 - (BOOL)hasSavedBackgroundSnapshot {
     NSURL *docsURL = [self documentsDirectoryURL];
-    NSURL *snapURL = [[[docsURL URLByAppendingPathComponent:@"Machines" isDirectory:YES]
-                        URLByAppendingPathComponent:@"ArchLinux" isDirectory:YES]
-                       URLByAppendingPathComponent:@"suspend.state"];
+    NSURL *archDir = [[docsURL URLByAppendingPathComponent:@"Machines" isDirectory:YES]
+                      URLByAppendingPathComponent:@"ArchLinux" isDirectory:YES];
+    return [self hasSavedBackgroundSnapshotAtMachineDir:archDir.path];
+}
+
+- (BOOL)hasSavedBackgroundSnapshotAtMachineDir:(NSString *)machineDirPath {
+    if (machineDirPath.length == 0) {
+        return NO;
+    }
+    NSURL *snapURL = [[NSURL fileURLWithPath:machineDirPath isDirectory:YES]
+                      URLByAppendingPathComponent:@"suspend.state"];
     HengeVmSnapshotInfo info;
     return henge_vm_snapshot_read(snapURL.path.fileSystemRepresentation, &info, nullptr, 0U) == 0;
 }
@@ -218,21 +227,41 @@ static void henge_on_vm_exit(int reason) {
     NSURL *docsURL = [self documentsDirectoryURL];
     NSURL *machineDir = [[docsURL URLByAppendingPathComponent:@"Machines" isDirectory:YES]
                          URLByAppendingPathComponent:@"ArchLinux" isDirectory:YES];
+    [self prepareDiskImageAtMachineDir:machineDir.path
+                       primaryDiskName:@"archlinux.hvsparse"
+                              codePath:[machineDir URLByAppendingPathComponent:@"code.fd"].path
+                              varsPath:[machineDir URLByAppendingPathComponent:@"vars.fd"].path
+                            completion:completion];
+}
+
+- (void)prepareDiskImageAtMachineDir:(NSString *)machineDirPath
+                     primaryDiskName:(NSString *)primaryDiskName
+                            codePath:(NSString *)codePath
+                            varsPath:(NSString *)varsPath
+                          completion:(void (^)(BOOL success, NSError * _Nullable error))completion {
+    NSURL *machineDir = [NSURL fileURLWithPath:machineDirPath isDirectory:YES];
     NSFileManager *fm = NSFileManager.defaultManager;
     [fm createDirectoryAtURL:machineDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-    NSURL *codeURL = [machineDir URLByAppendingPathComponent:@"code.fd"];
-    NSURL *varsURL = [machineDir URLByAppendingPathComponent:@"vars.fd"];
-    NSURL *sparseURL = [machineDir URLByAppendingPathComponent:@"archlinux.hvsparse"];
-    NSURL *rawDiskURL = [machineDir URLByAppendingPathComponent:@"archlinux.img"];
+    NSString *diskName = (primaryDiskName.length > 0) ? primaryDiskName : @"disk0.img";
+    NSURL *primaryURL = [machineDir URLByAppendingPathComponent:diskName];
+    BOOL isSparseName = [diskName.lowercaseString hasSuffix:@".hvsparse"];
+    NSString *rawName = isSparseName
+        ? [[diskName stringByDeletingPathExtension] stringByAppendingPathExtension:@"img"]
+        : diskName;
+    NSURL *rawDiskURL = [machineDir URLByAppendingPathComponent:rawName];
 
-    BOOL hasSparse = [fm fileExistsAtPath:sparseURL.path];
+    BOOL hasSparse = isSparseName && [fm fileExistsAtPath:primaryURL.path];
     BOOL hasRaw = [fm fileExistsAtPath:rawDiskURL.path];
+    if (!hasSparse && !hasRaw && [fm fileExistsAtPath:[machineDir URLByAppendingPathComponent:@"archlinux.img"].path]) {
+        rawDiskURL = [machineDir URLByAppendingPathComponent:@"archlinux.img"];
+        hasRaw = YES;
+    }
 
-    if (![fm fileExistsAtPath:codeURL.path] ||
-        ![fm fileExistsAtPath:varsURL.path] ||
+    if (![fm fileExistsAtPath:codePath] ||
+        ![fm fileExistsAtPath:varsPath] ||
         (!hasSparse && !hasRaw)) {
-        NSString *msg = @"Missing guest files in Files -> HengeLinux -> Machines/ArchLinux/ (need code.fd, vars.fd, and archlinux.hvsparse).";
+        NSString *msg = [NSString stringWithFormat:@"Missing guest files for this VM (need code.fd, vars.fd, and %@).", diskName];
         _statusText = msg;
         NSError *err = [NSError errorWithDomain:HengeVMErrorDomain
                                            code:1001
@@ -243,7 +272,7 @@ static void henge_on_vm_exit(int reason) {
 
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (hasSparse) {
-        NSDictionary *sparseAttrs = [fm attributesOfItemAtPath:sparseURL.path error:nil];
+        NSDictionary *sparseAttrs = [fm attributesOfItemAtPath:primaryURL.path error:nil];
         unsigned long long sparseSize = [sparseAttrs[NSFileSize] unsignedLongLongValue];
         BOOL needsUnpack = !hasRaw;
         if (hasRaw) {
@@ -256,12 +285,12 @@ static void henge_on_vm_exit(int reason) {
             }
         }
         if (needsUnpack) {
-            _statusText = @"Unpacking archlinux.hvsparse disk image...";
+            _statusText = [NSString stringWithFormat:@"Unpacking %@ disk image...", diskName];
             NSString *unpackMsg = [NSString stringWithFormat:
-                @"[bridge] Unpacking archlinux.hvsparse (%llu bytes) -> archlinux.img...",
-                sparseSize];
+                @"[bridge] Unpacking %@ (%llu bytes) -> %@...",
+                diskName, sparseSize, rawDiskURL.lastPathComponent];
             hengelinux_console_append_line(unpackMsg.UTF8String);
-            std::string sparseStr = sparseURL.path.fileSystemRepresentation;
+            std::string sparseStr = primaryURL.path.fileSystemRepresentation;
             std::string rawStr = rawDiskURL.path.fileSystemRepresentation;
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                 std::remove(rawStr.c_str());
@@ -271,7 +300,7 @@ static void henge_on_vm_exit(int reason) {
                 }
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (rc != 0) {
-                        NSString *msg = @"Failed to unpack archlinux.hvsparse into sparse raw NVMe disk image.";
+                        NSString *msg = [NSString stringWithFormat:@"Failed to unpack %@ into sparse raw NVMe disk image.", diskName];
                         self->_statusText = msg;
                         hengelinux_console_append_line("[bridge] ERROR: hv_sparse_unpack failed");
                         NSError *err = [NSError errorWithDomain:HengeVMErrorDomain
@@ -279,7 +308,7 @@ static void henge_on_vm_exit(int reason) {
                                                        userInfo:@{NSLocalizedDescriptionKey: msg}];
                         completion(NO, err);
                     } else {
-                        hengelinux_console_append_line("[bridge] Unpacked archlinux.img successfully");
+                        hengelinux_console_append_line("[bridge] Unpacked disk image successfully");
                         completion(YES, nil);
                     }
                 });
@@ -304,6 +333,35 @@ static void henge_on_vm_exit(int reason) {
                     cpuCount:(int)cpuCount
                   gpuBackend:(int)gpuBackend
                        error:(NSError * _Nullable * _Nullable)error {
+    NSURL *docsURL = [self documentsDirectoryURL];
+    NSURL *machineDir = [[docsURL URLByAppendingPathComponent:@"Machines" isDirectory:YES]
+                         URLByAppendingPathComponent:@"ArchLinux" isDirectory:YES];
+    return [self startGuestAtMachineDir:machineDir.path
+                        primaryDiskName:@"archlinux.hvsparse"
+                      secondaryDiskPath:nil
+                               codePath:[machineDir URLByAppendingPathComponent:@"code.fd"].path
+                               varsPath:[machineDir URLByAppendingPathComponent:@"vars.fd"].path
+                                 ramMiB:ramMiB
+                               cpuCount:cpuCount
+                             gpuBackend:gpuBackend
+                      enableVirtioInput:YES
+                             enableXhci:NO
+                         enableAcpiSpcr:YES
+                                  error:error];
+}
+
+- (BOOL)startGuestAtMachineDir:(NSString *)machineDirPath
+               primaryDiskName:(NSString *)primaryDiskName
+             secondaryDiskPath:(nullable NSString *)secondaryDiskPath
+                      codePath:(NSString *)codePath
+                      varsPath:(NSString *)varsPath
+                        ramMiB:(uint32_t)ramMiB
+                      cpuCount:(int)cpuCount
+                    gpuBackend:(int)gpuBackend
+             enableVirtioInput:(BOOL)enableVirtioInput
+                    enableXhci:(BOOL)enableXhci
+                enableAcpiSpcr:(BOOL)enableAcpiSpcr
+                         error:(NSError * _Nullable * _Nullable)error {
     if (_running) {
         return YES;
     }
@@ -325,18 +383,22 @@ static void henge_on_vm_exit(int reason) {
     _gpuDevice = henge_virtio_gpu_create(&_gpuConfig);
 
     NSURL *docsURL = [self documentsDirectoryURL];
-    NSURL *machineDir = [[docsURL URLByAppendingPathComponent:@"Machines" isDirectory:YES]
-                         URLByAppendingPathComponent:@"ArchLinux" isDirectory:YES];
+    NSURL *machineDir = [NSURL fileURLWithPath:machineDirPath isDirectory:YES];
     NSURL *sharedDir = [docsURL URLByAppendingPathComponent:@"Shared" isDirectory:YES];
 
     NSFileManager *fm = NSFileManager.defaultManager;
     [fm createDirectoryAtURL:machineDir withIntermediateDirectories:YES attributes:nil error:nil];
     [fm createDirectoryAtURL:sharedDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-    NSURL *codeURL = [machineDir URLByAppendingPathComponent:@"code.fd"];
-    NSURL *varsURL = [machineDir URLByAppendingPathComponent:@"vars.fd"];
-    NSURL *sparseURL = [machineDir URLByAppendingPathComponent:@"archlinux.hvsparse"];
-    NSURL *rawDiskURL = [machineDir URLByAppendingPathComponent:@"archlinux.img"];
+    NSURL *codeURL = [NSURL fileURLWithPath:codePath];
+    NSURL *varsURL = [NSURL fileURLWithPath:varsPath];
+    NSString *diskName = (primaryDiskName.length > 0) ? primaryDiskName : @"disk0.img";
+    NSURL *primaryURL = [machineDir URLByAppendingPathComponent:diskName];
+    BOOL isSparseName = [diskName.lowercaseString hasSuffix:@".hvsparse"];
+    NSString *rawName = isSparseName
+        ? [[diskName stringByDeletingPathExtension] stringByAppendingPathExtension:@"img"]
+        : diskName;
+    NSURL *rawDiskURL = [machineDir URLByAppendingPathComponent:rawName];
     NSURL *snapURL = [machineDir URLByAppendingPathComponent:@"suspend.state"];
     _snapshotPathStr = snapURL.path.fileSystemRepresentation;
 
@@ -345,13 +407,17 @@ static void henge_on_vm_exit(int reason) {
     BOOL hadPriorSnapshot = (henge_vm_snapshot_read(_snapshotPathStr.c_str(), &prevSnapshot, nullptr, 0U) == 0);
     (void)hadPriorSnapshot;
 
-    BOOL hasSparse = [fm fileExistsAtPath:sparseURL.path];
+    BOOL hasSparse = isSparseName && [fm fileExistsAtPath:primaryURL.path];
     BOOL hasRaw = [fm fileExistsAtPath:rawDiskURL.path];
+    if (!hasSparse && !hasRaw && [fm fileExistsAtPath:[machineDir URLByAppendingPathComponent:@"archlinux.img"].path]) {
+        rawDiskURL = [machineDir URLByAppendingPathComponent:@"archlinux.img"];
+        hasRaw = YES;
+    }
 
     if (![fm fileExistsAtPath:codeURL.path] ||
         ![fm fileExistsAtPath:varsURL.path] ||
         (!hasSparse && !hasRaw)) {
-        NSString *msg = @"Missing guest files in Files -> HengeLinux -> Machines/ArchLinux/ (need code.fd, vars.fd, and archlinux.hvsparse).";
+        NSString *msg = [NSString stringWithFormat:@"Missing guest files for this VM (need code.fd, vars.fd, and %@).", diskName];
         _statusText = msg;
         if (error) {
             *error = [NSError errorWithDomain:HengeVMErrorDomain
@@ -363,11 +429,11 @@ static void henge_on_vm_exit(int reason) {
 
 #if HENGE_HAS_UPSTREAM_ENGINE
     /* Unpack HVSPARSE archive into an APFS sparse raw image on first boot or
-     * whenever archlinux.hvsparse is newer than archlinux.img. */
+     * whenever the archive is newer than the unpacked raw disk. */
     if (hasSparse) {
         BOOL needsUnpack = !hasRaw;
         if (hasRaw) {
-            NSDictionary *sparseAttrs = [fm attributesOfItemAtPath:sparseURL.path error:nil];
+            NSDictionary *sparseAttrs = [fm attributesOfItemAtPath:primaryURL.path error:nil];
             NSDictionary *rawAttrs = [fm attributesOfItemAtPath:rawDiskURL.path error:nil];
             NSDate *sparseMod = sparseAttrs[NSFileModificationDate];
             NSDate *rawMod = rawAttrs[NSFileModificationDate];
@@ -378,12 +444,12 @@ static void henge_on_vm_exit(int reason) {
         }
         if (needsUnpack) {
             [fm removeItemAtURL:rawDiskURL error:nil];
-            if (hv_sparse_unpack(sparseURL.path.fileSystemRepresentation,
+            if (hv_sparse_unpack(primaryURL.path.fileSystemRepresentation,
                                  rawDiskURL.path.fileSystemRepresentation,
                                  nullptr,
                                  nullptr) != 0) {
                 [fm removeItemAtURL:rawDiskURL error:nil];
-                NSString *msg = @"Failed to unpack archlinux.hvsparse into sparse raw NVMe disk image.";
+                NSString *msg = [NSString stringWithFormat:@"Failed to unpack %@ into sparse raw NVMe disk image.", diskName];
                 _statusText = msg;
                 if (error) {
                     *error = [NSError errorWithDomain:HengeVMErrorDomain
@@ -454,6 +520,10 @@ static void henge_on_vm_exit(int reason) {
     _codePathStr = codeURL.path.fileSystemRepresentation;
     _varsPathStr = varsURL.path.fileSystemRepresentation;
     _diskPathStr = rawDiskURL.path.fileSystemRepresentation;
+    _disk1PathStr.clear();
+    if (secondaryDiskPath != nil && secondaryDiskPath.length > 0 && [fm fileExistsAtPath:secondaryDiskPath]) {
+        _disk1PathStr = [NSURL fileURLWithPath:secondaryDiskPath].path.fileSystemRepresentation;
+    }
     _shareDirStr = sharedDir.path.fileSystemRepresentation;
     _shareSockStr = shareSockPath;
 
@@ -462,6 +532,7 @@ static void henge_on_vm_exit(int reason) {
     cfg.code_fd = _codePathStr.c_str();
     cfg.vars_fd = _varsPathStr.c_str();
     cfg.disk0 = _diskPathStr.c_str();
+    cfg.disk1 = _disk1PathStr.empty() ? nullptr : _disk1PathStr.c_str();
     cfg.share_dir = _shareDirStr.c_str();
     cfg.share_sock = _shareSockStr.c_str();
     cfg.ncpus = (cpuCount > 0) ? cpuCount : 4;
@@ -471,6 +542,16 @@ static void henge_on_vm_exit(int reason) {
     cfg.jit_bytes = jitPool.size;
     cfg.prealloc_ram = ramPtr;
     cfg.enable_sound = 1;
+#if defined(HENGE_WINVM_HAS_V2_FLAGS)
+    cfg.disable_xhci = enableXhci ? 0 : 1;
+    cfg.enable_virtio_input = enableVirtioInput ? 1 : 0;
+    cfg.disable_acpi_spcr = enableAcpiSpcr ? 0 : 1;
+    cfg.disk1_virtio_blk = _disk1PathStr.empty() ? 0 : 1;
+#else
+    (void)enableVirtioInput;
+    (void)enableXhci;
+    (void)enableAcpiSpcr;
+#endif
 
     char errBuf[512];
     std::memset(errBuf, 0, sizeof(errBuf));
@@ -813,6 +894,40 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
     return hv_share_take_oauth_done() != 0;
 #else
     return NO;
+#endif
+}
+
+- (void)sendSerialText:(NSString *)text {
+#if HENGE_HAS_UPSTREAM_ENGINE
+    if (!_running || text.length == 0) {
+        return;
+    }
+    HvWinVirt *board = hv_winvm_board();
+    if (board == nullptr || board->uart == nullptr) {
+        return;
+    }
+    NSData *utf8 = [text dataUsingEncoding:NSUTF8StringEncoding];
+    const auto *bytes = static_cast<const uint8_t *>(utf8.bytes);
+    for (NSUInteger i = 0; i < utf8.length; ++i) {
+        uint8_t ch = bytes[i];
+        hv_pl011_receive(board->uart, (ch == '\n') ? '\r' : ch);
+    }
+#else
+    (void)text;
+#endif
+}
+
+- (void)sendSerialControlByte:(uint8_t)byte {
+#if HENGE_HAS_UPSTREAM_ENGINE
+    if (!_running) {
+        return;
+    }
+    HvWinVirt *board = hv_winvm_board();
+    if (board != nullptr && board->uart != nullptr) {
+        hv_pl011_receive(board->uart, byte);
+    }
+#else
+    (void)byte;
 #endif
 }
 

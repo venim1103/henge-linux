@@ -308,12 +308,27 @@ final class SelfDebugJITClient: ObservableObject {
 
     private static func scanContainerFiles(docsURL: URL) -> [ContainerFileEntry] {
         let fm = FileManager.default
-        let seededNames: Set<String> = ["README-HengeLinux.txt", "README-ArchLinux.txt"]
-        let scanRoots: [(dir: URL, prefix: String)] = [
+        let seededNames: Set<String> = ["README-HengeLinux.txt", "README-ArchLinux.txt", "vm.json"]
+        var scanRoots: [(dir: URL, prefix: String)] = [
             (docsURL, ""),
-            (docsURL.appendingPathComponent("Machines/ArchLinux", isDirectory: true), "Machines/ArchLinux/"),
+            (docsURL.appendingPathComponent("Firmware", isDirectory: true), "Firmware/"),
             (docsURL.appendingPathComponent("Shared", isDirectory: true), "Shared/"),
         ]
+        let machinesRoot = docsURL.appendingPathComponent("Machines", isDirectory: true)
+        if let machineDirs = try? fm.contentsOfDirectory(
+            at: machinesRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            let sortedDirs = machineDirs.sorted {
+                $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending
+            }
+            for dir in sortedDirs {
+                if (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                    scanRoots.append((dir, "Machines/\(dir.lastPathComponent)/"))
+                }
+            }
+        }
 
         var results: [ContainerFileEntry] = []
         for (dirURL, prefix) in scanRoots {

@@ -45,6 +45,7 @@ struct HengeLinuxApp: App {
 
     @StateObject private var lifecycle = MetalLifecycleGuard()
     @StateObject private var jitClient = SelfDebugJITClient()
+    @StateObject private var vmStore = VMStore()
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
     @AppStorage("customGuestRamMiB") private var customGuestRamMiB: Int = 1664
     @State private var ramInputText: String = ""
@@ -52,6 +53,9 @@ struct HengeLinuxApp: App {
     @State private var isPreparingDisk: Bool = false
     @State private var isImportingFile: Bool = false
     @State private var showDebugConsole: Bool = false
+    @State private var showNewVMSheet: Bool = false
+    @State private var newVMName: String = ""
+    @State private var newVMDistroTag: String = "debian"
     @State private var fileImportMode: FileImportMode = .pairingPlist
     @State private var bootWarning: String?
     @State private var bootErrorAlert: String?
@@ -91,6 +95,53 @@ struct HengeLinuxApp: App {
             }
             .sheet(isPresented: $showDebugConsole) {
                 DebugConsoleSheetView()
+            }
+            .sheet(isPresented: $showNewVMSheet) {
+                NavigationStack {
+                    Form {
+                        Section("Machine Identity") {
+                            TextField("VM Name (e.g. Debian 13 ARM64)", text: $newVMName)
+                            Picker("Distribution", selection: $newVMDistroTag) {
+                                ForEach(VMConfig.distroOptions, id: \.tag) { opt in
+                                    Text(opt.label).tag(opt.tag)
+                                }
+                            }
+                        }
+                        Section("Defaults") {
+                            LabeledContent("Guest RAM", value: "\(effectiveRamMiB) MiB")
+                            LabeledContent("vCPUs", value: "\(selectedProfile.cpuCount)")
+                            LabeledContent("VirtIO Input", value: "Enabled (Keyboard + Tablet)")
+                            LabeledContent("USB 3.0 xHCI", value: "Disabled (No 90s Linux stall)")
+                        }
+                    }
+                    .navigationTitle("New Linux VM")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") {
+                                showNewVMSheet = false
+                            }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Create") {
+                                do {
+                                    let created = try vmStore.createMachine(
+                                        name: newVMName,
+                                        distroTag: newVMDistroTag,
+                                        ramMiB: Int(effectiveRamMiB),
+                                        cpuCount: selectedProfile.cpuCount
+                                    )
+                                    jitClient.refreshFileStatus()
+                                    bootWarning = "Created VM '\(created.name)' in Machines/\(created.id)/."
+                                    newVMName = ""
+                                    showNewVMSheet = false
+                                } catch {
+                                    bootErrorAlert = "Create VM failed: \(error.localizedDescription)"
+                                }
+                            }
+                        }
+                    }
+                }
             }
             .onReceive(bridgePollTimer) { _ in
                 guard isRunning else { return }
@@ -146,13 +197,28 @@ struct HengeLinuxApp: App {
                 HengeVMBridge.shared.pushHostClipboard(hostClip)
             }
             .onAppear {
+                let vm = vmStore.selectedMachine
+                if vm.ramMiB >= Int(HENGE_MIN_GUEST_RAM_MIB) && vm.ramMiB <= Int(HENGE_MAX_GUEST_RAM_MIB) {
+                    customGuestRamMiB = vm.ramMiB
+                }
                 if ramInputText.isEmpty {
                     ramInputText = "\(effectiveRamMiB)"
                 }
             }
+            .onChange(of: vmStore.selectedMachineID) { _, _ in
+                let vm = vmStore.selectedMachine
+                customGuestRamMiB = min(max(vm.ramMiB, Int(HENGE_MIN_GUEST_RAM_MIB)), Int(HENGE_MAX_GUEST_RAM_MIB))
+                ramInputText = "\(effectiveRamMiB)"
+            }
             .onOpenURL { url in
                 do {
-                    bootWarning = try jitClient.importFiles(from: [url], forceAsPairingPlist: false)
+                    let lower = url.lastPathComponent.lowercased()
+                    if lower.hasSuffix(".plist") || lower.hasSuffix(".mobiledevicepairing") {
+                        bootWarning = try jitClient.importFiles(from: [url], forceAsPairingPlist: true)
+                    } else {
+                        bootWarning = try vmStore.importGuestFiles(from: [url], into: vmStore.selectedMachine)
+                        jitClient.refreshFileStatus()
+                    }
                 } catch {
                     bootErrorAlert = "Import failed: \(error.localizedDescription)"
                 }
@@ -177,10 +243,12 @@ struct HengeLinuxApp: App {
                 switch result {
                 case .success(let urls):
                     do {
-                        bootWarning = try jitClient.importFiles(
-                            from: urls,
-                            forceAsPairingPlist: fileImportMode == .pairingPlist
-                        )
+                        if fileImportMode == .pairingPlist {
+                            bootWarning = try jitClient.importFiles(from: urls, forceAsPairingPlist: true)
+                        } else {
+                            bootWarning = try vmStore.importGuestFiles(from: urls, into: vmStore.selectedMachine)
+                            jitClient.refreshFileStatus()
+                        }
                     } catch {
                         bootErrorAlert = "Import failed: \(error.localizedDescription)"
                     }
@@ -194,6 +262,50 @@ struct HengeLinuxApp: App {
     private var launcherView: some View {
         NavigationStack {
             List {
+                Section("Virtual Machines (`Documents/Machines/`)") {
+                    ForEach(vmStore.machines) { vm in
+                        Button {
+                            vmStore.selectedMachineID = vm.id
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(vm.name)
+                                        .font(.headline)
+                                    Text("\(vm.distroDisplayName) · \(vm.ramMiB) MiB · \(vm.cpuCount) vCPU · \(vm.primaryDiskFileName)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if vm.id == vmStore.selectedMachine.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if vmStore.machines.count > 1 && vm.id != "ArchLinux" {
+                                Button(role: .destructive) {
+                                    do {
+                                        try vmStore.deleteMachine(id: vm.id)
+                                        jitClient.refreshFileStatus()
+                                        bootWarning = "Deleted VM '\(vm.name)'."
+                                    } catch {
+                                        bootErrorAlert = "Delete VM failed: \(error.localizedDescription)"
+                                    }
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                    Button {
+                        showNewVMSheet = true
+                    } label: {
+                        Label("New ARM64 Linux VM...", systemImage: "plus.rectangle.on.folder")
+                    }
+                }
+
                 Section("Hardware Profile") {
                     ForEach(MachineProfile.presets) { preset in
                         Button {
@@ -343,11 +455,56 @@ struct HengeLinuxApp: App {
                     }
                 }
 
-                Section("Guest Image (`Documents/Machines/ArchLinux`)") {
-                    LabeledContent("Disk Container", value: jitClient.diskStatusText)
-                    LabeledContent("UEFI Firmware", value: jitClient.uefiStatusText)
-                    LabeledContent("iOS Files Folder", value: "On My iPhone ▸ HengeLinux (Registered)")
-                    LabeledContent("Background Snapshot", value: HengeVMBridge.shared.hasSavedBackgroundSnapshot ? "suspend.state (Disk Flushed + Metadata)" : "None")
+                Section("Guest Image & Devices (\(vmStore.selectedMachine.name))") {
+                    let activeVM = vmStore.selectedMachine
+                    let activeDir = vmStore.machineDirectoryURL(for: activeVM.id)
+                    LabeledContent("Disk Container", value: vmStore.diskStatusText(for: activeVM))
+                    LabeledContent("UEFI Firmware", value: vmStore.uefiStatusText(for: activeVM))
+                    if let media = activeVM.secondaryMediaFileName, !media.isEmpty {
+                        HStack {
+                            LabeledContent("Secondary Media", value: media)
+                            Button("Eject", role: .destructive) {
+                                vmStore.clearSecondaryMedia(for: activeVM)
+                                jitClient.refreshFileStatus()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                    }
+                    Toggle(
+                        "VirtIO Input (Keyboard + Tablet)",
+                        isOn: Binding(
+                            get: { activeVM.enableVirtioInput },
+                            set: { newVal in
+                                var copy = activeVM
+                                copy.enableVirtioInput = newVal
+                                vmStore.updateMachine(copy)
+                            }
+                        )
+                    )
+                    Toggle(
+                        "USB 3.0 xHCI Controller",
+                        isOn: Binding(
+                            get: { activeVM.enableXhci },
+                            set: { newVal in
+                                var copy = activeVM
+                                copy.enableXhci = newVal
+                                vmStore.updateMachine(copy)
+                            }
+                        )
+                    )
+                    Toggle(
+                        "ACPI SPCR Serial Console",
+                        isOn: Binding(
+                            get: { activeVM.enableAcpiSpcr },
+                            set: { newVal in
+                                var copy = activeVM
+                                copy.enableAcpiSpcr = newVal
+                                vmStore.updateMachine(copy)
+                            }
+                        )
+                    )
+                    LabeledContent("Background Snapshot", value: HengeVMBridge.shared.hasSavedBackgroundSnapshot(atMachineDir: activeDir.path) ? "suspend.state (Disk Flushed + Metadata)" : "None")
                     LabeledContent("Aligned Guest Bytes", value: "\(alignedBytes) B")
                     LabeledContent("Host Bridge", value: "http://10.0.2.4/.henge/")
                     LabeledContent("VM Engine", value: HengeVMBridge.shared.isEngineLinked ? "Linked (HengeVM)" : "Host Substrate Only")
@@ -355,7 +512,7 @@ struct HengeLinuxApp: App {
                         fileImportMode = .guestFiles
                         isImportingFile = true
                     } label: {
-                        Label("Import Guest Files (hvsparse / code.fd / vars.fd)...", systemImage: "folder.badge.plus")
+                        Label("Import Disk / ISO / Firmware (.hvsparse / .img / .iso / .fd)...", systemImage: "folder.badge.plus")
                     }
                 }
 
@@ -425,9 +582,25 @@ struct HengeLinuxApp: App {
                 Section {
                     Button {
                         Task {
+                            var activeVM = vmStore.selectedMachine
+                            activeVM.ramMiB = Int(effectiveRamMiB)
+                            activeVM.cpuCount = selectedProfile.cpuCount
+                            activeVM.gpuBackend = (jitClient.gpuBackend == .virgl3D) ? 1 : 0
+                            vmStore.updateMachine(activeVM)
+
+                            let machineDir = vmStore.machineDirectoryURL(for: activeVM.id)
+                            let codeURL = vmStore.resolvedCodeFirmwareURL(for: activeVM)
+                            let varsURL = vmStore.resolvedVarsFirmwareURL(for: activeVM)
+                            let secondaryURL = vmStore.resolvedSecondaryMediaURL(for: activeVM)
+
                             isPreparingDisk = true
                             let diskReady: Result<Void, Error> = await withCheckedContinuation { continuation in
-                                HengeVMBridge.shared.prepareDiskImage { success, error in
+                                HengeVMBridge.shared.prepareDiskImage(
+                                    atMachineDir: machineDir.path,
+                                    primaryDiskName: activeVM.primaryDiskFileName,
+                                    codePath: codeURL.path,
+                                    varsPath: varsURL.path
+                                ) { success, error in
                                     if success {
                                         continuation.resume(returning: .success(()))
                                     } else {
@@ -459,9 +632,17 @@ struct HengeLinuxApp: App {
                             let gpuMode: Int32 = (jitClient.gpuBackend == .virgl3D) ? 1 : 0
                             do {
                                 try HengeVMBridge.shared.startGuest(
-                                    withRamMiB: effectiveRamMiB,
-                                    cpuCount: Int32(selectedProfile.cpuCount),
-                                    gpuBackend: gpuMode
+                                    atMachineDir: machineDir.path,
+                                    primaryDiskName: activeVM.primaryDiskFileName,
+                                    secondaryDiskPath: secondaryURL?.path,
+                                    codePath: codeURL.path,
+                                    varsPath: varsURL.path,
+                                    ramMiB: effectiveRamMiB,
+                                    cpuCount: Int32(activeVM.cpuCount),
+                                    gpuBackend: gpuMode,
+                                    enableVirtioInput: activeVM.enableVirtioInput,
+                                    enableXhci: activeVM.enableXhci,
+                                    enableAcpiSpcr: activeVM.enableAcpiSpcr
                                 )
                                 let actualMiB = HengeVMBridge.shared.activeRamMiB
                                 if actualMiB > 0 && actualMiB < effectiveRamMiB {
@@ -479,7 +660,7 @@ struct HengeLinuxApp: App {
                         }
                     } label: {
                         Label(
-                            isPreparingDisk ? "Unpacking Disk Image..." : "Boot Arch Linux (\(effectiveRamMiB) MiB)",
+                            isPreparingDisk ? "Unpacking Disk Image..." : "Boot \(vmStore.selectedMachine.name) (\(effectiveRamMiB) MiB)",
                             systemImage: "play.fill"
                         )
                         .frame(maxWidth: .infinity)
@@ -714,7 +895,7 @@ struct DebugConsoleSheetView: View {
         options: []
     )
 
-    private static func sanitizeTerminalOutput(_ input: String) -> String {
+    static func sanitizeTerminalOutput(_ input: String) -> String {
         var text = input
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")

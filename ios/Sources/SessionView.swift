@@ -12,6 +12,13 @@ struct SessionView: View {
     let bootWarning: String?
     let onStopSession: () -> Void
 
+    private enum SessionTab: String, CaseIterable, Identifiable {
+        case display = "Display"
+        case terminal = "ttyAMA0"
+        var id: String { rawValue }
+    }
+
+    @State private var activeTab: SessionTab = .display
     @State private var showModifierBar: Bool = true
     @State private var showDebugConsole: Bool = false
     @State private var focusSoftwareKeyboard: Bool = false
@@ -37,22 +44,27 @@ struct SessionView: View {
                         .background(Color(white: 0.12))
                 }
 
-                MetalFramebufferRepresentable(
-                    lifecycle: lifecycle,
-                    focusKeyboard: $focusSoftwareKeyboard,
-                    suppressSoftwareKeyboard: !focusSoftwareKeyboard,
-                    onCharacterTyped: {
-                        releaseActiveModifiers()
-                    }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black)
+                if activeTab == .display {
+                    MetalFramebufferRepresentable(
+                        lifecycle: lifecycle,
+                        focusKeyboard: $focusSoftwareKeyboard,
+                        suppressSoftwareKeyboard: !focusSoftwareKeyboard,
+                        onCharacterTyped: {
+                            releaseActiveModifiers()
+                        }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black)
 
-                if case .clamshell = posture {
-                    clamshellInputDeck
-                        .frame(height: max(220, geo.size.height * 0.44))
-                } else if showModifierBar {
-                    compactModifierStrip
+                    if case .clamshell = posture {
+                        clamshellInputDeck
+                            .frame(height: max(220, geo.size.height * 0.44))
+                    } else if showModifierBar {
+                        compactModifierStrip
+                    }
+                } else {
+                    InteractiveSerialTerminalView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -100,6 +112,14 @@ struct SessionView: View {
         HStack(spacing: 6) {
             HingeSensorView(posture: $posture)
 
+            Picker("View", selection: $activeTab) {
+                ForEach(SessionTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 142)
+
             Spacer(minLength: 2)
 
             Text("\(displayRamMiB)M·\(displayCpuCount)c")
@@ -111,11 +131,11 @@ struct SessionView: View {
             Button {
                 showDebugConsole = true
             } label: {
-                Image(systemName: "terminal")
+                Image(systemName: "doc.text.magnifyingglass")
             }
             .buttonStyle(.bordered)
             .controlSize(.mini)
-            .accessibilityLabel("Debug & Serial Logs")
+            .accessibilityLabel("Debug & Telemetry Logs")
 
             Button {
                 focusSoftwareKeyboard.toggle()
@@ -759,5 +779,149 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: MetalDisplaySurfaceView, coordinator: ()) {
         HengeVMBridge.shared.detachDisplayLayer(ifMatching: uiView.metalLayer)
+    }
+}
+
+/// Interactive PL011 (`ttyAMA0`) serial console tab embedded in `SessionView`.
+private struct InteractiveSerialTerminalView: View {
+    @State private var outputText: String = ""
+    @State private var inputLine: String = ""
+    @State private var lastObservedBytes: UInt64 = UInt64.max
+    @State private var autoScroll: Bool = true
+    @State private var showRawAnsi: Bool = false
+
+    private let pollTimer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(outputText.isEmpty ? "Connected to PL011 UART (ttyAMA0)..." : outputText)
+                            .font(.system(size: 12, weight: .regular, design: .monospaced))
+                            .foregroundStyle(outputText.isEmpty ? Color.secondary : Color.green)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .textSelection(.enabled)
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id("serial-term-bottom")
+                    }
+                }
+                .background(Color.black)
+                .onChange(of: outputText) { _, _ in
+                    if autoScroll {
+                        proxy.scrollTo("serial-term-bottom", anchor: .bottom)
+                    }
+                }
+                .onAppear {
+                    refreshOutput(force: true)
+                    if autoScroll {
+                        proxy.scrollTo("serial-term-bottom", anchor: .bottom)
+                    }
+                }
+            }
+
+            Divider()
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    serialByteButton("Ctrl-C", byte: 0x03)
+                    serialByteButton("Ctrl-D", byte: 0x04)
+                    serialByteButton("Ctrl-Z", byte: 0x1A)
+                    serialByteButton("Esc", byte: 0x1B)
+                    serialByteButton("Tab", byte: 0x09)
+                    serialSeqButton("↑", seq: "\u{1B}[A")
+                    serialSeqButton("↓", seq: "\u{1B}[B")
+                    Button("Paste") {
+                        if let clip = UIPasteboard.general.string, !clip.isEmpty {
+                            HengeVMBridge.shared.sendSerialText(clip)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .font(.caption.monospaced())
+
+                    Button(showRawAnsi ? "Clean" : "Raw") {
+                        showRawAnsi.toggle()
+                        refreshOutput(force: true)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .font(.caption.monospaced())
+
+                    Button("Clear") {
+                        HengeVMBridge.shared.clearConsoleLog()
+                        refreshOutput(force: true)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .font(.caption.monospaced())
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            }
+            .background(Color(white: 0.10))
+
+            HStack(spacing: 8) {
+                TextField("Send command to ttyAMA0...", text: $inputLine)
+                    .font(.system(size: 13, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(true)
+                    .textFieldStyle(.roundedBorder)
+                    .submitLabel(.send)
+                    .onSubmit {
+                        sendCurrentInput()
+                    }
+
+                Button("Send") {
+                    sendCurrentInput()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Color(white: 0.14))
+        }
+        .onReceive(pollTimer) { _ in
+            refreshOutput(force: false)
+        }
+    }
+
+    private func sendCurrentInput() {
+        let payload = inputLine + "\r"
+        inputLine = ""
+        HengeVMBridge.shared.sendSerialText(payload)
+    }
+
+    private func serialByteButton(_ title: String, byte: UInt8) -> some View {
+        Button(title) {
+            HengeVMBridge.shared.sendSerialControlByte(byte)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .font(.caption.monospaced())
+    }
+
+    private func serialSeqButton(_ title: String, seq: String) -> some View {
+        Button(title) {
+            HengeVMBridge.shared.sendSerialText(seq)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .font(.caption.monospaced())
+    }
+
+    private func refreshOutput(force: Bool) {
+        let bridge = HengeVMBridge.shared
+        let total = bridge.consoleTotalBytes
+        guard force || total != lastObservedBytes else {
+            return
+        }
+        lastObservedBytes = total
+        let raw = bridge.copyConsoleLog()
+        outputText = showRawAnsi ? raw : DebugConsoleSheetView.sanitizeTerminalOutput(raw)
     }
 }

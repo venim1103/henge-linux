@@ -100,6 +100,9 @@ targets:
                 - hvsparse
                 - fd
                 - img
+                - raw
+                - qcow2
+                - iso
           - UTTypeIdentifier: io.hengelinux.mobiledevicepairing
             UTTypeDescription: Apple Device Lockdown Pairing Record
             UTTypeConformsTo:

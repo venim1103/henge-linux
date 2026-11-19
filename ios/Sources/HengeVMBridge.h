@@ -37,12 +37,29 @@ NS_SWIFT_UI_ACTOR
 - (void)attachDisplayLayer:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(attachDisplayLayer(_:));
 - (void)detachDisplayLayerIfMatching:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(detachDisplayLayer(ifMatching:));
 
-/// Unpack `archlinux.hvsparse` into `archlinux.img` off the main thread when needed
-/// before calling `startGuestWithRamMiB:`.
+/// Unpack primary `.hvsparse` disk image into a raw APFS sparse image off the main thread.
 - (void)prepareDiskImageWithCompletion:(void (^)(BOOL success, NSError * _Nullable error))completion;
+- (void)prepareDiskImageAtMachineDir:(NSString *)machineDirPath
+                     primaryDiskName:(NSString *)primaryDiskName
+                            codePath:(NSString *)codePath
+                            varsPath:(NSString *)varsPath
+                          completion:(void (^)(BOOL success, NSError * _Nullable error))completion;
 
-/// Start the Arch Linux AArch64 VM with `ramMiB` and `cpuCount` using guest
-/// artifacts in `Documents/Machines/ArchLinux/{archlinux.hvsparse,code.fd,vars.fd}`.
+/// Start a VM using explicit per-VM paths and PCIe/ACPI device toggles.
+- (BOOL)startGuestAtMachineDir:(NSString *)machineDirPath
+               primaryDiskName:(NSString *)primaryDiskName
+             secondaryDiskPath:(nullable NSString *)secondaryDiskPath
+                      codePath:(NSString *)codePath
+                      varsPath:(NSString *)varsPath
+                        ramMiB:(uint32_t)ramMiB
+                      cpuCount:(int)cpuCount
+                    gpuBackend:(int)gpuBackend
+             enableVirtioInput:(BOOL)enableVirtioInput
+                    enableXhci:(BOOL)enableXhci
+                enableAcpiSpcr:(BOOL)enableAcpiSpcr
+                         error:(NSError * _Nullable * _Nullable)error;
+
+/// Legacy wrapper for `Documents/Machines/ArchLinux/`.
 - (BOOL)startGuestWithRamMiB:(uint32_t)ramMiB
                     cpuCount:(int)cpuCount
                   gpuBackend:(int)gpuBackend
@@ -51,8 +68,13 @@ NS_SWIFT_UI_ACTOR
 /// Stop the VM and release ledger-exempt guest RAM.
 - (void)stopGuest;
 
-/// Persist a checksummed background VM snapshot (`Documents/Machines/ArchLinux/suspend.state`).
+/// Persist or query a checksummed background VM snapshot (`suspend.state`).
 - (BOOL)saveBackgroundSnapshot;
+- (BOOL)hasSavedBackgroundSnapshotAtMachineDir:(NSString *)machineDirPath;
+
+/// Send raw text or control bytes directly to the guest PL011 UART (`ttyAMA0`).
+- (void)sendSerialText:(NSString *)text;
+- (void)sendSerialControlByte:(uint8_t)byte;
 
 /// Forward USB HID keyboard usage codes (`0x29` Esc, `0x2B` Tab, `0xE0` Ctrl, etc.).
 - (void)sendHidKeyUsage:(uint8_t)usage pressed:(BOOL)pressed;
