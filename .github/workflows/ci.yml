@@ -53,7 +53,11 @@ jobs:
           gcc -O2 -Wall -Wextra -Werror guest/henge_dual_console.c -o build/henge-dual-console
           gcc -O2 -Wall -Wextra -Werror guest/henge_guest_agent.c -o build/henge-guest-agent
           ./build/henge-guest-agent --version
-          musl-gcc -O2 -Wall -Wextra -Werror -static guest/henge_guest_agent.c -o build/henge-guest-agent-musl
+          mkdir -p build/musl-uapi
+          ln -sfn /usr/include/linux build/musl-uapi/linux
+          ln -sfn /usr/include/asm-generic build/musl-uapi/asm-generic
+          ln -sfn "/usr/include/$(uname -m)-linux-gnu/asm" build/musl-uapi/asm
+          musl-gcc -O2 -Wall -Wextra -Werror -static -isystem build/musl-uapi guest/henge_guest_agent.c -o build/henge-guest-agent-musl
           ./build/henge-guest-agent-musl --version
           sh -n guest/install.sh
           sh guest/install.sh --dry-run
@@ -64,7 +68,6 @@ jobs:
           bash -n scripts/provision_archlinux_arm64.sh
           bash -n scripts/build_prebuilt_archlinux_arm64.sh
           bash -n scripts/build_guest_image.sh
-          bash -n scripts/profiles/arch.sh scripts/profiles/void.sh scripts/profiles/alpine.sh scripts/profiles/debian.sh
           bash scripts/provision_archlinux_arm64.sh --dry-run
           bash scripts/build_prebuilt_archlinux_arm64.sh --dry-run
           for p in arch debian alpine void; do
