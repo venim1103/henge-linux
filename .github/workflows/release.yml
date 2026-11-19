@@ -1,0 +1,224 @@
+name: Tag Pre-Release
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+        type: string
+
+concurrency:
+  group: release-tag-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  core-tests:
+    name: Core & Platform Unit Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Run 4 KiB TLB compatibility tests & build hvsparse
+        run: make HV_TLB_PAGE_BITS=12 test-core hvsparse
+      - name: Verify hvsparse pack/unpack round-trip
+        run: |
+          python3 -c '
+          data = b"\x00" * 65536 + b"ARCH_LINUX_AARCH64" + b"\x00" * (131072 - 18) + b"\xff" * 4096
+          open("build/raw.bin", "wb").write(data)
+          '
+          ./build/hvsparse pack build/raw.bin build/test.hvsparse
+          ./build/hvsparse unpack build/test.hvsparse build/unpacked.bin
+          cmp build/raw.bin build/unpacked.bin
+      - name: Run 16 KiB TLB fast-path tests
+        run: make clean && make HV_TLB_PAGE_BITS=14 test-core hvsparse
+      - name: Validate guest C console & scripts
+        run: |
+          gcc -O2 -Wall -Wextra -Werror guest/henge_dual_console.c -o build/henge-dual-console
+          python3 -m py_compile guest/henge-xdg-open scripts/apply_upstream_patches.py
+          bash -n guest/setup-arch-bridge.sh
+          bash -n scripts/sync_upstream.sh
+          bash -n scripts/build_ios_deps.sh
+          bash -n scripts/provision_archlinux_arm64.sh
+          bash -n scripts/build_prebuilt_archlinux_arm64.sh
+          bash scripts/build_prebuilt_archlinux_arm64.sh --dry-run
+
+  ios-build:
+    name: Build Unsigned iOS IPA (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select Xcode 26 toolchain if installed
+        run: |
+          if [ -d /Applications/Xcode_26.6.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app
+          fi
+          xcodebuild -version | tee .xcode-version
+      - name: Install XcodeGen & iOS static dependency build tools
+        run: |
+          brew install xcodegen meson ninja pkg-config
+          brew list --versions xcodegen meson ninja pkg-config
+      - name: Sync & patch upstream WindowsiOS engine
+        run: bash scripts/sync_upstream.sh
+      - name: Restore cached iOS static dependencies (libffi, glib, libslirp)
+        uses: actions/cache@3edfce9056124e459a23f683a21433670d47daca # @actions/cache 6.2.0
+        with:
+          path: .upstream/WindowsiOS/ios/deps
+          key: ios-arm64-deps-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/sync_upstream.sh', 'scripts/build_ios_deps.sh') }}
+      - name: Build or validate iOS static dependencies (libffi, glib, libslirp)
+        run: bash scripts/build_ios_deps.sh
+      - name: Run macOS platform tests & build full ios-lib
+        run: make REQUIRE_UPSTREAM=1 test-core hvsparse ios-lib
+      - name: Generate Xcode project
+        run: xcodegen generate --spec ios/project.yml
+      - name: Build unsigned iphoneos bundle and package .ipa
+        run: |
+          xcodebuild \
+            -project ios/HengeLinux.xcodeproj \
+            -scheme HengeLinux \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+          APP_BUNDLE="build/DerivedData/Build/Products/Release-iphoneos/HengeLinux.app"
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_BUNDLE" build/ipa/Payload/
+          (cd build/ipa && zip -qr ../HengeLinux-unsigned.ipa Payload)
+          shasum -a 256 build/HengeLinux-unsigned.ipa > build/HengeLinux-unsigned.ipa.sha256
+          ls -lh build/HengeLinux-unsigned.ipa
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-ipa-assets
+          path: |
+            build/HengeLinux-unsigned.ipa
+            build/HengeLinux-unsigned.ipa.sha256
+
+  guest-image:
+    name: Build Arch Linux ARM64 Guest Image & EDK2 Firmware
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install disk & UEFI provisioning tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils \
+            build-essential \
+            ca-certificates \
+            curl \
+            dosfstools \
+            e2fsprogs \
+            fdisk \
+            gdisk \
+            ipxe-qemu \
+            libarchive-tools \
+            mount \
+            mtools \
+            parted \
+            qemu-efi-aarch64 \
+            qemu-system-aarch64 \
+            qemu-system-arm \
+            systemd-boot-efi \
+            tar \
+            util-linux \
+            xz-utils \
+            zstd
+      - name: Build code.fd, vars.fd, and archlinux.hvsparse
+        env:
+          VERIFY_BOOT: "1"
+        run: bash scripts/build_prebuilt_archlinux_arm64.sh
+      - name: Upload prebuilt guest image artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-guest-assets
+          path: |
+            build/prebuilt/code.fd
+            build/prebuilt/vars.fd
+            build/prebuilt/archlinux.hvsparse
+            build/prebuilt/SHA256SUMS.txt
+
+  publish-prerelease:
+    name: Publish GitHub Pre-Release
+    needs: [core-tests, ios-build, guest-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Download iOS IPA assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-ipa-assets
+          path: build/release
+      - name: Download guest image assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-guest-assets
+          path: build/release
+      - name: Create or update GitHub Pre-Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "ERROR: Invalid release tag '$RELEASE_TAG' (expected vX.Y.Z)." >&2
+            exit 1
+          fi
+          cp ios/Resources/henge-jit.js build/release/henge-jit.js
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          NOTES="## HengeLinux ${RELEASE_TAG} (Pre-Release)
+
+          Built from commit \`${SHORT_SHA}\` on ${BUILD_DATE}. Full-system ARM64 (\`aarch64\`) Arch Linux virtualization on non-jailbroken iOS 26 / iOS 27 devices without \`Hypervisor.framework\`.
+
+          ### Highlights
+          - **Direct ARM64-to-ARM64 DBT & Software MMU:** Boots mainline Arch Linux ARM64 via EDK2 UEFI + ACPI 6.3 + \`systemd-bootaa64.efi\` (\`timeout 0\`) with full-frame Metal framebuffer hashing.
+          - **User-Editable Guest RAM (\`512\`–\`10,240 MiB\`):** Configure exact guest memory via numeric field, stepper, slider, or quick-pick chips (default \`1,664 MiB\` for safe standard-ledger Jetsam headroom).
+          - **Native Static C Console & \`/dev/uinput\` HID Bridge:** Zero-dependency \`henge-dual-console\` binary mirrors \`ttyAMA0\` onto \`tty1\`, launches an interactive root login shell, and injects touch, Split Deck trackpad, and keyboard events into separate Virtual Keyboard and Virtual Tablet \`/dev/uinput\` devices for X11/LXQt.
+          - **Complete Special-Key Strip & Bluetooth HID:** Includes \`Esc\`, \`Tab\`, \`Bck\`, \`Del\`, \`Shift\`, \`Ctrl\`, \`Alt\`, \`Super\`, \`Caps\`, arrows, \`Home\`/\`End\`/\`PgUp\`/\`PgDn\`, \`Ins\`, \`Prnt\`, \`ScrLk\`, \`Pause\`, \`Menu\`, \`F1\`–\`F12\`, \`Paste\`, and \`CAD\`.
+          - **One-Command LXQt Graphical Desktop:** Run \`henge-install-desktop\` at the root prompt to install LXQt + SDDM autologin on \`vt2\` (\`Ctrl+Alt+F1\` / \`Ctrl+Alt+F2\` to switch consoles).
+
+          ### Quick Setup (iOS 26.0+)
+          1. Download and sign **\`HengeLinux-unsigned.ipa\`** with **SideStore** or **AltStore**.
+          2. Download **\`archlinux.hvsparse\`**, **\`code.fd\`**, and **\`vars.fd\`**, then import all three via **Import Guest Files...** inside HengeLinux.
+          3. Place **\`henge-jit.js\`** in **Files ▸ On My iPhone ▸ StikDebug**, enable **LocalDevVPN**, long-press **HengeLinux** in StikDebug -> **Assign Script** -> **\`henge-jit.js\`**, and launch HengeLinux.
+          4. Tap **Boot Arch Linux**. See [\`docs/SETUP.md\`](https://github.com/venim1103/henge-linux/blob/${RELEASE_TAG}/docs/SETUP.md) for full instructions."
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              build/release/HengeLinux-unsigned.ipa \
+              build/release/HengeLinux-unsigned.ipa.sha256 \
+              build/release/archlinux.hvsparse \
+              build/release/code.fd \
+              build/release/vars.fd \
+              build/release/SHA256SUMS.txt \
+              build/release/henge-jit.js \
+              --clobber
+            gh release edit "$RELEASE_TAG" \
+              --title "HengeLinux ${RELEASE_TAG} (Pre-Release)" \
+              --notes "$NOTES" \
+              --prerelease
+          else
+            gh release create "$RELEASE_TAG" \
+              build/release/HengeLinux-unsigned.ipa \
+              build/release/HengeLinux-unsigned.ipa.sha256 \
+              build/release/archlinux.hvsparse \
+              build/release/code.fd \
+              build/release/vars.fd \
+              build/release/SHA256SUMS.txt \
+              build/release/henge-jit.js \
+              --title "HengeLinux ${RELEASE_TAG} (Pre-Release)" \
+              --notes "$NOTES" \
+              --target "$GITHUB_SHA" \
+              --prerelease
+          fi
