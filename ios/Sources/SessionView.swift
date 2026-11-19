@@ -194,7 +194,7 @@ struct SessionView: View {
                 modifierToggle("Ctrl", usage: 0xE0, isOn: $ctrlActive)
                 modifierToggle("Alt", usage: 0xE2, isOn: $altActive)
                 modifierToggle("Super", usage: 0xE3, isOn: $superActive)
-                hidPulseButton("Caps", usage: 0x39)
+                hidPulseButton("Caps", usage: 0x39, repeatable: false)
                 hidPulseButton("←", usage: 0x50)
                 hidPulseButton("→", usage: 0x4F)
                 hidPulseButton("↑", usage: 0x52)
@@ -203,11 +203,11 @@ struct SessionView: View {
                 hidPulseButton("End", usage: 0x4D)
                 hidPulseButton("PgUp", usage: 0x4B)
                 hidPulseButton("PgDn", usage: 0x4E)
-                hidPulseButton("Ins", usage: 0x49)
-                hidPulseButton("Prnt", usage: 0x46)
-                hidPulseButton("ScrLk", usage: 0x47)
-                hidPulseButton("Pause", usage: 0x48)
-                hidPulseButton("Menu", usage: 0x65)
+                hidPulseButton("Ins", usage: 0x49, repeatable: false)
+                hidPulseButton("Prnt", usage: 0x46, repeatable: false)
+                hidPulseButton("ScrLk", usage: 0x47, repeatable: false)
+                hidPulseButton("Pause", usage: 0x48, repeatable: false)
+                hidPulseButton("Menu", usage: 0x65, repeatable: false)
                 hidPulseButton("F1", usage: 0x3A)
                 hidPulseButton("F2", usage: 0x3B)
                 hidPulseButton("F3", usage: 0x3C)
@@ -311,8 +311,8 @@ struct SessionView: View {
         }
     }
 
-    private func hidPulseButton(_ label: String, usage: UInt8) -> some View {
-        HidHoldKeyButton(label: label, usage: usage) {
+    private func hidPulseButton(_ label: String, usage: UInt8, repeatable: Bool = true) -> some View {
+        HidHoldKeyButton(label: label, usage: usage, repeatable: repeatable) {
             releaseActiveModifiers()
         }
     }
@@ -329,11 +329,15 @@ struct SessionView: View {
 }
 
 /// Hold-capable HID key button that preserves horizontal ScrollView gestures:
-/// sends key-down on press and holds until release (enabling native guest key
-/// repeat for Esc, Backspace, Delete, arrows, F1-F12, etc.).
+/// emits an immediate 20 ms key pulse on press, and for repeatable keys (arrows,
+/// Backspace, Delete, Tab, PageUp/Down, etc.) drives host-paced repeat pulses
+/// (~350 ms initial delay, ~15 Hz repeat) while held. Short discrete pulses work
+/// identically on PL011 UART, UEFI, virtio-input, xHCI, and uinput without
+/// triggering guest double-repeat or stuck keys.
 private struct HidHoldKeyButton: View {
     let label: String
     let usage: UInt8
+    let repeatable: Bool
     let onRelease: () -> Void
 
     @State private var didHandlePress: Bool = false
@@ -342,18 +346,28 @@ private struct HidHoldKeyButton: View {
         Button {
             if !didHandlePress {
                 HengeVMBridge.shared.tapHidKeyUsage(usage)
-                onRelease()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+                    onRelease()
+                }
             }
             didHandlePress = false
         } label: {
             Text(label)
         }
-        .buttonStyle(HidHoldKeyButtonStyle(usage: usage, didHandlePress: $didHandlePress, onRelease: onRelease))
+        .buttonStyle(
+            HidHoldKeyButtonStyle(
+                usage: usage,
+                repeatable: repeatable,
+                didHandlePress: $didHandlePress,
+                onRelease: onRelease
+            )
+        )
     }
 }
 
 private struct HidHoldKeyButtonStyle: ButtonStyle {
     let usage: UInt8
+    let repeatable: Bool
     @Binding var didHandlePress: Bool
     let onRelease: () -> Void
 
@@ -361,6 +375,7 @@ private struct HidHoldKeyButtonStyle: ButtonStyle {
         HidHoldKeyBody(
             configuration: configuration,
             usage: usage,
+            repeatable: repeatable,
             didHandlePress: $didHandlePress,
             onRelease: onRelease
         )
@@ -370,11 +385,16 @@ private struct HidHoldKeyButtonStyle: ButtonStyle {
 private struct HidHoldKeyBody: View {
     let configuration: ButtonStyle.Configuration
     let usage: UInt8
+    let repeatable: Bool
     @Binding var didHandlePress: Bool
     let onRelease: () -> Void
 
     @State private var isHeld: Bool = false
-    @State private var pressedAt: Date?
+    @State private var repeatTask: Task<Void, Never>?
+
+    private static let pulseDwellNs: UInt64 = 20_000_000     // 20 ms key-down pulse (< 250 ms guest EV_REP)
+    private static let initialDelayNs: UInt64 = 330_000_000  // + 20 ms pulse = 350 ms before first repeat
+    private static let repeatGapNs: UInt64 = 45_000_000      // + 20 ms pulse = 65 ms period (~15.4 Hz)
 
     var body: some View {
         configuration.label
@@ -388,38 +408,81 @@ private struct HidHoldKeyBody: View {
             .foregroundStyle(configuration.isPressed ? .white : .primary)
             .onChange(of: configuration.isPressed) { _, pressed in
                 if pressed {
-                    if !isHeld {
-                        isHeld = true
-                        didHandlePress = true
-                        pressedAt = Date()
-                        HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: true)
-                    }
+                    guard !isHeld else { return }
+                    isHeld = true
+                    didHandlePress = true
+                    startRepeatLoop()
                 } else if isHeld {
-                    isHeld = false
-                    let elapsed = pressedAt.map { Date().timeIntervalSince($0) } ?? 0.0
-                    let minDwell = max(0.0, 0.02 - elapsed)
-                    pressedAt = nil
-                    if minDwell > 0.0 {
-                        let keyUsage = usage
-                        let dwellNanos = UInt64(minDwell * 1_000_000_000.0)
-                        Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: dwellNanos)
-                            HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: false)
-                            onRelease()
-                        }
-                    } else {
-                        HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: false)
-                        onRelease()
-                    }
+                    stopRepeatLoop(notifyRelease: true)
                 }
             }
             .onDisappear {
                 if isHeld {
-                    isHeld = false
-                    pressedAt = nil
-                    HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: false)
+                    stopRepeatLoop(notifyRelease: false)
                 }
             }
+    }
+
+    private func startRepeatLoop() {
+        repeatTask?.cancel()
+        let keyUsage = usage
+        let shouldRepeat = repeatable
+        repeatTask = Task { @MainActor in
+            var keyDown = false
+            defer {
+                if keyDown {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.015) {
+                        HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: false)
+                    }
+                }
+            }
+
+            HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: true)
+            keyDown = true
+            do {
+                try await Task.sleep(nanoseconds: Self.pulseDwellNs)
+            } catch {
+                return
+            }
+            HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: false)
+            keyDown = false
+
+            guard shouldRepeat, !Task.isCancelled else { return }
+
+            do {
+                try await Task.sleep(nanoseconds: Self.initialDelayNs)
+            } catch {
+                return
+            }
+
+            while !Task.isCancelled {
+                HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: true)
+                keyDown = true
+                do {
+                    try await Task.sleep(nanoseconds: Self.pulseDwellNs)
+                } catch {
+                    return
+                }
+                HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: false)
+                keyDown = false
+                do {
+                    try await Task.sleep(nanoseconds: Self.repeatGapNs)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopRepeatLoop(notifyRelease: Bool) {
+        isHeld = false
+        repeatTask?.cancel()
+        repeatTask = nil
+        if notifyRelease {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                onRelease()
+            }
+        }
     }
 }
 

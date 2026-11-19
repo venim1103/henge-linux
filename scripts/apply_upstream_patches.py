@@ -440,7 +440,7 @@ static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) 
     virtio_input_h = upstream / "devices/virtio_input.h"
     patch_file(
         virtio_input_h,
-        "HV_VINPUT_TABLET",
+        "HV_EV_REP",
         """enum { HV_VINPUT_KEYBOARD, HV_VINPUT_MOUSE };
 
 #define HV_EV_SYN 0
@@ -452,6 +452,7 @@ static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) 
 #define HV_EV_KEY 1
 #define HV_EV_REL 2
 #define HV_EV_ABS 3
+#define HV_EV_REP 0x14
 #define HV_ABS_X 0
 #define HV_ABS_Y 1""",
     )
@@ -468,7 +469,7 @@ static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) 
     )
     patch_file(
         virtio_input_c,
-        "HengeVM Tablet",
+        "subsel == HV_EV_REP",
         """    int kbd = d->kind == HV_VINPUT_KEYBOARD;
     switch (select) {
     case CFG_ID_NAME: {
@@ -546,6 +547,10 @@ static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) 
         if (kbd && subsel == HV_EV_KEY) {
             for (unsigned k = 1; k < 0x100; k++) set_bit(data, k); /* every key, no buttons */
             size = 0x100 / 8;
+        } else if (kbd && subsel == HV_EV_REP) {
+            set_bit(data, 0); /* REP_DELAY */
+            set_bit(data, 1); /* REP_PERIOD */
+            size = 1;
         } else if (!kbd && subsel == HV_EV_KEY) {
             set_bit(data, HV_BTN_LEFT);
             set_bit(data, HV_BTN_RIGHT);
