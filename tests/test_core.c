@@ -400,6 +400,13 @@ static void test_console_log_capture(void) {
     HENGE_CHECK(strstr(buf, "[test] console marker line 1") != NULL);
     HENGE_CHECK(strstr(buf, "[test] stderr serial line 2") != NULL);
 
+    hengelinux_reset_guest_hid_bridge_ready();
+    HENGE_CHECK(!hengelinux_is_guest_hid_bridge_ready());
+    hengelinux_console_append_line("\x1b]9998;HENGE_HID_READY\x07");
+    HENGE_CHECK(hengelinux_is_guest_hid_bridge_ready());
+    hengelinux_reset_guest_hid_bridge_ready();
+    HENGE_CHECK(!hengelinux_is_guest_hid_bridge_ready());
+
     hengelinux_clear_console_log();
     remove(log_path);
 }

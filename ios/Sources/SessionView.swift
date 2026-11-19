@@ -15,6 +15,7 @@ struct SessionView: View {
     @State private var showModifierBar: Bool = true
     @State private var showDebugConsole: Bool = false
     @State private var focusSoftwareKeyboard: Bool = false
+    @State private var shiftActive: Bool = false
     @State private var ctrlActive: Bool = false
     @State private var altActive: Bool = false
     @State private var superActive: Bool = false
@@ -67,6 +68,10 @@ struct SessionView: View {
     }
 
     private func releaseActiveModifiers() {
+        if shiftActive {
+            shiftActive = false
+            HengeVMBridge.shared.sendHidKeyUsage(0xE1, pressed: false)
+        }
         if ctrlActive {
             ctrlActive = false
             HengeVMBridge.shared.sendHidKeyUsage(0xE0, pressed: false)
@@ -151,9 +156,11 @@ struct SessionView: View {
                 hidPulseButton("Tab", usage: 0x2B)
                 hidPulseButton("Bck", usage: 0x2A)
                 hidPulseButton("Del", usage: 0x4C)
+                modifierToggle("Shift", usage: 0xE1, isOn: $shiftActive)
                 modifierToggle("Ctrl", usage: 0xE0, isOn: $ctrlActive)
                 modifierToggle("Alt", usage: 0xE2, isOn: $altActive)
                 modifierToggle("Super", usage: 0xE3, isOn: $superActive)
+                hidPulseButton("Caps", usage: 0x39)
                 hidPulseButton("←", usage: 0x50)
                 hidPulseButton("→", usage: 0x4F)
                 hidPulseButton("↑", usage: 0x52)
@@ -164,6 +171,9 @@ struct SessionView: View {
                 hidPulseButton("PgDn", usage: 0x4E)
                 hidPulseButton("Ins", usage: 0x49)
                 hidPulseButton("Prnt", usage: 0x46)
+                hidPulseButton("ScrLk", usage: 0x47)
+                hidPulseButton("Pause", usage: 0x48)
+                hidPulseButton("Menu", usage: 0x65)
                 hidPulseButton("F1", usage: 0x3A)
                 hidPulseButton("F2", usage: 0x3B)
                 hidPulseButton("F3", usage: 0x3C)

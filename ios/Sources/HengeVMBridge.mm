@@ -312,6 +312,7 @@ static void henge_on_vm_exit(int reason) {
     }
 
     hengelinux_reset_suspend_counter();
+    hengelinux_reset_guest_hid_bridge_ready();
 
     HengeGpuBackendMode mode = (gpuBackend == 1)
         ? HENGE_GPU_BACKEND_VIRGL_3D
@@ -575,6 +576,7 @@ static void henge_on_vm_exit(int reason) {
     _vmCreated = NO;
     _activeRamMiB = 0;
     _activeCpuCount = 4;
+    hengelinux_reset_guest_hid_bridge_ready();
     if (_guestRam != nullptr && _guestRamBytes > 0) {
         henge_free_ledger_exempt_ram(_guestRam, _guestRamBytes);
         _guestRam = nullptr;
@@ -654,7 +656,15 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
     case 0x3B: sendBytes("\x1BOQ", 3); break;   /* F2 */
     case 0x3C: sendBytes("\x1BOR", 3); break;   /* F3 */
     case 0x3D: sendBytes("\x1BOS", 3); break;   /* F4 */
+    case 0x3E: sendBytes("\x1B[15~", 5); break; /* F5 */
+    case 0x3F: sendBytes("\x1B[17~", 5); break; /* F6 */
+    case 0x40: sendBytes("\x1B[18~", 5); break; /* F7 */
+    case 0x41: sendBytes("\x1B[19~", 5); break; /* F8 */
+    case 0x42: sendBytes("\x1B[20~", 5); break; /* F9 */
+    case 0x43: sendBytes("\x1B[21~", 5); break; /* F10 */
+    case 0x44: sendBytes("\x1B[23~", 5); break; /* F11 */
     case 0x45: sendBytes("\x1B[24~", 5); break; /* F12 */
+    case 0x49: sendBytes("\x1B[2~", 4); break;  /* Insert */
     case 0x4A: sendBytes("\x1B[H", 3); break;   /* Home */
     case 0x4B: sendBytes("\x1B[5~", 4); break;  /* PageUp */
     case 0x4C: sendBytes("\x1B[3~", 4); break;  /* Delete */
@@ -694,11 +704,13 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
         hv_winvm_key_hid(usage, pressed ? 1 : 0);
         HvWinVirt *board = hv_winvm_board();
         if (board != nullptr && board->uart != nullptr) {
-            char osc[48];
-            int n = std::snprintf(osc, sizeof(osc), "\x1b]9999;K %02x %d\x07", usage, pressed ? 1 : 0);
-            if (n > 0) {
-                for (int i = 0; i < n; ++i) {
-                    hv_pl011_receive(board->uart, static_cast<uint8_t>(osc[i]));
+            if (hengelinux_is_guest_hid_bridge_ready()) {
+                char osc[48];
+                int n = std::snprintf(osc, sizeof(osc), "\x1b]9999;K %02x %d\x07", usage, pressed ? 1 : 0);
+                if (n > 0) {
+                    for (int i = 0; i < n; ++i) {
+                        hv_pl011_receive(board->uart, static_cast<uint8_t>(osc[i]));
+                    }
                 }
             }
             if (pressed && !(usage >= 0xE0 && usage <= 0xE7)) {
@@ -724,6 +736,14 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_running) {
         hv_winvm_send_ctrl_alt_del();
+        if (hengelinux_is_guest_hid_bridge_ready()) {
+            [self sendHidKeyUsage:0xE0 pressed:YES];
+            [self sendHidKeyUsage:0xE2 pressed:YES];
+            [self sendHidKeyUsage:0x4C pressed:YES];
+            [self sendHidKeyUsage:0x4C pressed:NO];
+            [self sendHidKeyUsage:0xE2 pressed:NO];
+            [self sendHidKeyUsage:0xE0 pressed:NO];
+        }
     }
 #endif
 }
@@ -736,7 +756,7 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
     if (_running) {
         hv_winvm_tablet(xNorm, yNorm, buttons, wheel);
         HvWinVirt *board = hv_winvm_board();
-        if (board != nullptr && board->uart != nullptr) {
+        if (board != nullptr && board->uart != nullptr && hengelinux_is_guest_hid_bridge_ready()) {
             double cx = (xNorm < 0.0) ? 0.0 : ((xNorm > 1.0) ? 1.0 : xNorm);
             double cy = (yNorm < 0.0) ? 0.0 : ((yNorm > 1.0) ? 1.0 : yNorm);
             int absX = static_cast<int>(cx * 32767.0 + 0.5);

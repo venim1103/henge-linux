@@ -88,6 +88,14 @@ uint64_t hengelinux_console_total_bytes(void);
 size_t hengelinux_copy_console_log(char *out_buf, size_t out_cap);
 void hengelinux_clear_console_log(void);
 
+/*
+ * Guest OSC 9999 HID bridge handshake state. Flips true only after the Linux
+ * guest's native henge-dual-console binary emits "HENGE_HID_READY" on ttyAMA0,
+ * keeping UEFI and older guest images free of OSC 9999 escape bytes.
+ */
+bool hengelinux_is_guest_hid_bridge_ready(void);
+void hengelinux_reset_guest_hid_bridge_ready(void);
+
 #ifdef __cplusplus
 }
 #endif

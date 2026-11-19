@@ -479,11 +479,35 @@ static FILE *g_console_log_fp = NULL;
 static atomic_int g_console_pipe_read_fd = -1;
 static int g_console_orig_stderr_fd = -1;
 static bool g_console_capture_started = false;
+static atomic_bool g_guest_hid_bridge_ready = false;
+static size_t g_hid_ready_match_pos = 0U;
+
+static void scan_guest_hid_ready_locked(const char *data, size_t len) {
+    static const char kToken[] = "HENGE_HID_READY";
+    const size_t kTokenLen = sizeof(kToken) - 1U;
+    if (atomic_load_explicit(&g_guest_hid_bridge_ready, memory_order_relaxed)) {
+        return;
+    }
+    for (size_t i = 0U; i < len; ++i) {
+        char ch = data[i];
+        if (ch == kToken[g_hid_ready_match_pos]) {
+            g_hid_ready_match_pos++;
+            if (g_hid_ready_match_pos == kTokenLen) {
+                atomic_store_explicit(&g_guest_hid_bridge_ready, true, memory_order_release);
+                g_hid_ready_match_pos = 0U;
+                return;
+            }
+        } else {
+            g_hid_ready_match_pos = (ch == kToken[0]) ? 1U : 0U;
+        }
+    }
+}
 
 static void console_ring_append_bytes_locked(const char *data, size_t len) {
     if (data == NULL || len == 0U) {
         return;
     }
+    scan_guest_hid_ready_locked(data, len);
     const char *src = data;
     size_t remaining = len;
     if (remaining > HENGE_CONSOLE_RING_BYTES) {
@@ -617,6 +641,17 @@ void hengelinux_console_append_line(const char *line) {
 
 uint64_t hengelinux_console_total_bytes(void) {
     return atomic_load_explicit(&g_console_total_bytes, memory_order_acquire);
+}
+
+bool hengelinux_is_guest_hid_bridge_ready(void) {
+    return atomic_load_explicit(&g_guest_hid_bridge_ready, memory_order_acquire);
+}
+
+void hengelinux_reset_guest_hid_bridge_ready(void) {
+    pthread_mutex_lock(&g_console_mutex);
+    g_hid_ready_match_pos = 0U;
+    atomic_store_explicit(&g_guest_hid_bridge_ready, false, memory_order_release);
+    pthread_mutex_unlock(&g_console_mutex);
 }
 
 size_t hengelinux_copy_console_log(char *out_buf, size_t out_cap) {
