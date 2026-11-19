@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.1.0)'
+        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.0)'
         required: true
-        default: 'v0.1.0'
+        default: 'v0.2.0'
         type: string
 
 concurrency:
@@ -185,20 +185,19 @@ jobs:
           BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
           NOTES="## HengeLinux ${RELEASE_TAG} (Pre-Release)
 
-          Built from commit \`${SHORT_SHA}\` on ${BUILD_DATE}. Full-system ARM64 (\`aarch64\`) Arch Linux virtualization on non-jailbroken iOS 26 / iOS 27 devices without \`Hypervisor.framework\`.
+          Built from commit \`${SHORT_SHA}\` on ${BUILD_DATE}. Full-system ARM64 (\`aarch64\`) multi-distro Linux virtualization on non-jailbroken iOS 18.0 – iOS 27+ devices without \`Hypervisor.framework\`.
 
           ### Highlights
-          - **Direct ARM64-to-ARM64 DBT & Software MMU:** Boots mainline Arch Linux ARM64 via EDK2 UEFI + ACPI 6.3 + \`systemd-bootaa64.efi\` (\`timeout 0\`) with full-frame Metal framebuffer hashing.
-          - **User-Editable Guest RAM (\`512\`–\`10,240 MiB\`):** Configure exact guest memory via numeric field, stepper, slider, or quick-pick chips (default \`1,664 MiB\` for safe standard-ledger Jetsam headroom).
-          - **Native Static C Console & \`/dev/uinput\` HID Bridge:** Zero-dependency \`henge-dual-console\` binary mirrors \`ttyAMA0\` onto \`tty1\`, launches an interactive root login shell, and injects touch, Split Deck trackpad, and keyboard events into separate Virtual Keyboard and Virtual Tablet \`/dev/uinput\` devices for X11/LXQt.
-          - **Complete Special-Key Strip & Bluetooth HID:** Includes \`Esc\`, \`Tab\`, \`Bck\`, \`Del\`, \`Shift\`, \`Ctrl\`, \`Alt\`, \`Super\`, \`Caps\`, arrows, \`Home\`/\`End\`/\`PgUp\`/\`PgDn\`, \`Ins\`, \`Prnt\`, \`ScrLk\`, \`Pause\`, \`Menu\`, \`F1\`–\`F12\`, \`Paste\`, and \`CAD\`.
-          - **One-Command LXQt Graphical Desktop:** Run \`henge-install-desktop\` at the root prompt to install LXQt + SDDM autologin on \`vt2\` (\`Ctrl+Alt+F1\` / \`Ctrl+Alt+F2\` to switch consoles).
+          - **iOS 18.0 – iOS 27+ Dual-Mode JIT:** Supports both Classic dual-map JIT (iOS 18) and TXM Broker JIT (iOS 26/27+, compatible with stock StikDebug \`universal.js\` as well as \`henge-jit.js\`), with one-tap \`stikdebug://enable-jit\` deep-linking, LiveContainer awareness, and \`os_proc_available_memory()\` live Jetsam RAM advisories.
+          - **Multi-VM Manager & Unmodified ARM64 Distros:** Manages isolated VMs (\`Documents/Machines/<ID>/vm.json\`) with shared \`Documents/Firmware/\`, APFS \`clonefile\` cloning, and \`F_PUNCHHOLE\` compaction. Imports \`.hvsparse\`, \`.qcow2\` (in-app streaming unpacker), \`.raw\`/\`.img\`, and ARM64 Live/Netinstall \`.iso\` images by magic bytes, with an in-app FAT16 \`CIDATA\` cloud-init seed generator for Debian 13, Ubuntu 24.04/26.04, Fedora, Alpine, and openSUSE.
+          - **2D VirtIO-GPU KMS (EDID + Metal), VirtIO Input & Interactive \`ttyAMA0\` Terminal:** Native PCIe \`virtio-gpu\` (\`0x1af4:0x1050\`) 2D KMS + VESA EDID 1.4 display alongside 2D UEFI GOP, PCIe \`virtio-input\` keyboard + absolute tablet, hardened \`xhci_hcd\` controller, and an interactive \`ttyAMA0\` serial terminal tab in \`SessionView\`.
+          - **Portable Offline Guest Additions:** Single-binary \`musl\` C guest agent + POSIX \`install.sh\` (\`systemd\`/\`OpenRC\`/\`runit\`) served offline at \`http://10.0.2.4/.henge/guest-tools/\`, alongside the pre-built Arch Linux ARM64 image with one-command \`henge-install-desktop\` (LXQt + SDDM).
 
-          ### Quick Setup (iOS 26.0+)
+          ### Quick Setup (iOS 18.0+)
           1. Download and sign **\`HengeLinux-unsigned.ipa\`** with **SideStore** or **AltStore**.
-          2. Download **\`archlinux.hvsparse\`**, **\`code.fd\`**, and **\`vars.fd\`**, then import all three via **Import Guest Files...** inside HengeLinux.
-          3. Place **\`henge-jit.js\`** in **Files ▸ On My iPhone ▸ StikDebug**, enable **LocalDevVPN**, long-press **HengeLinux** in StikDebug -> **Assign Script** -> **\`henge-jit.js\`**, and launch HengeLinux.
-          4. Tap **Boot Arch Linux**. See [\`docs/SETUP.md\`](https://github.com/venim1103/henge-linux/blob/${RELEASE_TAG}/docs/SETUP.md) for full instructions."
+          2. Download **\`code.fd\`**, **\`vars.fd\`**, and either **\`archlinux.hvsparse\`** or any official ARM64 cloud \`.qcow2\` / Live \`.iso\`, then import via **Import Guest Files...** inside HengeLinux.
+          3. Enable **LocalDevVPN** and tap **Enable JIT via StikDebug** inside HengeLinux (on iOS 26+ TXM, stock \`universal.js\` or \`henge-jit.js\` works out of the box).
+          4. Tap **Boot**. See [\`docs/SETUP.md\`](https://github.com/venim1103/henge-linux/blob/${RELEASE_TAG}/docs/SETUP.md) for full instructions."
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" \

@@ -1,20 +1,19 @@
 # `henge-linux` Setup & Sideloading Guide
 
-This guide walks through installing **`HengeLinux`** on a non-jailbroken iPhone or iPad (iOS 26.0 – iOS 27+), importing the Arch Linux ARM64 guest image, configuring TXM JIT with **StikDebug** + **LocalDevVPN**, and using the native iOS Safari and WebDAV bridges.
+This guide walks through installing **`HengeLinux`** (`v0.2.0`) on a non-jailbroken iPhone or iPad (**iOS 18.0 – iOS 27+**), importing pre-built Arch Linux or unmodified ARM64 cloud/ISO Linux images, enabling JIT with **StikDebug** + **LocalDevVPN**, and using **2D VirtIO-GPU KMS**, the interactive **`ttyAMA0` terminal**, and the offline **Safari OAuth / WebDAV** guest agent.
 
 ---
 
 ## Overview: What You Need
 
-To boot Arch Linux on iOS, you need the app bundle, three guest VM files, and the TXM JIT debugger script:
+To boot ARM64 Linux on iOS, you need the app bundle, shared EDK2 UEFI firmware, and any ARM64 Linux disk image (`.hvsparse`, `.qcow2`, `.img`/`.raw`, or `.iso`):
 
 | File | Required | Where to Download | Purpose |
 | :--- | :--- | :--- | :--- |
-| **`HengeLinux-unsigned.ipa`** | **Yes** | [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa) | Main iOS app (`HengeLinux.app`) + embedded JIT helper extension (`HengeLinuxJITExtension.appex`) |
-| **`archlinux.hvsparse`** | **Yes** | [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/archlinux.hvsparse) | Pre-configured Arch Linux ARM64 sparse NVMe disk image (~294 MiB download; unpacks to 8 GiB sparse APFS image on first boot) |
-| **`code.fd`** | **Yes** | [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/code.fd) | 64 MiB TianoCore EDK2 AArch64 UEFI firmware code |
-| **`vars.fd`** | **Yes** | [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/vars.fd) | 64 MiB TianoCore EDK2 AArch64 UEFI NVRAM variable store |
-| **`henge-jit.js`** | **Yes** *(for StikDebug)* | [`ios/Resources/henge-jit.js`](https://raw.githubusercontent.com/venim1103/henge-linux/main/ios/Resources/henge-jit.js) | Custom GDB RSP script that handles `brk #0x69` and `brk #0xf00d` (`0x69` byte-0 page blessing) for iOS 26/27 TXM |
+| **`HengeLinux-unsigned.ipa`** | **Yes** | [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa) | Main iOS 18.0+ app (`HengeLinux.app`) + embedded JIT helper extension (`HengeLinuxJITExtension.appex`) |
+| **`code.fd` & `vars.fd`** | **Yes** | [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) | 64 MiB TianoCore EDK2 AArch64 UEFI firmware + NVRAM template (automatically shared in `Documents/Firmware/` across all VMs) |
+| **Linux Disk / Cloud / ISO Image** | **Yes** | [`archlinux.hvsparse`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/archlinux.hvsparse) or official Debian / Ubuntu / Fedora / Alpine / openSUSE `.qcow2`/`.img`/`.iso` | Pre-built Arch Linux image (~294 MiB) or any unmodified official ARM64 Linux cloud image or Live/Netinstall ISO |
+| **`henge-jit.js`** | **Optional** *(iOS 26+ TXM)* | [`ios/Resources/henge-jit.js`](https://raw.githubusercontent.com/venim1103/henge-linux/main/ios/Resources/henge-jit.js) | Optional custom GDB RSP script for iOS 26/27+ TXM (stock StikDebug `universal.js` also works out of the box in `v0.2.0`; iOS 18 needs no script) |
 | **`pairing.plist`** | **Optional** | Exported via `idevicepair` / `idevice_pair` | Lockdown pairing record for in-app `HengeLinuxJITExtension` XPC self-debugging |
 
 ---
@@ -30,60 +29,53 @@ To boot Arch Linux on iOS, you need the app bundle, three guest VM files, and th
 
 ---
 
-## Step 2: Download & Import the Guest VM Files
+## Step 2: Create a VM & Import Guest Files (Arch, Cloud QCOW2, or Live ISO)
 
-1. In Safari on your iPhone/iPad, open [`latest-ipa` Releases](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) and download all three guest files into **Files ▸ On My iPhone ▸ Downloads**:
-   - `archlinux.hvsparse`
-   - `code.fd`
-   - `vars.fd`
-2. Open **HengeLinux**.
-3. Under **Guest Image (`Documents/Machines/ArchLinux`)**, tap **Import Guest Files (hvsparse / code.fd / vars.fd)...**.
-4. Select `archlinux.hvsparse`, `code.fd`, and `vars.fd` from **Downloads** and tap **Open**.
-   - *Alternative:* You can also copy or AirDrop those three files directly into **Files ▸ On My iPhone ▸ HengeLinux ▸ Machines ▸ ArchLinux/**, or share them from the iOS Share Sheet into **HengeLinux**.
-5. Confirm in the launcher UI that:
-   - **Disk Container** reads `archlinux.hvsparse (Ready · ~294 MiB)`
-   - **UEFI Firmware** reads `code.fd + vars.fd (Ready)`
-   - **App Container Files (`Documents/`)** lists `archlinux.hvsparse`, `code.fd`, and `vars.fd`.
+HengeLinux `v0.2.0` supports multiple isolated VMs in `Documents/Machines/<ID>/vm.json` with shared firmware in `Documents/Firmware/` (existing `v0.1.0` `Documents/Machines/ArchLinux/` installs migrate automatically with zero data loss).
+
+1. **Import Shared UEFI Firmware:**
+   - Download `code.fd` and `vars.fd` from [`latest-ipa`](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) and import them via **Import Guest Files...** (stored in `Documents/Firmware/` and cloned per VM so NVRAM stays isolated).
+2. **Choose One of Three Guest Tracks:**
+   - **Track A — Pre-Built Arch Linux:** Download `archlinux.hvsparse` from [`latest-ipa`](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) and import it into the default **Arch Linux** VM.
+   - **Track B — Official ARM64 Cloud Images (Debian 13 `generic`, Ubuntu 24.04/26.04 `server-cloudimg`, Fedora Cloud Base, Alpine `nocloud`, openSUSE):**
+     - Tap **New ARM64 Linux VM...**, pick your distro preset, and import the official `.qcow2` or `.img` file (detected automatically by magic bytes and unpacked in the background into an APFS sparse disk on first boot).
+     - Tap **Generate Cloud-Init Seed (`CIDATA`)...** to create a 2 MiB FAT16 `seed.img` with your hostname, username, password, and SSH key attached as secondary read-only `virtio-blk` media (`disk1`).
+   - **Track C — Standard ARM64 Live / Netinstall ISO:**
+     - Create a **Blank Disk + ARM64 Live ISO** VM (allocates an empty APFS sparse `disk0.img`), import any ARM64 `.iso` (attached to `disk1`), install Linux onto `/dev/nvme0n1`, and tap **Eject** on Secondary Media after installation.
+3. **Storage Management:**
+   - Use **Clone VM (APFS)** for instant copy-on-write snapshots and **Compact Disk** (`F_PUNCHHOLE`) to reclaim zeroed blocks.
 
 ---
 
-## Step 3: Set Up TXM JIT with StikDebug & LocalDevVPN
+## Step 3: Enable JIT (iOS 18.0 – iOS 27+) with StikDebug & LocalDevVPN
 
-iOS 26/27 Trusted Execution Monitor (`TXM`) blocks anonymous executable memory (`PROT_EXEC`) unless a debugger performs the `brk #0xf00d` + byte-0 `0x69` page-blessing handshake, and `CS_DEBUGGED` unlocks `LEDGER_NO_FOOTPRINT` guest RAM (> 3 GB without Jetsam kills).
+HengeLinux automatically detects your iOS version and selects the right JIT backend (configurable via **JIT Strategy**: `Auto / Classic Dual-Map (iOS 18) / TXM Broker (iOS 26+)`):
 
-1. **Save `henge-jit.js` into StikDebug's folder:**
-   - Open [`https://raw.githubusercontent.com/venim1103/henge-linux/main/ios/Resources/henge-jit.js`](https://raw.githubusercontent.com/venim1103/henge-linux/main/ios/Resources/henge-jit.js) in Safari and save it to **Downloads** (make sure the saved filename ends in `.js`, not `.js.txt`).
-   - Open the iOS **Files** app, move `henge-jit.js` from **On My iPhone ▸ Downloads** into **On My iPhone ▸ StikDebug**.
-2. **Assign `henge-jit.js` specifically to `HengeLinux` in StikDebug:**
+1. **One-Tap Activation (Recommended):**
    - Enable **LocalDevVPN** in iOS Settings or the LocalDevVPN app.
-   - Open **StikDebug** and go to the **JIT** tab.
-   - **Press and hold (`Long-Press`) `HengeLinux`** in the app list, tap **Assign Script**, and select **`henge-jit.js`**.
-   - *Important:* Tapping the star (`★`) next to `henge-jit.js` in StikDebug's Scripts tab alone does **not** bind it to an app—you must long-press `HengeLinux` and use **Assign Script**.
-3. *(Optional)* **Import `pairing.plist`:**
-   - If you also want to store your lockdown pairing record in `HengeLinux`, tap **Import pairing.plist / .mobiledevicepairing...** and select your `pairing.plist` or `.mobiledevicepairing` file.
-   - How to export `pairing.plist` on a computer over USB:
+   - Open **HengeLinux** and tap **Enable JIT via StikDebug** (`stikdebug://enable-jit`).
+   - **On iOS 18:** Activates `Classic Dual-Map` JIT (`CS_DEBUGGED` + `vm_remap` + `vm_protect(RX)`) with no custom script needed; survives VM stop/reboot without re-attaching.
+   - **On iOS 26/27+ (TXM):** Automatically requests stock `universal.js`. If you prefer our custom script, save [`ios/Resources/henge-jit.js`](https://raw.githubusercontent.com/venim1103/henge-linux/main/ios/Resources/henge-jit.js) into **Files ▸ On My iPhone ▸ StikDebug** and **long-press `HengeLinux` -> Assign Script -> `henge-jit.js`**.
+   - **LiveContainer:** Detected automatically via `LC_HOME_PATH` (skips the embedded `.appex` and routes directly to StikDebug).
+2. *(Optional)* **Import `pairing.plist`:**
+   - Tap **Import pairing.plist / .mobiledevicepairing...** to store your lockdown pairing record for `HengeLinuxJITExtension`.
+   - Export over USB:
      - **macOS:** `brew install libimobiledevice && idevicepair pair && cp "/var/db/lockdown/$(idevice_id -l | head -n1).plist" ~/Desktop/pairing.plist`
      - **Linux:** `sudo apt install libimobiledevice-utils && idevicepair pair && sudo cp "/var/lib/lockdown/$(idevice_id -l | head -n1).plist" ~/pairing.plist && sudo chown $USER ~/pairing.plist`
-     - **Windows / GUI:** Use [`idevice_pair`](https://github.com/jkcoxson/idevice_pair) to export `.mobiledevicepairing` / `pairing.plist`.
+     - **Windows / GUI:** Use [`idevice_pair`](https://github.com/jkcoxson/idevice_pair).
 
 ---
 
-## Step 4: Boot Arch Linux on iOS
+## Step 4: Boot Linux, Display Modes & Interactive Serial Terminal
 
-1. Open **StikDebug** (with **LocalDevVPN** active and `henge-jit.js` assigned to `HengeLinux`) and tap **HengeLinux** to launch it with the debugger attached.
-2. In **HengeLinux**, pick your **Hardware Profile** (`4` or `6` vCPU) and optionally customize **Guest RAM (MiB)** directly via the numeric field, `128 MiB` stepper, slider, or quick-pick buttons (`1024`, `1664`, `2048`, `2560`, `4096` MiB; range `512`–`10,240 MiB`):
-   - **Recommended default (`1,664 MiB`):** Leaves safe headroom under iOS's ~3 GiB standard Mach ledger Jetsam ceiling (`1,664 MiB` guest RAM + `384 MiB` TXM JIT pool + host overhead) during heavy `pacman` installs.
-   - **iPhone Pro (8 GB RAM):** `4 vCPU` (`2,560 MiB` preset)
-   - **iPhone Duo / 12 GB Pro:** `4 vCPU` (`4,608 MiB` preset)
-   - **M-Series iPad Pro (16 GB):** `6 vCPU` (`6,144 MiB` preset)
-3. Leave **Display Adapter** set to **2D UEFI GOP (Metal)** for initial bring-up.
-4. Tap **Boot Arch Linux**.
-   - On first boot, `HengeLinux` unpacks `archlinux.hvsparse` into an APFS sparse `archlinux.img` on a background thread (`Unpacking Disk Image...`).
-   - `henge-jit.js` blesses the `384 MiB` dual-mapped RX/RW JIT pool (`< 0x7000000000`) and detaches cleanly (`CS_DEBUGGED` remains active for the session).
-5. **Allow 30–60 seconds on cold boot past TianoCore (`Start boot option`):**
-   - `systemd-bootaa64.efi` (`timeout 0`, `console-mode keep`) launches `\Image` + `\initramfs-linux.img` (`usbcore.nousb`) automatically with zero keypresses required.
-   - The native static C `henge-dual-console` binary mirrors the PL011 serial session (`ttyAMA0`) directly onto the main Metal display (`tty1`), announces `HENGE_HID_READY`, and drops straight into `[root@hengelinux ~]#`.
-   - Both the on-screen iPhone keyboard (`⌨️` toolbar button + scrollable special-key strip with `Esc`, `Tab`, `Bck`, `Del`, `Shift`, `Ctrl`, `Alt`, `Super`, `Caps`, arrows, `Home`/`End`/`PgUp`/`PgDn`, `Ins`, `Prnt`, `ScrLk`, `Pause`, `Menu`, `F1`–`F12`, `Paste`, and `CAD`) and external Bluetooth keyboards work immediately.
+1. Pick your **Hardware Profile** (`4` or `6` vCPU) and adjust **Guest RAM (MiB)** (`512`–`10,240 MiB`). The launcher displays live `os_proc_available_memory()` Jetsam headroom and adaptive JIT pool sizing (`192` / `256` / `384 MiB`).
+2. Select a **Display Adapter**:
+   - **2D UEFI GOP (Metal):** Universal UEFI framebuffer (`simpledrm`/`efifb`) — best default for initial boot and Arch Linux LXQt (`fbdev`).
+   - **2D VirtIO-GPU KMS (EDID + Metal):** Attaches PCIe `virtio-gpu` (`0x1af4:0x1050`) with VESA EDID 1.4 (`1280×800`) for native `/dev/dri/card0` KMS (`modesetting` / software Wayland) on stock Linux distros.
+3. Per-VM device toggles (**VirtIO Input**, **USB 3.0 xHCI**, **ACPI SPCR**) default to **VirtIO Input = On** and **xHCI = Off** for Linux guests so unmodified distros receive native `/dev/input/event*` keyboard + tablet input without the legacy xHCI stall.
+4. Tap **Boot**:
+   - Use the top segmented switcher in `SessionView` to toggle between the **Metal Display** and the interactive **`ttyAMA0` Serial Terminal** tab at any time (with direct PL011 typing, Paste, and `Ctrl+C` / `Esc` / `Tab`).
+   - On the pre-built Arch Linux image, `systemd-bootaa64.efi` boots automatically into `[root@hengelinux ~]#`.
 
 ---
 
@@ -104,14 +96,15 @@ The pre-built `archlinux.hvsparse` image comes pre-configured with `/etc/X11/xor
 
 ---
 
-## Step 6: Guest Networking, Safari OAuth & WebDAV File Sharing
-
-The pre-built `archlinux.hvsparse` image comes pre-configured with `guest/setup-arch-bridge.sh`:
+## Step 6: Guest Networking, Offline Guest Agent & WebDAV File Sharing
 
 - **Networking (`libslirp` VirtIO-Net):**
-  - Guest IP: `10.0.2.15` (via `systemd-networkd` DHCP on `virtio_net`)
-  - Host Gateway: `10.0.2.4`
-  - DNS: `10.0.2.3`
+  - Guest IP: `10.0.2.15` · Host Gateway: `10.0.2.4` · DNS: `10.0.2.3`
+- **Install Portable Guest Additions on Any Distro (`systemd` / `OpenRC` / `runit`):**
+  - Unmodified cloud/ISO images work without guest software, or install Safari OAuth (`xdg-open`), clipboard sync, and WebDAV helpers offline from the host gateway:
+    ```sh
+    curl -fsSL http://10.0.2.4/.henge/guest-tools/install.sh | sudo sh
+    ```
 - **Host ↔ Guest Shared Folder (`Documents/Shared/`):**
   - Any files you place in **Files ▸ On My iPhone ▸ HengeLinux ▸ Shared/** are served inside the guest at `http://10.0.2.4/`.
   - Mount inside Arch Linux anytime with:
