@@ -1,6 +1,6 @@
 # `henge-linux` Setup & Sideloading Guide
 
-This guide walks through installing **`HengeLinux`** (`v0.2.1`) on a non-jailbroken iPhone or iPad (**iOS 18.0 – iOS 27+**), importing pre-built Arch Linux or unmodified ARM64 cloud/ISO Linux images, enabling JIT with **StikDebug** + **LocalDevVPN**, and using **2D VirtIO-GPU KMS**, the interactive **`ttyAMA0` terminal**, and the offline **Safari OAuth / WebDAV** guest agent.
+This guide walks through installing **`HengeLinux`** (`v0.2.2` / Nightly) on a non-jailbroken iPhone or iPad (**iOS 18.0 – iOS 27+**), importing pre-built Arch Linux or unmodified ARM64 cloud/ISO Linux images, enabling JIT with **StikDebug** + **LocalDevVPN**, and using **2D VirtIO-GPU KMS**, the interactive **`ttyAMA0` terminal**, and the offline **Safari OAuth / WebDAV** guest agent.
 
 ---
 
@@ -26,6 +26,7 @@ To boot ARM64 Linux on iOS, you need the app bundle, shared EDK2 UEFI firmware, 
    - *Tip:* If you previously installed an older build of `HengeLinux` before `UIFileSharingEnabled` / `CFBundleDocumentTypes` were added, delete the old app icon first before installing so iOS refreshes its `Files.app` container registration.
    - *Free Apple ID note:* SideStore/AltStore strips `com.apple.developer.kernel.increased-memory-limit` and rewrites the App Group prefix on free Apple IDs (`HengeLinux` handles this automatically via `CS_DEBUGGED` + `LEDGER_NO_FOOTPRINT` and dynamic bundle ID derivation).
 4. Launch **HengeLinux** once so it initializes `Documents/Machines/ArchLinux/` and `Documents/Shared/`.
+   - *Tip:* Open the **About** tab on the start screen anytime to verify your installed version, release/nightly channel, short Git commit hash, build timestamp, and runtime capabilities (`QCOW2 Zstd`, JIT mode, engine status).
 
 ---
 
@@ -38,10 +39,10 @@ HengeLinux `v0.2.0` supports multiple isolated VMs in `Documents/Machines/<ID>/v
 2. **Choose One of Three Guest Tracks:**
    - **Track A — Pre-Built Arch Linux:** Download `archlinux.hvsparse` from [Releases](https://github.com/venim1103/henge-linux/releases) (or [Nightly (`latest-ipa`)](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa)) and import it into the default **Arch Linux** VM.
    - **Track B — Official ARM64 Cloud Images (Debian 13 `generic`, Ubuntu 24.04/26.04 `server-cloudimg`, Fedora Cloud Base, Alpine `nocloud`, openSUSE):**
-     - Tap **New ARM64 Linux VM...**, pick your distro preset, and import the official `.qcow2` or `.img` file (detected automatically by magic bytes and unpacked in the background into an APFS sparse disk on first boot).
+     - Tap **New ARM64 Linux VM...**, pick your distro preset, and import the official `.qcow2` or `.img` file (detected automatically by magic bytes—supporting both `zlib` and `zstd`-compressed QCOW2 v2/v3 clusters—and unpacked in the background into an APFS sparse disk on first boot).
      - Tap **Generate Cloud-Init Seed (`CIDATA`)...** to create a 2 MiB FAT16 `seed.img` with your hostname, username, password, and SSH key attached as secondary read-only `virtio-blk` media (`disk1`).
    - **Track C — Standard ARM64 Live / Netinstall ISO:**
-     - Create a **Blank Disk + ARM64 Live ISO** VM (allocates an empty APFS sparse `disk0.img`), import any ARM64 `.iso` (attached to `disk1`), install Linux onto `/dev/nvme0n1`, and tap **Eject** on Secondary Media after installation.
+     - Create a **Blank Disk + ARM64 Live ISO** VM (allocates an empty APFS sparse `disk0.img`), import any ARM64 `.iso` (attached to `disk1`, automatically exposing `2048`-byte logical sectors for pure El Torito optical ISOs or `512`-byte sectors for GPT/MBR isohybrid ISOs), install Linux onto `/dev/nvme0n1`, and tap **Eject** on Secondary Media after installation.
 3. **Storage Management:**
    - Use **Clone VM (APFS)** for instant copy-on-write snapshots and **Compact Disk** (`F_PUNCHHOLE`) to reclaim zeroed blocks.
 
@@ -71,10 +72,11 @@ HengeLinux automatically detects your iOS version and selects the right JIT back
 1. Pick your **Hardware Profile** (`4` or `6` vCPU) and adjust **Guest RAM (MiB)** (`512`–`10,240 MiB`). The launcher displays live `os_proc_available_memory()` Jetsam headroom and adaptive JIT pool sizing (`192` / `256` / `384 MiB`).
 2. Select a **Display Adapter**:
    - **2D UEFI GOP (Metal):** Universal UEFI framebuffer (`simpledrm`/`efifb`) — best default for initial boot and Arch Linux LXQt (`fbdev`).
-   - **2D VirtIO-GPU KMS (EDID + Metal):** Attaches PCIe `virtio-gpu` (`0x1af4:0x1050`) with VESA EDID 1.4 (`1280×800`) for native `/dev/dri/card0` KMS (`modesetting` / software Wayland) on stock Linux distros.
-3. Per-VM device toggles (**VirtIO Input**, **USB 3.0 xHCI**, **ACPI SPCR**) default to **VirtIO Input = On** and **xHCI = Off** for Linux guests so unmodified distros receive native `/dev/input/event*` keyboard + tablet input without the legacy xHCI stall.
+   - **2D VirtIO-GPU KMS (EDID + Metal):** Attaches PCIe `virtio-gpu` (`0x1af4:0x1050`) with VESA EDID 1.4 and live viewport/orientation resize (`VIRTIO_GPU_EVENT_DISPLAY`) for native `/dev/dri/card0` KMS (`modesetting` / software Wayland) on stock Linux distros.
+3. Per-VM device toggles (**VirtIO Input**, **USB 3.0 xHCI**, **ACPI SPCR**) default to **VirtIO Input = On** and **xHCI = Off** for Linux guests so unmodified distros receive native `/dev/input/event*` keyboard (with `EV_REP` autorepeat) + tablet input without the legacy xHCI stall.
 4. Tap **Boot**:
    - Use the top segmented switcher in `SessionView` to toggle between the **Metal Display** and the interactive **`ttyAMA0` Serial Terminal** tab at any time (with direct PL011 typing, Paste, and `Ctrl+C` / `Esc` / `Tab`).
+   - In the Display tab, press and hold repeatable special keys (`←`, `→`, `↑`, `↓`, `Bck`, `Del`, `Tab`, `PgUp`, `PgDn`, etc.) for continuous key repeat (`~350 ms` initial delay, `~15 Hz`), or long-press the canvas for **Paste / Copy Serial Log / Desktop…**.
    - On the pre-built Arch Linux image, `systemd-bootaa64.efi` boots automatically into `[root@hengelinux ~]#`.
 
 ---
@@ -101,7 +103,7 @@ The pre-built `archlinux.hvsparse` image comes pre-configured with `/etc/X11/xor
 - **Networking (`libslirp` VirtIO-Net):**
   - Guest IP: `10.0.2.15` · Host Gateway: `10.0.2.4` · DNS: `10.0.2.3`
 - **Install Portable Guest Additions on Any Distro (`systemd` / `OpenRC` / `runit`):**
-  - Unmodified cloud/ISO images work without guest software, or install Safari OAuth (`xdg-open`), clipboard sync, and WebDAV helpers offline from the host gateway:
+  - Unmodified cloud/ISO images work without guest software, or install Safari OAuth (`xdg-open`), clipboard sync, and WebDAV helpers offline from the host gateway (CI `.ipa` builds bundle a prebuilt static `aarch64-linux-musl` `henge-guest-agent` binary so minimal guests without `gcc` install immediately):
     ```sh
     curl -fsSL http://10.0.2.4/.henge/guest-tools/install.sh | sudo sh
     ```
