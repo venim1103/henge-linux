@@ -83,7 +83,7 @@ jobs:
             build/prebuilt/vars.fd
             build/prebuilt/*.hvsparse
             build/prebuilt/SHA256SUMS.txt
-      - name: Attach code.fd, vars.fd, and guest .hvsparse to latest-ipa Release
+      - name: Attach code.fd, vars.fd, and guest .hvsparse to Nightly (latest-ipa) Release
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -106,15 +106,15 @@ jobs:
                 build/prebuilt/vars.fd \
                 "$SPARSE_FILE" \
                 build/prebuilt/SHA256SUMS.txt \
-                --title "HengeLinux Unsigned IPA & ARM64 Guest Image (${SHORT_SHA})" \
-                --notes "Pre-built ARM64 Linux guest image (\`$(basename "$SPARSE_FILE")\`, \`code.fd\`, \`vars.fd\`) and unsigned iOS bundle." \
+                --title "Nightly (Latest main — ${SHORT_SHA})" \
+                --notes "Automated Nightly build from \`main\` (\`${SHORT_SHA}\`): pre-built ARM64 Linux guest image (\`$(basename "$SPARSE_FILE")\`, \`code.fd\`, \`vars.fd\`) and unsigned iOS bundle." \
                 --target main \
                 --prerelease; then
                 exit 0
               fi
             fi
-            echo "Retrying latest-ipa guest asset upload (attempt ${attempt}/5)..."
+            echo "Retrying Nightly (latest-ipa) guest asset upload (attempt ${attempt}/5)..."
             sleep $((attempt * 3))
           done
-          echo "ERROR: Failed to publish prebuilt guest image assets to latest-ipa after 5 attempts." >&2
+          echo "ERROR: Failed to publish prebuilt guest image assets to Nightly (latest-ipa) after 5 attempts." >&2
           exit 1

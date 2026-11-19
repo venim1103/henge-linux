@@ -156,7 +156,7 @@ jobs:
             build/HengeLinux-unsigned.ipa.sha256
 
   release-ipa:
-    name: Publish Rolling latest-ipa Pre-Release
+    name: Publish Rolling Nightly Pre-Release
     needs: [core-tests, ios-build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     concurrency:
@@ -172,19 +172,22 @@ jobs:
         with:
           name: HengeLinux-unsigned-ipa
           path: build
-      - name: Publish rolling latest-ipa GitHub Pre-Release on main
+      - name: Publish rolling Nightly (latest-ipa) GitHub Pre-Release on main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SHORT_SHA="$(git rev-parse --short HEAD)"
           BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
-          NOTES="Automated unsigned iOS build from \`main\` (\`${SHORT_SHA}\`) built on ${BUILD_DATE}.
+          NOTES="## HengeLinux Nightly (\`${SHORT_SHA}\`)
 
-          ### Sideloading on iPhone / iPad (iOS 26.0+)
+          Automated bleeding-edge build from \`main\` (\`${SHORT_SHA}\`) built on ${BUILD_DATE}.
+          For tagged milestones, see [All Releases](https://github.com/venim1103/henge-linux/releases).
+
+          ### Sideloading on iPhone / iPad (iOS 18.0 – iOS 27+)
           1. Download \`HengeLinux-unsigned.ipa\` directly on your iOS device and sign/install with **SideStore** or **AltStore** (no local Mac required).
-          2. Download the pre-built guest files (\`archlinux.hvsparse\`, \`code.fd\`, and \`vars.fd\`) attached to this release (or build locally with \`scripts/provision_archlinux_arm64.sh\`).
-          3. In **HengeLinux**, tap **Import Guest Files (hvsparse / code.fd / vars.fd)...** (and optionally **Import pairing.plist...** for in-app TXM JIT).
-          4. Default Arch Linux ARM credentials: \`root\` / \`root\` (and \`alarm\` / \`alarm\`)."
+          2. Download \`code.fd\` and \`vars.fd\` attached to this release, plus either \`archlinux.hvsparse\` or any official ARM64 cloud \`.qcow2\` / Live \`.iso\`.
+          3. In **HengeLinux**, tap **Import Guest Files...** (and for cloud images, tap **Generate Cloud-Init Seed (\`CIDATA\`)...**).
+          4. Enable **LocalDevVPN** and tap **Enable JIT via StikDebug** inside HengeLinux (iOS 18 uses Classic dual-map JIT; iOS 26/27+ TXM works with stock \`universal.js\` or \`henge-jit.js\`)."
           for attempt in 1 2 3 4 5; do
             if gh release view latest-ipa >/dev/null 2>&1; then
               if gh release upload latest-ipa \
@@ -192,7 +195,7 @@ jobs:
                 build/HengeLinux-unsigned.ipa.sha256 \
                 --clobber; then
                 gh release edit latest-ipa \
-                  --title "HengeLinux Unsigned IPA (Latest main — ${SHORT_SHA})" \
+                  --title "Nightly (Latest main — ${SHORT_SHA})" \
                   --notes "$NOTES" \
                   --target main \
                   --prerelease || true
@@ -202,15 +205,15 @@ jobs:
               if gh release create latest-ipa \
                 build/HengeLinux-unsigned.ipa \
                 build/HengeLinux-unsigned.ipa.sha256 \
-                --title "HengeLinux Unsigned IPA (Latest main — ${SHORT_SHA})" \
+                --title "Nightly (Latest main — ${SHORT_SHA})" \
                 --notes "$NOTES" \
                 --target main \
                 --prerelease; then
                 exit 0
               fi
             fi
-            echo "Retrying latest-ipa release publish (attempt ${attempt}/5)..."
+            echo "Retrying Nightly (latest-ipa) release publish (attempt ${attempt}/5)..."
             sleep $((attempt * 3))
           done
-          echo "ERROR: Failed to publish IPA assets to latest-ipa after 5 attempts." >&2
+          echo "ERROR: Failed to publish IPA assets to Nightly (latest-ipa) after 5 attempts." >&2
           exit 1
