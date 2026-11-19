@@ -31,15 +31,111 @@ typedef struct {
 } HengeGpuContextSlot;
 
 typedef struct {
-    bool     active;
-    bool     is_3d;
-    bool     has_backing;
-    uint32_t resource_id;
-    uint32_t attached_ctx_mask;
-    uint32_t width;
-    uint32_t height;
-    uint32_t format;
+    bool                  active;
+    bool                  is_3d;
+    bool                  has_backing;
+    uint32_t              resource_id;
+    uint32_t              attached_ctx_mask;
+    uint32_t              width;
+    uint32_t              height;
+    uint32_t              stride;
+    uint32_t              format;
+    uint8_t              *pixels;
+    HengeGpuBackingEntry *backing;
+    uint32_t              backing_count;
 } HengeGpuResourceSlot;
+
+#define HENGE_VIRTIO_GPU_MAX_2D_BYTES (64ULL * 1024ULL * 1024ULL)
+
+static void free_resource_buffers_locked(HengeGpuResourceSlot *res) {
+    if (res == NULL) {
+        return;
+    }
+    free(res->pixels);
+    res->pixels = NULL;
+    free(res->backing);
+    res->backing = NULL;
+    res->backing_count = 0U;
+    res->has_backing = false;
+}
+
+static size_t read_from_backing_locked(const HengeGpuResourceSlot *res,
+                                       uint64_t src_off,
+                                       uint8_t *dst,
+                                       size_t len) {
+    if (res == NULL || res->backing == NULL || res->backing_count == 0U || dst == NULL || len == 0U) {
+        return 0U;
+    }
+    size_t copied = 0U;
+    uint64_t cursor = 0U;
+    for (uint32_t i = 0U; i < res->backing_count && copied < len; i++) {
+        uint64_t seg_len = res->backing[i].length;
+        if (src_off >= cursor + seg_len) {
+            cursor += seg_len;
+            continue;
+        }
+        uint64_t seg_off = (src_off > cursor) ? (src_off - cursor) : 0ULL;
+        uint64_t avail = seg_len - seg_off;
+        size_t chunk = (avail < (uint64_t)(len - copied)) ? (size_t)avail : (len - copied);
+        if (res->backing[i].host_ptr != NULL) {
+            memcpy(dst + copied, res->backing[i].host_ptr + seg_off, chunk);
+        } else {
+            memset(dst + copied, 0, chunk);
+        }
+        copied += chunk;
+        src_off += chunk;
+        cursor += seg_len;
+    }
+    return copied;
+}
+
+static void convert_row_to_bgra8(uint32_t format, uint8_t *row, uint32_t pixel_count) {
+    switch (format) {
+        case HENGE_VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM:
+        case HENGE_VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM:
+            /* Native BGRA8/BGRX8 layout expected by HvFbDisplay / Metal. */
+            break;
+        case HENGE_VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM:
+        case HENGE_VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM:
+            for (uint32_t i = 0U; i < pixel_count; i++) {
+                uint8_t *p = row + (size_t)i * 4U;
+                uint8_t r = p[0];
+                p[0] = p[2];
+                p[2] = r;
+            }
+            break;
+        case HENGE_VIRTIO_GPU_FORMAT_A8R8G8B8_UNORM:
+        case HENGE_VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM:
+            for (uint32_t i = 0U; i < pixel_count; i++) {
+                uint8_t *p = row + (size_t)i * 4U;
+                uint8_t a = p[0];
+                uint8_t r = p[1];
+                uint8_t g = p[2];
+                uint8_t b = p[3];
+                p[0] = b;
+                p[1] = g;
+                p[2] = r;
+                p[3] = a;
+            }
+            break;
+        case HENGE_VIRTIO_GPU_FORMAT_A8B8G8R8_UNORM:
+        case HENGE_VIRTIO_GPU_FORMAT_X8B8G8R8_UNORM:
+            for (uint32_t i = 0U; i < pixel_count; i++) {
+                uint8_t *p = row + (size_t)i * 4U;
+                uint8_t a = p[0];
+                uint8_t b = p[1];
+                uint8_t g = p[2];
+                uint8_t r = p[3];
+                p[0] = b;
+                p[1] = g;
+                p[2] = r;
+                p[3] = a;
+            }
+            break;
+        default:
+            break;
+    }
+}
 
 typedef struct {
     bool     enabled;
@@ -188,6 +284,11 @@ void henge_virtio_gpu_destroy(HengeVirtioGpuDevice *dev) {
     if (dev == NULL) {
         return;
     }
+    pthread_mutex_lock(&dev->lock);
+    for (size_t i = 0; i < HENGE_VIRTIO_GPU_MAX_RESOURCES; i++) {
+        free_resource_buffers_locked(&dev->resources[i]);
+    }
+    pthread_mutex_unlock(&dev->lock);
     pthread_mutex_destroy(&dev->lock);
     free(dev);
 }
@@ -280,6 +381,277 @@ int henge_virtio_gpu_set_display_mode(HengeVirtioGpuDevice *dev,
         dev->scanouts[scanout_id].height = height;
     }
     pthread_mutex_unlock(&dev->lock);
+    return 0;
+}
+
+int henge_virtio_gpu_get_display_info(const HengeVirtioGpuDevice *dev,
+                                      uint32_t scanout_id,
+                                      uint32_t *out_width,
+                                      uint32_t *out_height,
+                                      bool *out_enabled) {
+    if (dev == NULL || scanout_id >= HENGE_VIRTIO_GPU_MAX_SCANOUTS) {
+        return -1;
+    }
+    HengeVirtioGpuDevice *mut = (HengeVirtioGpuDevice *)dev;
+    pthread_mutex_lock(&mut->lock);
+    if (out_width != NULL) {
+        *out_width = dev->scanouts[scanout_id].width;
+    }
+    if (out_height != NULL) {
+        *out_height = dev->scanouts[scanout_id].height;
+    }
+    if (out_enabled != NULL) {
+        *out_enabled = dev->scanouts[scanout_id].enabled;
+    }
+    pthread_mutex_unlock(&mut->lock);
+    return 0;
+}
+
+int henge_virtio_gpu_get_edid(const HengeVirtioGpuDevice *dev,
+                              uint32_t scanout_id,
+                              uint8_t out_edid[128]) {
+    if (dev == NULL || out_edid == NULL || scanout_id >= HENGE_VIRTIO_GPU_MAX_SCANOUTS) {
+        return -1;
+    }
+    uint32_t width = 1920U;
+    uint32_t height = 1200U;
+    HengeVirtioGpuDevice *mut = (HengeVirtioGpuDevice *)dev;
+    pthread_mutex_lock(&mut->lock);
+    if (dev->scanouts[scanout_id].width > 0U && dev->scanouts[scanout_id].height > 0U) {
+        width = dev->scanouts[scanout_id].width;
+        height = dev->scanouts[scanout_id].height;
+    }
+    pthread_mutex_unlock(&mut->lock);
+
+    if (width > 4095U) {
+        width = 4095U;
+    }
+    if (height > 4095U) {
+        height = 4095U;
+    }
+
+    memset(out_edid, 0, 128U);
+    /* EDID 1.4 header */
+    out_edid[0] = 0x00U;
+    out_edid[1] = 0xFFU;
+    out_edid[2] = 0xFFU;
+    out_edid[3] = 0xFFU;
+    out_edid[4] = 0xFFU;
+    out_edid[5] = 0xFFU;
+    out_edid[6] = 0xFFU;
+    out_edid[7] = 0x00U;
+
+    /* Manufacturer ID "HNG" (H=8, N=14, G=7) -> 0x21C7 big-endian */
+    out_edid[8] = 0x21U;
+    out_edid[9] = 0xC7U;
+    /* Product code 0x0001, serial 1, week 1, year 2026 (1990 + 36) */
+    out_edid[10] = 0x01U;
+    out_edid[11] = 0x00U;
+    out_edid[12] = 0x01U;
+    out_edid[16] = 0x01U;
+    out_edid[17] = 36U;
+    /* EDID version 1.4 */
+    out_edid[18] = 0x01U;
+    out_edid[19] = 0x04U;
+    /* Digital input, 8-bit color depth, DisplayPort interface */
+    out_edid[20] = 0xA5U;
+    /* Physical size in cm (~96 DPI nominal) */
+    uint32_t width_cm = (width * 254U + 4800U) / 9600U;
+    uint32_t height_cm = (height * 254U + 4800U) / 9600U;
+    if (width_cm == 0U) width_cm = 16U;
+    if (height_cm == 0U) height_cm = 10U;
+    if (width_cm > 255U) width_cm = 255U;
+    if (height_cm > 255U) height_cm = 255U;
+    out_edid[21] = (uint8_t)width_cm;
+    out_edid[22] = (uint8_t)height_cm;
+    out_edid[23] = 120U; /* Gamma 2.20 */
+    out_edid[24] = 0x06U; /* RGB 4:4:4, preferred timing mode in DTD #1 */
+
+    /* Chromaticity (standard sRGB) */
+    out_edid[25] = 0xEEU;
+    out_edid[26] = 0x91U;
+    out_edid[27] = 0xA3U;
+    out_edid[28] = 0x54U;
+    out_edid[29] = 0x4CU;
+    out_edid[30] = 0x99U;
+    out_edid[31] = 0x26U;
+    out_edid[32] = 0x0FU;
+    out_edid[33] = 0x50U;
+    out_edid[34] = 0x54U;
+
+    /* Established timings: 640x480@60, 800x600@60, 1024x768@60 */
+    out_edid[35] = 0x21U;
+    out_edid[36] = 0x08U;
+    out_edid[37] = 0x00U;
+    /* Unused standard timing slots filled with 0x01, 0x01 */
+    for (size_t i = 38U; i < 54U; i++) {
+        out_edid[i] = 0x01U;
+    }
+
+    /* Detailed Timing Descriptor #1 (bytes 54..71): width x height @ 60 Hz */
+    uint32_t hblank = 160U;
+    uint32_t vblank = 35U;
+    uint32_t hfp = 48U;
+    uint32_t hsync = 32U;
+    uint32_t vfp = 3U;
+    uint32_t vsync = 6U;
+    uint64_t pclk_10khz = ((uint64_t)(width + hblank) * (uint64_t)(height + vblank) * 60ULL) / 10000ULL;
+    if (pclk_10khz == 0ULL) pclk_10khz = 1ULL;
+    if (pclk_10khz > 65535ULL) pclk_10khz = 65535ULL;
+
+    uint8_t *dtd = out_edid + 54;
+    dtd[0] = (uint8_t)(pclk_10khz & 0xFFU);
+    dtd[1] = (uint8_t)((pclk_10khz >> 8) & 0xFFU);
+    dtd[2] = (uint8_t)(width & 0xFFU);
+    dtd[3] = (uint8_t)(hblank & 0xFFU);
+    dtd[4] = (uint8_t)(((width >> 4) & 0xF0U) | ((hblank >> 8) & 0x0FU));
+    dtd[5] = (uint8_t)(height & 0xFFU);
+    dtd[6] = (uint8_t)(vblank & 0xFFU);
+    dtd[7] = (uint8_t)(((height >> 4) & 0xF0U) | ((vblank >> 8) & 0x0FU));
+    dtd[8] = (uint8_t)(hfp & 0xFFU);
+    dtd[9] = (uint8_t)(hsync & 0xFFU);
+    dtd[10] = (uint8_t)(((vfp & 0x0FU) << 4) | (vsync & 0x0FU));
+    dtd[11] = (uint8_t)((((hfp >> 8) & 0x03U) << 6) |
+                        (((hsync >> 8) & 0x03U) << 4) |
+                        (((vfp >> 4) & 0x03U) << 2) |
+                        ((vsync >> 4) & 0x03U));
+    uint32_t width_mm = width_cm * 10U;
+    uint32_t height_mm = height_cm * 10U;
+    dtd[12] = (uint8_t)(width_mm & 0xFFU);
+    dtd[13] = (uint8_t)(height_mm & 0xFFU);
+    dtd[14] = (uint8_t)(((width_mm >> 4) & 0xF0U) | ((height_mm >> 8) & 0x0FU));
+    dtd[15] = 0U;
+    dtd[16] = 0U;
+    dtd[17] = 0x1EU; /* Digital separate sync, +H +V */
+
+    /* Descriptor #2 (bytes 72..89): Monitor Name "HengeLinux" */
+    uint8_t *name_desc = out_edid + 72;
+    name_desc[3] = 0xFCU;
+    static const char kMonName[] = "HengeLinux\n  ";
+    memcpy(name_desc + 5, kMonName, 13U);
+
+    /* Descriptor #3 & #4: Dummy descriptors (0x10) */
+    out_edid[90 + 3] = 0x10U;
+    out_edid[108 + 3] = 0x10U;
+
+    /* Checksum byte 127 so sum(out_edid[0..127]) == 0 mod 256 */
+    uint8_t sum = 0U;
+    for (size_t i = 0U; i < 127U; i++) {
+        sum = (uint8_t)(sum + out_edid[i]);
+    }
+    out_edid[127] = (uint8_t)(0U - sum);
+    return 0;
+}
+
+int henge_virtio_gpu_attach_backing(HengeVirtioGpuDevice *dev,
+                                    uint32_t resource_id,
+                                    const HengeGpuBackingEntry *entries,
+                                    uint32_t entry_count) {
+    if (dev == NULL || resource_id == 0U || (entry_count > 0U && entries == NULL)) {
+        return -1;
+    }
+    if (entry_count > 4096U) {
+        return -1;
+    }
+    pthread_mutex_lock(&dev->lock);
+    HengeGpuResourceSlot *res = find_resource_locked(dev, resource_id);
+    if (res == NULL) {
+        pthread_mutex_unlock(&dev->lock);
+        return -1;
+    }
+    HengeGpuBackingEntry *copy = NULL;
+    if (entry_count > 0U) {
+        copy = calloc((size_t)entry_count, sizeof(*copy));
+        if (copy == NULL) {
+            pthread_mutex_unlock(&dev->lock);
+            return -1;
+        }
+        memcpy(copy, entries, (size_t)entry_count * sizeof(*copy));
+    }
+    free(res->backing);
+    res->backing = copy;
+    res->backing_count = entry_count;
+    res->has_backing = (entry_count > 0U);
+    pthread_mutex_unlock(&dev->lock);
+    return 0;
+}
+
+int henge_virtio_gpu_transfer_to_host_2d(HengeVirtioGpuDevice *dev,
+                                         uint32_t resource_id,
+                                         uint32_t x,
+                                         uint32_t y,
+                                         uint32_t width,
+                                         uint32_t height,
+                                         uint64_t offset) {
+    if (dev == NULL || resource_id == 0U) {
+        return -1;
+    }
+    pthread_mutex_lock(&dev->lock);
+    HengeGpuResourceSlot *res = find_resource_locked(dev, resource_id);
+    if (res == NULL || res->pixels == NULL || res->backing == NULL || res->backing_count == 0U) {
+        pthread_mutex_unlock(&dev->lock);
+        return -1;
+    }
+    if (width == 0U || height == 0U) {
+        pthread_mutex_unlock(&dev->lock);
+        return 0;
+    }
+    if (x >= res->width || y >= res->height) {
+        pthread_mutex_unlock(&dev->lock);
+        return -1;
+    }
+    if (width > res->width - x) {
+        width = res->width - x;
+    }
+    if (height > res->height - y) {
+        height = res->height - y;
+    }
+
+    const uint32_t stride = res->stride;
+    const size_t row_bytes = (size_t)width * 4U;
+    for (uint32_t row = 0U; row < height; row++) {
+        uint64_t src_off = offset + (uint64_t)row * (uint64_t)stride;
+        uint8_t *dst_row = res->pixels + (size_t)(y + row) * (size_t)stride + (size_t)x * 4U;
+        if (read_from_backing_locked(res, src_off, dst_row, row_bytes) == 0U) {
+            break;
+        }
+        convert_row_to_bgra8(res->format, dst_row, width);
+    }
+
+    pthread_mutex_unlock(&dev->lock);
+    return 0;
+}
+
+int henge_virtio_gpu_get_scanout_frame(const HengeVirtioGpuDevice *dev,
+                                       uint32_t scanout_id,
+                                       const uint8_t **out_pixels,
+                                       uint32_t *out_width,
+                                       uint32_t *out_height,
+                                       uint32_t *out_stride) {
+    if (dev == NULL || scanout_id >= HENGE_VIRTIO_GPU_MAX_SCANOUTS) {
+        return -1;
+    }
+    HengeVirtioGpuDevice *mut = (HengeVirtioGpuDevice *)dev;
+    pthread_mutex_lock(&mut->lock);
+    uint32_t res_id = dev->scanouts[scanout_id].resource_id;
+    HengeGpuResourceSlot *res = find_resource_locked(mut, res_id);
+    if (res == NULL || res->pixels == NULL || res->width == 0U || res->height == 0U) {
+        pthread_mutex_unlock(&mut->lock);
+        return -1;
+    }
+    if (out_pixels != NULL) {
+        *out_pixels = res->pixels;
+    }
+    if (out_width != NULL) {
+        *out_width = res->width;
+    }
+    if (out_height != NULL) {
+        *out_height = res->height;
+    }
+    if (out_stride != NULL) {
+        *out_stride = res->stride;
+    }
+    pthread_mutex_unlock(&mut->lock);
     return 0;
 }
 
@@ -394,6 +766,21 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
                 break;
             }
+            uint8_t *pixels = NULL;
+            uint32_t stride = 0U;
+            if (!is_3d) {
+                uint64_t total_bytes = (uint64_t)width * (uint64_t)height * 4ULL;
+                if (total_bytes == 0ULL || total_bytes > HENGE_VIRTIO_GPU_MAX_2D_BYTES) {
+                    resp = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
+                    break;
+                }
+                pixels = calloc(1U, (size_t)total_bytes);
+                if (pixels == NULL) {
+                    resp = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
+                    break;
+                }
+                stride = width * 4U;
+            }
             free_res->active = true;
             free_res->is_3d = is_3d;
             free_res->has_backing = false;
@@ -401,7 +788,11 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
             free_res->attached_ctx_mask = 0U;
             free_res->width = width;
             free_res->height = height;
+            free_res->stride = stride;
             free_res->format = format;
+            free_res->pixels = pixels;
+            free_res->backing = NULL;
+            free_res->backing_count = 0U;
             break;
         }
 
@@ -423,6 +814,7 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
                     dev->scanouts[s].resource_id = 0U;
                 }
             }
+            free_resource_buffers_locked(res);
             memset(res, 0, sizeof(*res));
             break;
         }
@@ -443,6 +835,9 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE;
                 break;
             }
+            free(res->backing);
+            res->backing = NULL;
+            res->backing_count = 0U;
             res->has_backing = false;
             break;
         }

@@ -394,6 +394,56 @@ static void test_virtio_gpu_backends(void) {
     HENGE_CHECK(henge_virtio_gpu_context_attached_resources(gpu, 1U) == 0U);
     HENGE_CHECK(henge_virtio_gpu_scanout_resource(gpu, 0U) == 0U);
 
+    /* Milestone 6.5 (Phase E): verify 2D KMS backing, RGBA->BGRA dirty-rect transfer, and EDID 1.4. */
+    HENGE_CHECK(henge_virtio_gpu_set_display_mode(gpu, 0U, 1280U, 800U, true) == 0);
+    uint32_t disp_w = 0U, disp_h = 0U;
+    bool disp_en = false;
+    HENGE_CHECK(henge_virtio_gpu_get_display_info(gpu, 0U, &disp_w, &disp_h, &disp_en) == 0);
+    HENGE_CHECK(disp_w == 1280U && disp_h == 800U && disp_en);
+
+    uint8_t edid[128];
+    HENGE_CHECK(henge_virtio_gpu_get_edid(gpu, 0U, edid) == 0);
+    HENGE_CHECK(edid[0] == 0x00U && edid[1] == 0xFFU && edid[7] == 0x00U);
+    HENGE_CHECK(edid[18] == 0x01U && edid[19] == 0x04U);
+    uint8_t edid_sum = 0U;
+    for (size_t i = 0U; i < 128U; i++) {
+        edid_sum = (uint8_t)(edid_sum + edid[i]);
+    }
+    HENGE_CHECK(edid_sum == 0U);
+
+    /* Create 4x4 2D RGBA resource, attach split 2-segment scatter-gather backing, and blit 2x2 rect. */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 0U, 20U, 0U, 4U, 4U,
+        HENGE_VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    uint8_t seg0[32];
+    uint8_t seg1[32];
+    memset(seg0, 0, sizeof(seg0));
+    memset(seg1, 0, sizeof(seg1));
+    /* Pixel (1,1) in RGBA = (0x11, 0x22, 0x33, 0xFF) at byte offset 1*16 + 1*4 = 20 (in seg0) */
+    seg0[20] = 0x11U; seg0[21] = 0x22U; seg0[22] = 0x33U; seg0[23] = 0xFFU;
+    /* Pixel (2,2) in RGBA = (0xAA, 0xBB, 0xCC, 0xEE) at byte offset 2*16 + 2*4 = 40 (seg1 offset 8) */
+    seg1[8] = 0xAAU; seg1[9] = 0xBBU; seg1[10] = 0xCCU; seg1[11] = 0xEEU;
+    HengeGpuBackingEntry backing[2] = {
+        { .host_ptr = seg0, .guest_addr = 0x40000000ULL, .length = sizeof(seg0), .reserved = 0U },
+        { .host_ptr = seg1, .guest_addr = 0x40001000ULL, .length = sizeof(seg1), .reserved = 0U },
+    };
+    HENGE_CHECK(henge_virtio_gpu_attach_backing(gpu, 20U, backing, 2U) == 0);
+    HENGE_CHECK(henge_virtio_gpu_transfer_to_host_2d(gpu, 20U, 1U, 1U, 2U, 2U, 20ULL) == 0);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_SET_SCANOUT, 0U, 20U, 0U, 4U, 4U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    const uint8_t *scan_px = NULL;
+    uint32_t scan_w = 0U, scan_h = 0U, scan_stride = 0U;
+    HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == 0);
+    HENGE_CHECK(scan_px != NULL && scan_w == 4U && scan_h == 4U && scan_stride == 16U);
+    /* Verify RGBA -> BGRA swizzle at (1,1) and (2,2) */
+    HENGE_CHECK(scan_px[20] == 0x33U && scan_px[21] == 0x22U && scan_px[22] == 0x11U && scan_px[23] == 0xFFU);
+    HENGE_CHECK(scan_px[40] == 0xCCU && scan_px[41] == 0xBBU && scan_px[42] == 0xAAU && scan_px[43] == 0xEEU);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF, 0U, 20U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == -1);
+
     henge_virtio_gpu_destroy(gpu);
 }
 

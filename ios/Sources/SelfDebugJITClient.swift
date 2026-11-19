@@ -11,9 +11,26 @@ enum JitActivationState: Equatable {
 
 enum GpuDisplayBackend: String, CaseIterable, Identifiable {
     case gop2D = "2D UEFI GOP (Metal)"
+    case virtioGpu2D = "2D VirtIO-GPU KMS (EDID + Metal)"
     case virgl3D = "3D VirtIO-GPU VirGL (ANGLE Metal)"
 
     var id: String { rawValue }
+
+    var modeCode: Int32 {
+        switch self {
+        case .gop2D: return 0
+        case .virgl3D: return 1
+        case .virtioGpu2D: return 2
+        }
+    }
+
+    static func from(modeCode: Int) -> GpuDisplayBackend {
+        switch modeCode {
+        case 1: return .virgl3D
+        case 2: return .virtioGpu2D
+        default: return .gop2D
+        }
+    }
 }
 
 enum JitStrategyOverride: Int, CaseIterable, Identifiable {

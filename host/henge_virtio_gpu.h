@@ -29,6 +29,24 @@ extern "C" {
 #define HENGE_VIRTIO_GPU_MAX_CONTEXTS  32U
 #define HENGE_VIRTIO_GPU_MAX_RESOURCES 256U
 
+/* VirtIO-GPU 2D pixel formats (virtio_gpu_formats). */
+#define HENGE_VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM 1U
+#define HENGE_VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM 2U
+#define HENGE_VIRTIO_GPU_FORMAT_A8R8G8B8_UNORM 3U
+#define HENGE_VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM 4U
+#define HENGE_VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM 67U
+#define HENGE_VIRTIO_GPU_FORMAT_X8B8G8R8_UNORM 68U
+#define HENGE_VIRTIO_GPU_FORMAT_A8B8G8R8_UNORM 121U
+#define HENGE_VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM 134U
+
+/* Scatter-gather guest backing segment for 2D/3D VirtIO-GPU resources. */
+typedef struct {
+    const uint8_t *host_ptr;
+    uint64_t       guest_addr;
+    uint32_t       length;
+    uint32_t       reserved;
+} HengeGpuBackingEntry;
+
 /* VirtIO-GPU control queue command types. */
 typedef enum {
     HENGE_VIRTIO_GPU_CMD_GET_DISPLAY_INFO        = 0x0100U,
@@ -114,6 +132,41 @@ int henge_virtio_gpu_set_display_mode(HengeVirtioGpuDevice *dev,
                                       uint32_t width,
                                       uint32_t height,
                                       bool enabled);
+
+/* Query current display geometry for a scanout. */
+int henge_virtio_gpu_get_display_info(const HengeVirtioGpuDevice *dev,
+                                      uint32_t scanout_id,
+                                      uint32_t *out_width,
+                                      uint32_t *out_height,
+                                      bool *out_enabled);
+
+/* Synthesize a valid 128-byte VESA EDID 1.4 block for a scanout. */
+int henge_virtio_gpu_get_edid(const HengeVirtioGpuDevice *dev,
+                              uint32_t scanout_id,
+                              uint8_t out_edid[128]);
+
+/* Attach a guest scatter-gather backing table to a 2D/3D resource. */
+int henge_virtio_gpu_attach_backing(HengeVirtioGpuDevice *dev,
+                                    uint32_t resource_id,
+                                    const HengeGpuBackingEntry *entries,
+                                    uint32_t entry_count);
+
+/* Blit a dirty rectangle from guest backing pages into the host BGRA8/BGRX8 resource buffer. */
+int henge_virtio_gpu_transfer_to_host_2d(HengeVirtioGpuDevice *dev,
+                                         uint32_t resource_id,
+                                         uint32_t x,
+                                         uint32_t y,
+                                         uint32_t width,
+                                         uint32_t height,
+                                         uint64_t offset);
+
+/* Snapshot the active scanout's host BGRA8 pixel buffer pointer and geometry. */
+int henge_virtio_gpu_get_scanout_frame(const HengeVirtioGpuDevice *dev,
+                                       uint32_t scanout_id,
+                                       const uint8_t **out_pixels,
+                                       uint32_t *out_width,
+                                       uint32_t *out_height,
+                                       uint32_t *out_stride);
 
 /* Dispatch a VirtIO-GPU 2D/3D control queue command and return its response code. */
 HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,

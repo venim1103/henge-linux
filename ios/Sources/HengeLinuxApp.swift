@@ -288,6 +288,7 @@ struct HengeLinuxApp: App {
                 if vm.ramMiB >= Int(HENGE_MIN_GUEST_RAM_MIB) && vm.ramMiB <= Int(HENGE_MAX_GUEST_RAM_MIB) {
                     customGuestRamMiB = vm.ramMiB
                 }
+                jitClient.gpuBackend = GpuDisplayBackend.from(modeCode: vm.gpuBackend)
                 if ramInputText.isEmpty {
                     ramInputText = "\(effectiveRamMiB)"
                 }
@@ -295,6 +296,7 @@ struct HengeLinuxApp: App {
             .onChange(of: vmStore.selectedMachineID) { _, _ in
                 let vm = vmStore.selectedMachine
                 customGuestRamMiB = min(max(vm.ramMiB, Int(HENGE_MIN_GUEST_RAM_MIB)), Int(HENGE_MAX_GUEST_RAM_MIB))
+                jitClient.gpuBackend = GpuDisplayBackend.from(modeCode: vm.gpuBackend)
                 ramInputText = "\(effectiveRamMiB)"
             }
             .onOpenURL { url in
@@ -700,7 +702,7 @@ struct HengeLinuxApp: App {
                             var activeVM = vmStore.selectedMachine
                             activeVM.ramMiB = Int(effectiveRamMiB)
                             activeVM.cpuCount = selectedProfile.cpuCount
-                            activeVM.gpuBackend = (jitClient.gpuBackend == .virgl3D) ? 1 : 0
+                            activeVM.gpuBackend = Int(jitClient.gpuBackend.modeCode)
                             vmStore.updateMachine(activeVM)
 
                             let machineDir = vmStore.machineDirectoryURL(for: activeVM.id)
@@ -744,7 +746,7 @@ struct HengeLinuxApp: App {
                                 isRunning = false
                                 return
                             }
-                            let gpuMode: Int32 = (jitClient.gpuBackend == .virgl3D) ? 1 : 0
+                            let gpuMode: Int32 = jitClient.gpuBackend.modeCode
                             do {
                                 try HengeVMBridge.shared.startGuest(
                                     atMachineDir: machineDir.path,

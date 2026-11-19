@@ -632,20 +632,28 @@ void hv_acpi_build_and_register(HvFwCfg *fw, int ncpus, uint64_t ram_size, int s
     HvVirtioSnd *snd;
     HvVirtioInput *vinput_kbd;
     HvVirtioInput *vinput_tab;
-    HvVirtioBlk *vblk1;""",
+    HvVirtioBlk *vblk1;
+    struct HvVirtioGpuPci *vgpu;""",
     )
     patch_file(
         winvirt_h,
-        "hv_winvirt_set_device_flags",
+        "hv_winvirt_set_virtio_gpu",
         "void hv_winvirt_power_button(HvWinVirt *b);",
         """void hv_winvirt_power_button(HvWinVirt *b);
-void hv_winvirt_set_device_flags(int enable_xhci, int enable_virtio_input, int enable_acpi_spcr, int disk1_as_virtio_blk);""",
+void hv_winvirt_set_device_flags(int enable_xhci, int enable_virtio_input, int enable_acpi_spcr, int disk1_as_virtio_blk);
+void hv_winvirt_set_virtio_gpu(int enable);""",
     )
 
     winvirt_c = upstream / "devices/winvirt.c"
     patch_file(
         winvirt_c,
-        "g_wv_enable_xhci",
+        '#include "henge_virtio_gpu.h"',
+        '#include "winvirt.h"\n',
+        '#include "winvirt.h"\n#include "henge_platform.h"\n#include "henge_virtio_gpu.h"\n#include "virtio.h"\n',
+    )
+    patch_file(
+        winvirt_c,
+        "g_wv_enable_virtio_gpu",
         """static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     HvWinVirt *b = m->tick_opaque;
     uint64_t deadline = hv_timer_update(b->gic, cpu);
@@ -657,16 +665,240 @@ void hv_winvirt_set_device_flags(int enable_xhci, int enable_virtio_input, int e
     if (b->snd) hv_virtio_snd_poll(b->snd);
     return deadline;
 }""",
-        """static int g_wv_enable_xhci = 1;
+        """typedef struct HvVirtioGpuPci {
+    HvVirtio vio;
+    HengeVirtioGpuDevice *gpu;
+    HvFbDisplay *fb;
+} HvVirtioGpuPci;
+
+static void vgpu_sync_scanout0(HvVirtioGpuPci *g) {
+    if (!g || !g->fb || !g->gpu) return;
+    const uint8_t *px = NULL;
+    uint32_t w = 0, h = 0, stride = 0;
+    hengelinux_render_lock();
+    if (henge_virtio_gpu_get_scanout_frame(g->gpu, 0u, &px, &w, &h, &stride) == 0 && px != NULL) {
+        hv_fb_display_set_host_buffer(g->fb, px, w, h, stride, 0x34325258u /* XR24 */);
+    } else {
+        hv_fb_display_set_host_buffer(g->fb, NULL, 0u, 0u, 0u, 0u);
+    }
+    hengelinux_render_unlock();
+}
+
+static void vgpu_config_write(HvVirtio *v, uint32_t off, uint64_t val, unsigned size) {
+    if (off == 4u && size >= 4u) {
+        uint32_t ev = 0;
+        memcpy(&ev, v->config, 4);
+        ev &= ~(uint32_t)val;
+        memcpy(v->config, &ev, 4);
+    }
+}
+
+static void vgpu_notify(HvVirtio *v, int q) {
+    HvVirtioGpuPci *g = v->dev;
+    if (!g || !g->gpu) return;
+    HvVirtqElem e;
+    int any = 0;
+    while (hv_virtq_pop(v, q, &e) > 0) {
+        uint8_t hdr[24];
+        memset(hdr, 0, sizeof hdr);
+        uint32_t type = 0, flags = 0, ctx_id = 0;
+        uint64_t fence_id = 0;
+        if (hv_virtq_read(v, &e, 0, hdr, 24) == 24) {
+            memcpy(&type, hdr + 0, 4);
+            memcpy(&flags, hdr + 4, 4);
+            memcpy(&fence_id, hdr + 8, 8);
+            memcpy(&ctx_id, hdr + 16, 4);
+        }
+
+        uint32_t resp_type = HENGE_VIRTIO_GPU_RESP_OK_NODATA;
+        uint32_t written = 24;
+
+        if (q == 1) {
+            resp_type = HENGE_VIRTIO_GPU_RESP_OK_NODATA;
+        } else if (type == HENGE_VIRTIO_GPU_CMD_GET_DISPLAY_INFO) {
+            uint8_t resp[24 + 16 * 24];
+            memset(resp, 0, sizeof resp);
+            uint32_t w = 1280, h = 800;
+            bool en = true;
+            henge_virtio_gpu_get_display_info(g->gpu, 0u, &w, &h, &en);
+            resp_type = HENGE_VIRTIO_GPU_RESP_OK_DISPLAY_INFO;
+            memcpy(resp + 0, &resp_type, 4);
+            uint32_t rflags = flags & 1u;
+            memcpy(resp + 4, &rflags, 4);
+            memcpy(resp + 8, &fence_id, 8);
+            memcpy(resp + 24 + 8, &w, 4);
+            memcpy(resp + 24 + 12, &h, 4);
+            uint32_t enabled32 = en ? 1u : 0u;
+            memcpy(resp + 24 + 16, &enabled32, 4);
+            written = hv_virtq_write(v, &e, 0, resp, (uint32_t)sizeof resp);
+            hv_virtq_push(v, q, &e, written);
+            any = 1;
+            continue;
+        } else if (type == HENGE_VIRTIO_GPU_CMD_GET_EDID) {
+            uint32_t scanout = 0;
+            hv_virtq_read(v, &e, 24, &scanout, 4);
+            uint8_t resp[24 + 8 + 1024];
+            memset(resp, 0, sizeof resp);
+            if (henge_virtio_gpu_get_edid(g->gpu, scanout, resp + 32) == 0) {
+                resp_type = HENGE_VIRTIO_GPU_RESP_OK_EDID;
+                uint32_t edid_sz = 128u;
+                memcpy(resp + 24, &edid_sz, 4);
+            } else {
+                resp_type = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT;
+            }
+            memcpy(resp + 0, &resp_type, 4);
+            uint32_t rflags = flags & 1u;
+            memcpy(resp + 4, &rflags, 4);
+            memcpy(resp + 8, &fence_id, 8);
+            written = hv_virtq_write(v, &e, 0, resp, (uint32_t)sizeof resp);
+            hv_virtq_push(v, q, &e, written);
+            any = 1;
+            continue;
+        } else if (type == HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D) {
+            uint32_t args[4] = {0};
+            hv_virtq_read(v, &e, 24, args, 16);
+            resp_type = (uint32_t)henge_virtio_gpu_process_ctrl(
+                g->gpu, type, ctx_id, args[0], 0u, args[2], args[3], args[1], NULL, 0u);
+        } else if (type == HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF) {
+            uint32_t res_id = 0;
+            hv_virtq_read(v, &e, 24, &res_id, 4);
+            int was_scanout0 = (res_id != 0u && res_id == henge_virtio_gpu_scanout_resource(g->gpu, 0u));
+            if (was_scanout0) {
+                hengelinux_render_lock();
+                hv_fb_display_set_host_buffer(g->fb, NULL, 0u, 0u, 0u, 0u);
+            }
+            resp_type = (uint32_t)henge_virtio_gpu_process_ctrl(
+                g->gpu, type, ctx_id, res_id, 0u, 0u, 0u, 0u, NULL, 0u);
+            if (was_scanout0) {
+                hengelinux_render_unlock();
+            }
+        } else if (type == HENGE_VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING) {
+            uint32_t args[2] = {0};
+            hv_virtq_read(v, &e, 24, args, 8);
+            uint32_t res_id = args[0];
+            uint32_t nr_entries = args[1];
+            if (nr_entries > 4096u) {
+                resp_type = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
+            } else {
+                HengeGpuBackingEntry *entries = nr_entries ? calloc(nr_entries, sizeof(*entries)) : NULL;
+                if (nr_entries && !entries) {
+                    resp_type = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
+                } else {
+                    for (uint32_t i = 0; i < nr_entries; i++) {
+                        uint8_t mem_ent[16];
+                        memset(mem_ent, 0, sizeof mem_ent);
+                        hv_virtq_read(v, &e, 32u + i * 16u, mem_ent, 16u);
+                        uint64_t addr = 0;
+                        uint32_t len = 0;
+                        memcpy(&addr, mem_ent + 0, 8);
+                        memcpy(&len, mem_ent + 8, 4);
+                        entries[i].guest_addr = addr;
+                        entries[i].length = len;
+                        entries[i].host_ptr = (len > 0u) ? (const uint8_t *)hv_phys_ptr(v->m, addr, len) : NULL;
+                    }
+                    resp_type = (henge_virtio_gpu_attach_backing(g->gpu, res_id, entries, nr_entries) == 0)
+                        ? HENGE_VIRTIO_GPU_RESP_OK_NODATA
+                        : HENGE_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE;
+                    free(entries);
+                }
+            }
+        } else if (type == HENGE_VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING) {
+            uint32_t res_id = 0;
+            hv_virtq_read(v, &e, 24, &res_id, 4);
+            resp_type = (uint32_t)henge_virtio_gpu_process_ctrl(
+                g->gpu, type, ctx_id, res_id, 0u, 0u, 0u, 0u, NULL, 0u);
+        } else if (type == HENGE_VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D) {
+            uint8_t req[32];
+            memset(req, 0, sizeof req);
+            hv_virtq_read(v, &e, 24, req, sizeof req);
+            uint32_t rx = 0, ry = 0, rw = 0, rh = 0, res_id = 0;
+            uint64_t off = 0;
+            memcpy(&rx, req + 0, 4);
+            memcpy(&ry, req + 4, 4);
+            memcpy(&rw, req + 8, 4);
+            memcpy(&rh, req + 12, 4);
+            memcpy(&off, req + 16, 8);
+            memcpy(&res_id, req + 24, 4);
+            resp_type = (henge_virtio_gpu_transfer_to_host_2d(g->gpu, res_id, rx, ry, rw, rh, off) == 0)
+                ? HENGE_VIRTIO_GPU_RESP_OK_NODATA
+                : HENGE_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE;
+        } else if (type == HENGE_VIRTIO_GPU_CMD_SET_SCANOUT) {
+            uint32_t req[6] = {0};
+            hv_virtq_read(v, &e, 24, req, sizeof req);
+            uint32_t rw = req[2], rh = req[3], scanout_id = req[4], res_id = req[5];
+            resp_type = (uint32_t)henge_virtio_gpu_process_ctrl(
+                g->gpu, type, ctx_id, res_id, scanout_id, rw, rh, 0u, NULL, 0u);
+            if (resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA && scanout_id == 0u) {
+                vgpu_sync_scanout0(g);
+            }
+        } else if (type == HENGE_VIRTIO_GPU_CMD_RESOURCE_FLUSH) {
+            uint32_t req[5] = {0};
+            hv_virtq_read(v, &e, 24, req, sizeof req);
+            uint32_t res_id = req[4];
+            resp_type = (uint32_t)henge_virtio_gpu_process_ctrl(
+                g->gpu, type, ctx_id, res_id, 0u, req[2], req[3], 0u, NULL, 0u);
+            if (resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA &&
+                res_id == henge_virtio_gpu_scanout_resource(g->gpu, 0u)) {
+                vgpu_sync_scanout0(g);
+            }
+        } else {
+            resp_type = HENGE_VIRTIO_GPU_RESP_ERR_UNSPEC;
+        }
+
+        uint8_t resp[24];
+        memset(resp, 0, sizeof resp);
+        memcpy(resp + 0, &resp_type, 4);
+        uint32_t rflags = flags & 1u;
+        memcpy(resp + 4, &rflags, 4);
+        memcpy(resp + 8, &fence_id, 8);
+        written = hv_virtq_write(v, &e, 0, resp, 24);
+        hv_virtq_push(v, q, &e, written);
+        any = 1;
+    }
+    if (any) hv_virtio_interrupt(v);
+}
+
+static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, HvFbDisplay *fb) {
+    HengeVirtioGpuConfig cfg;
+    if (henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_GOP_2D, 128u, &cfg) != 0) return NULL;
+    HengeVirtioGpuDevice *gpu = henge_virtio_gpu_create(&cfg);
+    if (!gpu) return NULL;
+    henge_virtio_gpu_set_display_mode(gpu, 0u, 1280u, 800u, true);
+
+    HvVirtioGpuPci *g = calloc(1, sizeof *g);
+    if (!g) {
+        henge_virtio_gpu_destroy(gpu);
+        return NULL;
+    }
+    g->gpu = gpu;
+    g->fb = fb;
+    hv_virtio_init(&g->vio, m, 16, 0x038000, 2, HENGE_VIRTIO_GPU_F_EDID);
+    g->vio.dev = g;
+    g->vio.notify = vgpu_notify;
+    g->vio.config_write = vgpu_config_write;
+    g->vio.config_len = 16;
+    uint32_t num_scanouts = 1u;
+    memcpy(g->vio.config + 8, &num_scanouts, 4);
+    hv_pcie_attach(bus, &g->vio.pci);
+    fprintf(stderr, "winvm: virtio-gpu 2D KMS (0x1af4:0x1050, EDID 1280x800) attached on PCIe\\n");
+    return g;
+}
+
+static int g_wv_enable_xhci = 1;
 static int g_wv_enable_virtio_input = 1;
 static int g_wv_enable_acpi_spcr = 1;
 static int g_wv_disk1_virtio_blk = 0;
+static int g_wv_enable_virtio_gpu = 0;
 
 void hv_winvirt_set_device_flags(int enable_xhci, int enable_virtio_input, int enable_acpi_spcr, int disk1_as_virtio_blk) {
     g_wv_enable_xhci = enable_xhci ? 1 : 0;
     g_wv_enable_virtio_input = enable_virtio_input ? 1 : 0;
     g_wv_enable_acpi_spcr = enable_acpi_spcr ? 1 : 0;
     g_wv_disk1_virtio_blk = disk1_as_virtio_blk ? 1 : 0;
+}
+
+void hv_winvirt_set_virtio_gpu(int enable) {
+    g_wv_enable_virtio_gpu = enable ? 1 : 0;
 }
 
 static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
@@ -706,13 +938,16 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     if (disk1) {
         if (g_wv_disk1_virtio_blk) b->vblk1 = hv_virtio_blk_create(m, b->pcie, disk1, HV_VBLK_PLAIN);
         else b->nvme1 = hv_nvme_create(m, b->pcie, disk1, "WIN11INST");
+    }
+    if (g_wv_enable_virtio_gpu) {
+        b->vgpu = henge_virtio_gpu_pci_create(m, b->pcie, b->fb);
     }""",
     )
 
     winvm_h = upstream / "host/winvm.h"
     patch_file(
         winvm_h,
-        "HENGE_WINVM_HAS_V2_FLAGS",
+        "HENGE_WINVM_HAS_V3_GPU",
         """    int log;
     int stats_interval;
 } HvWinVmConfig;""",
@@ -722,18 +957,21 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     int enable_virtio_input;  /* 1 = attach virtio-input keyboard + absolute tablet */
     int disable_acpi_spcr;    /* 1 = omit ACPI SPCR so Linux defaults /dev/console to tty0 */
     int disk1_virtio_blk;     /* 1 = expose disk1 as read-only virtio-blk instead of NVMe1 */
+    int enable_virtio_gpu;    /* 1 = attach PCIe virtio-gpu 2D KMS (0x1af4:0x1050) */
 } HvWinVmConfig;
 
-#define HENGE_WINVM_HAS_V2_FLAGS 1""",
+#define HENGE_WINVM_HAS_V2_FLAGS 1
+#define HENGE_WINVM_HAS_V3_GPU 1""",
     )
 
     winvm_c = upstream / "host/winvm.c"
     patch_file(
         winvm_c,
-        "hv_winvirt_set_device_flags(!c->disable_xhci",
+        "hv_winvirt_set_virtio_gpu(c->enable_virtio_gpu);",
         """    if (hv_winvirt_create(&board, &m, cpus, ncpus, ram_bytes, c->prealloc_ram, c->code_fd, c->vars_fd,
                           d0_ptr, d1_ptr, mac, c->enable_sound) != 0) {""",
         """    hv_winvirt_set_device_flags(!c->disable_xhci, c->enable_virtio_input, !c->disable_acpi_spcr, c->disk1_virtio_blk);
+    hv_winvirt_set_virtio_gpu(c->enable_virtio_gpu);
     if (hv_winvirt_create(&board, &m, cpus, ncpus, ram_bytes, c->prealloc_ram, c->code_fd, c->vars_fd,
                           d0_ptr, d1_ptr, mac, c->enable_sound) != 0) {""",
     )
@@ -850,6 +1088,126 @@ void hv_winvm_send_ctrl_alt_del(void) {
     hv_winvm_key_hid(0xe2, 0);
     hv_winvm_key_hid(0xe0, 0);
 }""",
+    )
+
+    # 8. Milestone 6.5 (Phase E): HvFbDisplay host-buffer hook + Linux xhci_hcd 1.1+ hardening
+    fb_display_h = upstream / "devices/fb_display.h"
+    patch_file(
+        fb_display_h,
+        "hv_fb_display_set_host_buffer",
+        "int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride);",
+        """int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride);
+void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uint32_t width, uint32_t height, uint32_t stride, uint32_t fourcc);""",
+    )
+
+    fb_display_c = upstream / "devices/fb_display.c"
+    patch_file(
+        fb_display_c,
+        "hv_fb_display_set_host_buffer",
+        """    *pixels = fb->fb_host;
+    *w = fb->width;
+    *h = fb->height;
+    *stride = fb->stride;
+    pthread_mutex_unlock(&fb->mu);
+    return 0;
+}""",
+        """    *pixels = fb->fb_host;
+    *w = fb->width;
+    *h = fb->height;
+    *stride = fb->stride;
+    pthread_mutex_unlock(&fb->mu);
+    return 0;
+}
+
+void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uint32_t width, uint32_t height, uint32_t stride, uint32_t fourcc) {
+    if (!fb) return;
+    pthread_mutex_lock(&fb->mu);
+    if (host_ptr && width > 0 && height > 0 && stride >= width * 4u) {
+        fb->fb_pa = 0;
+        fb->fb_host = host_ptr;
+        fb->width = width;
+        fb->height = height;
+        fb->stride = stride;
+        fb->fourcc = fourcc;
+        fb->active = 1;
+    } else {
+        fb->fb_pa = 0;
+        fb->fb_host = NULL;
+        fb->width = 0;
+        fb->height = 0;
+        fb->stride = 0;
+        fb->active = 0;
+    }
+    pthread_mutex_unlock(&fb->mu);
+}""",
+    )
+
+    xhci_c = upstream / "devices/xhci.c"
+    patch_file(
+        xhci_c,
+        "CC_CMD_RING_STOPPED",
+        "enum { CC_SUCCESS = 1, CC_TRB_ERROR = 5, CC_STALL = 6, CC_SLOTS_FULL = 9, CC_SHORT_PACKET = 13, CC_CONTEXT_STATE = 19 };",
+        "enum { CC_SUCCESS = 1, CC_TRB_ERROR = 5, CC_STALL = 6, CC_SLOTS_FULL = 9, CC_SHORT_PACKET = 13, CC_CONTEXT_STATE = 19, CC_CMD_RING_STOPPED = 24 };",
+    )
+    patch_file(
+        xhci_c,
+        "/* Deliver deferred MSI-X interrupts",
+        """static void update_irq(HvXhci *x) {
+    if (hv_pci_msix_enabled(&x->pci)) {
+        hv_pci_set_intx(&x->pci, 0);
+        return;
+    }""",
+        """static void update_irq(HvXhci *x) {
+    if (hv_pci_msix_enabled(&x->pci)) {
+        hv_pci_set_intx(&x->pci, 0);
+        /* Deliver deferred MSI-X interrupts when USBCMD.INTE or IMAN.IE is enabled with IP=1. */
+        if (x->usbcmd & 4) {
+            for (int i = 0; i < HV_XHCI_INTRS; i++) {
+                if ((x->intr[i].iman & 1) && (x->intr[i].iman & 2)) {
+                    x->intr[i].iman &= ~1u;
+                    hv_pci_msix_notify(&x->pci, (uint16_t)i);
+                }
+            }
+        }
+        return;
+    }""",
+    )
+    patch_file(
+        xhci_c,
+        "CC_CMD_RING_STOPPED, 0);",
+        """        case 0x18:
+        case 0x1c: {
+            if (r == 0x18 && size == 4) {
+                x->cmd.dequeue = (x->cmd.dequeue & ~0xffffffffull) | ((uint32_t)v & ~0x3fu);
+                x->cmd.ccs = (int)(v & 1);
+            } else if (r == 0x1c) {
+                x->cmd.dequeue = (x->cmd.dequeue & 0xffffffffull) | v << 32;
+            } else {
+                x->cmd.dequeue = v & ~0x3full;
+                x->cmd.ccs = (int)(v & 1);
+            }
+            break;
+        }""",
+        """        case 0x18:
+        case 0x1c: {
+            if (r == 0x18 && (v & 6u)) {
+                /* xHCI 5.4.5: CS (bit 1) / CA (bit 2) stops command ring without clobbering dequeue pointer. */
+                x->cmd_running = 0;
+                cmd_completion(x, x->cmd.dequeue, CC_CMD_RING_STOPPED, 0);
+                break;
+            }
+            if (x->cmd_running) break;
+            if (r == 0x18 && size == 4) {
+                x->cmd.dequeue = (x->cmd.dequeue & ~0xffffffffull) | ((uint32_t)v & ~0x3fu);
+                x->cmd.ccs = (int)(v & 1);
+            } else if (r == 0x1c) {
+                x->cmd.dequeue = (x->cmd.dequeue & 0xffffffffull) | v << 32;
+            } else {
+                x->cmd.dequeue = v & ~0x3full;
+                x->cmd.ccs = (int)(v & 1);
+            }
+            break;
+        }""",
     )
 
     return 0

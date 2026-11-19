@@ -607,13 +607,17 @@ static void henge_on_vm_exit(int reason) {
     (void)enableXhci;
     (void)enableAcpiSpcr;
 #endif
+#if defined(HENGE_WINVM_HAS_V3_GPU)
+    cfg.enable_virtio_gpu = (gpuBackend == 1 || gpuBackend == 2) ? 1 : 0;
+#endif
 
     char errBuf[512];
     std::memset(errBuf, 0, sizeof(errBuf));
     NSString *createDiag = [NSString stringWithFormat:
-        @"[bridge] Calling hv_winvm_create(ram=%llu MiB, cpus=%d, jit_rx=0x%llx, jit_bytes=%zu, cs_debugged=%d, ptraced=%d)",
+        @"[bridge] Calling hv_winvm_create(ram=%llu MiB, cpus=%d, gpu=%d, jit_rx=0x%llx, jit_bytes=%zu, cs_debugged=%d, ptraced=%d)",
         cfg.ram_mb,
         cfg.ncpus,
+        gpuBackend,
         (unsigned long long)jitPool.rx_base,
         jitPool.size,
         henge_txm_is_cs_debugged() ? 1 : 0,
@@ -641,10 +645,12 @@ static void henge_on_vm_exit(int reason) {
     _vmCreated = YES;
     _running = YES;
     NSString *gpuLabel = @"2D GOP";
-    if (_gpuConfig.mode == HENGE_GPU_BACKEND_VIRGL_3D) {
+    if (gpuBackend == 2) {
+        gpuLabel = @"VirtIO-GPU 2D KMS";
+    } else if (_gpuConfig.mode == HENGE_GPU_BACKEND_VIRGL_3D) {
         gpuLabel = henge_virtio_gpu_has_virglrenderer()
             ? @"VirGL 3D"
-            : @"2D GOP (VirGL 3D staged)";
+            : @"VirtIO-GPU 2D KMS (VirGL 3D staged)";
     }
     _statusText = [NSString stringWithFormat:@"Running · %llu MiB · %@ (%@)",
                    cfg.ram_mb,
