@@ -40,62 +40,67 @@ struct SessionView: View {
     @State private var superActive: Bool = false
     @State private var cursorNormX: Double = 0.5
     @State private var cursorNormY: Double = 0.5
+    @State private var heldMouseButtons: UInt8 = 0
 
     var body: some View {
-        GeometryReader { geo in
-            VStack(spacing: 0) {
-                topStatusBar
+        VStack(spacing: 0) {
+            topStatusBar
 
-                if let bootWarning {
-                    Text(bootWarning)
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(white: 0.12))
-                }
+            if let bootWarning {
+                Text(bootWarning)
+                    .font(.caption)
+                    .foregroundStyle(.yellow)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(white: 0.12))
+            }
 
-                if activeTab == .display {
-                    MetalFramebufferRepresentable(
-                        lifecycle: lifecycle,
-                        focusKeyboard: $focusSoftwareKeyboard,
-                        suppressSoftwareKeyboard: !focusSoftwareKeyboard,
-                        pendingPasteID: pendingPaste?.id,
-                        pendingPasteText: pendingPaste?.text,
-                        onPasteConsumed: {
-                            pendingPaste = nil
-                        },
-                        onCharacterTyped: {
-                            releaseActiveModifiers()
-                        }
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.black)
-
-                    if case .clamshell = posture {
-                        clamshellInputDeck
-                            .frame(height: max(220, geo.size.height * 0.44))
-                    } else if showModifierBar {
-                        compactModifierStrip
+            if activeTab == .display {
+                MetalFramebufferRepresentable(
+                    lifecycle: lifecycle,
+                    focusKeyboard: $focusSoftwareKeyboard,
+                    suppressSoftwareKeyboard: !focusSoftwareKeyboard,
+                    layoutTrigger: "\(posture)-\(showModifierBar)-\(focusSoftwareKeyboard)",
+                    pendingPasteID: pendingPaste?.id,
+                    pendingPasteText: pendingPaste?.text,
+                    onPasteConsumed: {
+                        pendingPaste = nil
+                    },
+                    onCharacterTyped: {
+                        releaseActiveModifiers()
                     }
-                } else {
-                    InteractiveSerialTerminalView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+
+                if case .clamshell = posture {
+                    clamshellInputDeck
+                        .containerRelativeFrame(.vertical) { height, _ in
+                            max(220, height * 0.42)
+                        }
+                } else if showModifierBar {
+                    compactModifierStrip
                 }
+            } else {
+                InteractiveSerialTerminalView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(width: geo.size.width, height: geo.size.height)
-            .clipped()
-            .background(Color.black.ignoresSafeArea())
-            .sheet(isPresented: $showDebugConsole) {
-                DebugConsoleSheetView()
-            }
-            .onChange(of: activeTab) { _, _ in
-                pendingPaste = nil
-            }
-            .onDisappear {
-                pendingPaste = nil
-                releaseActiveModifiers()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.ignoresSafeArea())
+        .sheet(isPresented: $showDebugConsole) {
+            DebugConsoleSheetView()
+        }
+        .onChange(of: activeTab) { _, _ in
+            pendingPaste = nil
+        }
+        .onDisappear {
+            pendingPaste = nil
+            releaseActiveModifiers()
+            if heldMouseButtons != 0 {
+                heldMouseButtons = 0
+                HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: 0, wheel: 0)
             }
         }
     }
@@ -256,7 +261,7 @@ struct SessionView: View {
                             Text("Multi-Touch Trackpad & HID Deck")
                                 .font(.footnote.weight(.medium))
                                 .foregroundStyle(.secondary)
-                            Text("Relative drag · Tap left-click · 2-finger tap right-click")
+                            Text("Relative drag · Tap click · Hold Left/Right to drag")
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                         }
@@ -267,7 +272,12 @@ struct SessionView: View {
                             onRelativeMove: { dx, dy in
                                 cursorNormX = min(max(cursorNormX + dx, 0), 1)
                                 cursorNormY = min(max(cursorNormY + dy, 0), 1)
-                                HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: 0, wheel: 0)
+                                HengeVMBridge.shared.sendPointerNormX(
+                                    cursorNormX,
+                                    normY: cursorNormY,
+                                    buttons: heldMouseButtons,
+                                    wheel: 0
+                                )
                             },
                             onSingleTap: {
                                 pulseMouseButton(1)
@@ -276,7 +286,12 @@ struct SessionView: View {
                                 pulseMouseButton(2)
                             },
                             onTwoFingerScroll: { wheelStep in
-                                HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: 0, wheel: wheelStep)
+                                HengeVMBridge.shared.sendPointerNormX(
+                                    cursorNormX,
+                                    normY: cursorNormY,
+                                    buttons: heldMouseButtons,
+                                    wheel: wheelStep
+                                )
                             }
                         )
                     )
@@ -284,18 +299,14 @@ struct SessionView: View {
             .padding(.horizontal, 14)
 
             HStack(spacing: 10) {
-                Button("Left Click") {
-                    pulseMouseButton(1)
+                MouseHoldButton(label: "Left Click", buttonMask: 1) { pressed in
+                    setHeldMouseButton(1, pressed: pressed)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
                 .frame(maxWidth: .infinity)
 
-                Button("Right Click") {
-                    pulseMouseButton(2)
+                MouseHoldButton(label: "Right Click", buttonMask: 2) { pressed in
+                    setHeldMouseButton(2, pressed: pressed)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
                 .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, 14)
@@ -304,10 +315,25 @@ struct SessionView: View {
         .background(Color(white: 0.08))
     }
 
+    private func setHeldMouseButton(_ mask: UInt8, pressed: Bool) {
+        if pressed {
+            heldMouseButtons |= mask
+        } else {
+            heldMouseButtons &= ~mask
+        }
+        HengeVMBridge.shared.sendPointerNormX(
+            cursorNormX,
+            normY: cursorNormY,
+            buttons: heldMouseButtons,
+            wheel: 0
+        )
+    }
+
     private func pulseMouseButton(_ mask: UInt8) {
-        HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: mask, wheel: 0)
+        let downMask = heldMouseButtons | mask
+        HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: downMask, wheel: 0)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
-            HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: 0, wheel: 0)
+            HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: heldMouseButtons, wheel: 0)
         }
     }
 
@@ -324,6 +350,61 @@ struct SessionView: View {
             .font(.caption.monospaced())
             .onChange(of: isOn.wrappedValue) { _, pressed in
                 HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: pressed)
+            }
+    }
+}
+
+/// Hold-capable Left/Right mouse button for the Split Deck:
+/// immediately asserts button-down on touch and holds it through simultaneous
+/// trackpad dragging, with a minimum 25 ms dwell on quick taps.
+private struct MouseHoldButton: View {
+    let label: String
+    let buttonMask: UInt8
+    let onPressChanged: (Bool) -> Void
+
+    @State private var isPressed: Bool = false
+    @State private var pressedAt: Date?
+
+    var body: some View {
+        Text(label)
+            .font(.subheadline.weight(.medium))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isPressed ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.24))
+            )
+            .foregroundStyle(isPressed ? .white : .primary)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard !isPressed else { return }
+                        isPressed = true
+                        pressedAt = Date()
+                        onPressChanged(true)
+                    }
+                    .onEnded { _ in
+                        guard isPressed else { return }
+                        isPressed = false
+                        let elapsed = pressedAt.map { Date().timeIntervalSince($0) } ?? 0.0
+                        pressedAt = nil
+                        let minDwell = max(0.0, 0.025 - elapsed)
+                        if minDwell > 0.0 {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + minDwell) {
+                                onPressChanged(false)
+                            }
+                        } else {
+                            onPressChanged(false)
+                        }
+                    }
+            )
+            .onDisappear {
+                if isPressed {
+                    isPressed = false
+                    pressedAt = nil
+                    onPressChanged(false)
+                }
             }
     }
 }
@@ -486,20 +567,49 @@ private struct HidHoldKeyBody: View {
     }
 }
 
+private final class ZeroHeightInputView: UIView {
+    override var intrinsicContentSize: CGSize {
+        .zero
+    }
+}
+
 final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuInteractionDelegate {
     var onFocusChanged: ((Bool) -> Void)?
     var onCharacterTyped: (() -> Void)?
-    /// When true, `inputView` returns an empty `UIView` so the view remains first
+    /// When true, `inputView` returns a zero-height `UIView` so the view remains first
     /// responder for Bluetooth/hardware keyboard `pressesBegan` events without
     /// popping up the on-screen iOS software keyboard.
     var suppressSoftwareKeyboard: Bool = true {
         didSet {
-            if oldValue != suppressSoftwareKeyboard, isFirstResponder {
-                reloadInputViews()
+            guard oldValue != suppressSoftwareKeyboard else { return }
+            if suppressSoftwareKeyboard {
+                // Resigning first responder forces UIKit/SwiftUI to collapse the
+                // system keyboard safe-area inset immediately (reloadInputViews alone
+                // leaves a ghost keyboard-sized gap at the bottom on iOS 18–26).
+                if isFirstResponder {
+                    isCyclingResponderForKeyboardDismiss = true
+                    _ = resignFirstResponder()
+                    isCyclingResponderForKeyboardDismiss = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        guard let self, self.window != nil, self.suppressSoftwareKeyboard, !self.isFirstResponder else { return }
+                        _ = self.becomeFirstResponder()
+                    }
+                }
+            } else {
+                if isFirstResponder {
+                    reloadInputViews()
+                } else if window != nil {
+                    _ = becomeFirstResponder()
+                }
             }
         }
     }
-    private let emptyInputView = UIView(frame: .zero)
+    private let emptyInputView: UIView = {
+        let v = ZeroHeightInputView(frame: .zero)
+        v.translatesAutoresizingMaskIntoConstraints = false
+        return v
+    }()
+    private var isCyclingResponderForKeyboardDismiss = false
     private var editMenuInteraction: UIEditMenuInteraction?
     private var pendingKeystrokes: [(usage: UInt8, shift: Bool)] = []
     private var isDrainingKeystrokes = false
@@ -594,10 +704,16 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
         addInteraction(editMenu)
         editMenuInteraction = editMenu
 
-        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleCanvasLongPress(_:)))
-        longPress.minimumPressDuration = 0.5
-        longPress.numberOfTouchesRequired = 1
-        addGestureRecognizer(longPress)
+        let leftHold = UILongPressGestureRecognizer(target: self, action: #selector(handleCanvasLeftHold(_:)))
+        leftHold.minimumPressDuration = 0.22
+        leftHold.allowableMovement = 18
+        leftHold.numberOfTouchesRequired = 1
+        addGestureRecognizer(leftHold)
+
+        let menuLongPress = UILongPressGestureRecognizer(target: self, action: #selector(handleCanvasLongPress(_:)))
+        menuLongPress.minimumPressDuration = 0.45
+        menuLongPress.numberOfTouchesRequired = 2
+        addGestureRecognizer(menuLongPress)
     }
 
     override func didMoveToWindow() {
@@ -619,13 +735,17 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
     }
 
     override func resignFirstResponder() -> Bool {
-        pendingKeystrokes.removeAll()
-        isDrainingKeystrokes = false
-        for mod: UInt8 in 0xE0...0xE7 {
-            HengeVMBridge.shared.sendHidKeyUsage(mod, pressed: false)
+        if !isCyclingResponderForKeyboardDismiss {
+            pendingKeystrokes.removeAll()
+            isDrainingKeystrokes = false
+            for mod: UInt8 in 0xE0...0xE7 {
+                HengeVMBridge.shared.sendHidKeyUsage(mod, pressed: false)
+            }
         }
         let ok = super.resignFirstResponder()
-        onFocusChanged?(false)
+        if !isCyclingResponderForKeyboardDismiss {
+            onFocusChanged?(false)
+        }
         return ok
     }
 
@@ -834,6 +954,25 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
         HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: buttons, wheel: 0)
     }
 
+    @objc private func handleCanvasLeftHold(_ gr: UILongPressGestureRecognizer) {
+        let (nx, ny) = normalizedPoint(gr.location(in: self))
+        switch gr.state {
+        case .began:
+            if !isFirstResponder {
+                _ = becomeFirstResponder()
+            }
+            let feedback = UIImpactFeedbackGenerator(style: .light)
+            feedback.impactOccurred()
+            HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 1, wheel: 0)
+        case .changed:
+            HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 1, wheel: 0)
+        case .ended, .cancelled, .failed:
+            HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 0, wheel: 0)
+        default:
+            break
+        }
+    }
+
     @objc private func handleCanvasLongPress(_ gr: UILongPressGestureRecognizer) {
         guard gr.state == .began else { return }
         if !isFirstResponder {
@@ -997,11 +1136,13 @@ struct TrackpadSurfaceRepresentable: UIViewRepresentable {
 struct MetalFramebufferRepresentable: UIViewRepresentable {
     final class Coordinator {
         var lastHandledPasteID: UUID?
+        var lastLayoutTrigger: String = ""
     }
 
     @ObservedObject var lifecycle: MetalLifecycleGuard
     @Binding var focusKeyboard: Bool
     var suppressSoftwareKeyboard: Bool
+    var layoutTrigger: String = ""
     var pendingPasteID: UUID?
     var pendingPasteText: String?
     var onPasteConsumed: (() -> Void)?
@@ -1036,11 +1177,19 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
         _ = lifecycle.isPaused
         uiView.onCharacterTyped = onCharacterTyped
         uiView.suppressSoftwareKeyboard = suppressSoftwareKeyboard
-        if !uiView.isFirstResponder {
+        if !uiView.isFirstResponder && !suppressSoftwareKeyboard {
             DispatchQueue.main.async {
                 if !uiView.isFirstResponder {
                     _ = uiView.becomeFirstResponder()
                 }
+            }
+        }
+        if context.coordinator.lastLayoutTrigger != layoutTrigger {
+            context.coordinator.lastLayoutTrigger = layoutTrigger
+            uiView.setNeedsLayout()
+            DispatchQueue.main.async {
+                uiView.setNeedsLayout()
+                uiView.layoutIfNeeded()
             }
         }
         if let metalLayer = uiView.metalLayer {

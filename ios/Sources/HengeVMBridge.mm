@@ -878,19 +878,38 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
                 _hidModifiers &= static_cast<uint8_t>(~bit);
             }
         }
-        hv_winvm_key_hid(usage, pressed ? 1 : 0);
         HvWinVirt *board = hv_winvm_board();
-        if (board != nullptr && board->uart != nullptr) {
-            if (hengelinux_is_guest_hid_bridge_ready()) {
-                char osc[48];
-                int n = std::snprintf(osc, sizeof(osc), "\x1b]9999;K %02x %d\x07", usage, pressed ? 1 : 0);
-                if (n > 0) {
-                    for (int i = 0; i < n; ++i) {
-                        hv_pl011_receive(board->uart, static_cast<uint8_t>(osc[i]));
-                    }
+        const bool guestHidBridgeReady = hengelinux_is_guest_hid_bridge_ready();
+        if (guestHidBridgeReady && board != nullptr && board->uart != nullptr) {
+            /*
+             * Guest is running henge_dual_console / henge-guest-agent on ttyAMA0
+             * (which mirrors tty1 and injects OSC 9999 into /dev/uinput on vt2+).
+             * Route exclusively over PL011 so virtio-input does not double-deliver
+             * keystrokes onto tty1 (echo) or tty2/X11 (input).
+             */
+            char osc[48];
+            int n = std::snprintf(osc, sizeof(osc), "\x1b]9999;K %02x %d\x07", usage, pressed ? 1 : 0);
+            if (n > 0) {
+                for (int i = 0; i < n; ++i) {
+                    hv_pl011_receive(board->uart, static_cast<uint8_t>(osc[i]));
                 }
             }
             if (pressed && !(usage >= 0xE0 && usage <= 0xE7)) {
+                henge_forward_hid_to_pl011(board->uart, usage, _hidModifiers);
+            }
+            return;
+        }
+
+        hv_winvm_key_hid(usage, pressed ? 1 : 0);
+        if (board != nullptr && board->uart != nullptr && pressed && !(usage >= 0xE0 && usage <= 0xE7)) {
+            bool virtioKbdDriverReady = false;
+#if defined(HENGE_WINVM_HAS_V2_FLAGS)
+            if (board->vinput_kbd != nullptr && (board->vinput_kbd->vio.status & 4u) != 0u) {
+                virtioKbdDriverReady = true;
+            }
+#endif
+            /* Forward to PL011 only during UEFI/GRUB or when virtio-input is inactive. */
+            if (!virtioKbdDriverReady) {
                 henge_forward_hid_to_pl011(board->uart, usage, _hidModifiers);
             }
         }
@@ -912,7 +931,6 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
 - (void)sendCtrlAltDel {
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_running) {
-        hv_winvm_send_ctrl_alt_del();
         if (hengelinux_is_guest_hid_bridge_ready()) {
             [self sendHidKeyUsage:0xE0 pressed:YES];
             [self sendHidKeyUsage:0xE2 pressed:YES];
@@ -920,6 +938,8 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
             [self sendHidKeyUsage:0x4C pressed:NO];
             [self sendHidKeyUsage:0xE2 pressed:NO];
             [self sendHidKeyUsage:0xE0 pressed:NO];
+        } else {
+            hv_winvm_send_ctrl_alt_del();
         }
     }
 #endif
@@ -931,7 +951,6 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
                    wheel:(int8_t)wheel {
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_running) {
-        hv_winvm_tablet(xNorm, yNorm, buttons, wheel);
         HvWinVirt *board = hv_winvm_board();
         if (board != nullptr && board->uart != nullptr && hengelinux_is_guest_hid_bridge_ready()) {
             double cx = (xNorm < 0.0) ? 0.0 : ((xNorm > 1.0) ? 1.0 : xNorm);
@@ -946,7 +965,9 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
                     hv_pl011_receive(board->uart, static_cast<uint8_t>(osc[i]));
                 }
             }
+            return;
         }
+        hv_winvm_tablet(xNorm, yNorm, buttons, wheel);
     }
 #else
     (void)xNorm;
