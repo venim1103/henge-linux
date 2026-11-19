@@ -690,13 +690,14 @@ static void test_cidata_fat16_generator(void) {
     /* Data region starts at sector 67; verify cloud-init payloads exist */
     const char *data_region = (const char *)(img + 67U * 512U);
     size_t data_bytes = (size_t)sz - 67U * 512U;
-    bool found_meta = false, found_user = false, found_net = false;
+    bool found_meta = false, found_user = false, found_shell = false, found_net = false;
     for (size_t i = 0U; i + 16U < data_bytes; i++) {
         if (!found_meta && memcmp(data_region + i, "instance-id: henge-test-01", 26U) == 0) found_meta = true;
         if (!found_user && memcmp(data_region + i, "#cloud-config\nhostname: debian-ios", 34U) == 0) found_user = true;
+        if (!found_shell && memcmp(data_region + i, "shell: /bin/sh\n", 15U) == 0) found_shell = true;
         if (!found_net && memcmp(data_region + i, "dhcp4: true", 11U) == 0) found_net = true;
     }
-    HENGE_CHECK(found_meta && found_user && found_net);
+    HENGE_CHECK(found_meta && found_user && found_shell && found_net);
 
     free(img);
     remove(seed_path);
