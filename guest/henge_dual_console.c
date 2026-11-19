@@ -301,8 +301,8 @@ static void exec_root_shell(void) {
     setenv("SHELL", "/bin/bash", 1);
     setenv("TERM", "linux", 1);
     setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin", 1);
-    if (chdir("/root") != 0) {
-        (void)chdir("/");
+    if (chdir("/root") != 0 && chdir("/") != 0) {
+        /* Continue in inherited working directory if neither exists. */
     }
     static const char kBanner[] = "\r\nArch Linux ARM (HengeLinux) — root@hengelinux\r\n\r\n";
     write_all(STDOUT_FILENO, kBanner, sizeof(kBanner) - 1U);
