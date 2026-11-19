@@ -237,7 +237,9 @@ struct HengeLinuxApp: App {
                                             max(parsed, Int(HENGE_MIN_GUEST_RAM_MIB)),
                                             Int(HENGE_MAX_GUEST_RAM_MIB)
                                         )
-                                        customGuestRamMiB = clamped
+                                        if customGuestRamMiB != clamped {
+                                            customGuestRamMiB = clamped
+                                        }
                                     }
                                 }
                                 .onSubmit {

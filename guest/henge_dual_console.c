@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -293,7 +294,26 @@ static int open_pty_pair(int *master_out, int *slave_out) {
     return 0;
 }
 
+static void exec_root_shell(void) {
+    setenv("HOME", "/root", 1);
+    setenv("USER", "root", 1);
+    setenv("LOGNAME", "root", 1);
+    setenv("SHELL", "/bin/bash", 1);
+    setenv("TERM", "linux", 1);
+    setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin", 1);
+    if (chdir("/root") != 0) {
+        (void)chdir("/");
+    }
+    static const char kBanner[] = "\r\nArch Linux ARM (HengeLinux) — root@hengelinux\r\n\r\n";
+    write_all(STDOUT_FILENO, kBanner, sizeof(kBanner) - 1U);
+    execl("/bin/bash", "-bash", "-i", (char *)NULL);
+    execl("/bin/sh", "-sh", "-i", (char *)NULL);
+    _exit(127);
+}
+
 int main(void) {
+    signal(SIGPIPE, SIG_IGN);
+
     int tty1_fd = open("/dev/tty1", O_WRONLY | O_NOCTTY | O_CLOEXEC);
     int master_fd = -1;
     int slave_fd = -1;
@@ -301,8 +321,7 @@ int main(void) {
         if (tty1_fd >= 0) {
             close(tty1_fd);
         }
-        execl("/sbin/agetty", "agetty", "--noclear", "--autologin", "root",
-              "-o", "-p -f -- \\u", "115200", "-", "linux", (char *)NULL);
+        exec_root_shell();
         return 127;
     }
 
@@ -315,6 +334,7 @@ int main(void) {
 
     pid_t pid = fork();
     if (pid == 0) {
+        signal(SIGPIPE, SIG_DFL);
         if (tty1_fd >= 0) {
             close(tty1_fd);
         }
@@ -327,9 +347,7 @@ int main(void) {
         if (slave_fd > STDERR_FILENO) {
             close(slave_fd);
         }
-        execl("/sbin/agetty", "agetty", "--noclear", "--autologin", "root",
-              "-o", "-p -f -- \\u", "115200", "-", "linux", (char *)NULL);
-        _exit(127);
+        exec_root_shell();
     }
     close(slave_fd);
 

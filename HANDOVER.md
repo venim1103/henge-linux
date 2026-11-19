@@ -64,7 +64,8 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `6822c14`–`dd45fa9` | Restored full `4` / `6` vCPU counts in `HengeVMBridge.mm` and `HengeLinuxApp.swift` and exposed `activeCpuCount` on `HengeVMBridge` (`CI Run #44384058356` green) |
 | `4809648` | Added user-editable Guest RAM controls (`512`–`10,240 MiB` numeric field, slider, stepper, and quick-pick chips) in `HengeLinuxApp.swift` and removed silent `1,664 MiB` clamping in `HengeVMBridge.mm` |
 | `09c3525`–`b90a8f0` | Added `/dev/uinput` HID bridge prototype and expanded `SessionView` special keys (`F1`–`F12`, `Home`/`End`/`PgUp`/`PgDn`/`Ins`/`Prnt`) |
-| `HEAD` | Replaced Python guest console/uinput scripts (which failed on minimal Arch Linux ARM without `python3`, causing `9999;K` bash echo) with native zero-dependency static C `guest/henge_dual_console.c` (separate Virtual Keyboard + Virtual Tablet `/dev/uinput` devices + stateful OSC `9999` parser), gated host OSC `9999` emission on `HENGE_HID_READY` handshake (`host/henge_platform.{h,c}`, `HengeVMBridge.mm`), added `F5`–`F11`/`Insert` PL011 sequences, and completed `SessionView` special-key strip (`Shift`, `Caps`, `ScrLk`, `Pause`, `Menu`, `F1`–`F12`) |
+| `2852a83` | Replaced Python guest console/uinput scripts with native static C `guest/henge_dual_console.c`, gated host OSC `9999` emission on `HENGE_HID_READY`, added `F5`–`F11`/`Insert` PL011 sequences, and completed `SessionView` special-key strip |
+| `HEAD` | Replaced `agetty`/`login` child spawn in `guest/henge_dual_console.c` with direct interactive login `/bin/bash` (eliminating the 1.8 s `serial-getty@ttyAMA0` respawn loop that created `input3`..`input22` and hit `StartLimitBurst`), and guarded `customGuestRamMiB` updates in `HengeLinuxApp.swift` |
 
 ---
 
