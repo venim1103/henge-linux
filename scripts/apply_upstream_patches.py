@@ -925,7 +925,7 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     )
     patch_file(
         winvirt_c,
-        "g_wv_enable_virtio_input",
+        "hv_virtio_input_create(m, b->pcie, HV_VINPUT_KEYBOARD)",
         """    b->usb = hv_xhci_create(m, b->pcie);
     b->hda = hv_hda_create(m, b->pcie);
     if (disk1) b->nvme1 = hv_nvme_create(m, b->pcie, disk1, "WIN11INST");""",

@@ -109,60 +109,69 @@ struct SessionView: View {
     }
 
     private var topStatusBar: some View {
-        HStack(spacing: 6) {
-            HingeSensorView(posture: $posture)
+        VStack(spacing: 5) {
+            HStack(spacing: 8) {
+                Picker("View", selection: $activeTab) {
+                    ForEach(SessionTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(minWidth: 148, maxWidth: 184)
+                .layoutPriority(1)
 
-            Picker("View", selection: $activeTab) {
-                ForEach(SessionTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
+                Spacer(minLength: 4)
+
+                Text("\(displayRamMiB)M·\(displayCpuCount)c")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                Button("Stop", role: .destructive) {
+                    focusSoftwareKeyboard = false
+                    releaseActiveModifiers()
+                    HengeVMBridge.shared.stopGuest()
+                    onStopSession()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+            }
+
+            HStack(spacing: 6) {
+                HingeSensorView(posture: $posture)
+
+                Spacer(minLength: 4)
+
+                Button {
+                    showDebugConsole = true
+                } label: {
+                    Image(systemName: "doc.text.magnifyingglass")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .accessibilityLabel("Debug & Telemetry Logs")
+
+                if activeTab == .display {
+                    Button {
+                        focusSoftwareKeyboard.toggle()
+                    } label: {
+                        Image(systemName: focusSoftwareKeyboard ? "keyboard.fill" : "keyboard")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+
+                    Button {
+                        showModifierBar.toggle()
+                    } label: {
+                        Image(systemName: showModifierBar ? "slider.horizontal.below.rectangle" : "slider.horizontal.3")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
                 }
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 142)
-
-            Spacer(minLength: 2)
-
-            Text("\(displayRamMiB)M·\(displayCpuCount)c")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-
-            Button {
-                showDebugConsole = true
-            } label: {
-                Image(systemName: "doc.text.magnifyingglass")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .accessibilityLabel("Debug & Telemetry Logs")
-
-            Button {
-                focusSoftwareKeyboard.toggle()
-            } label: {
-                Image(systemName: focusSoftwareKeyboard ? "keyboard.fill" : "keyboard")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-
-            Button {
-                showModifierBar.toggle()
-            } label: {
-                Image(systemName: showModifierBar ? "slider.horizontal.below.rectangle" : "slider.horizontal.3")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-
-            Button("Stop", role: .destructive) {
-                focusSoftwareKeyboard = false
-                releaseActiveModifiers()
-                HengeVMBridge.shared.stopGuest()
-                onStopSession()
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
