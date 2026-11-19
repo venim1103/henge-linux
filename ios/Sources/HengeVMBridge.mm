@@ -996,19 +996,6 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_running && text.length > 0) {
         hv_share_set_clipboard(text.UTF8String);
-        HvWinVirt *board = hv_winvm_board();
-        if (board != nullptr && board->uart != nullptr) {
-            NSData *utf8 = [text dataUsingEncoding:NSUTF8StringEncoding];
-            const auto *bytes = static_cast<const uint8_t *>(utf8.bytes);
-            for (NSUInteger i = 0; i < utf8.length; ++i) {
-                uint8_t ch = bytes[i];
-                if (ch == '\n') {
-                    hv_pl011_receive(board->uart, '\r');
-                } else {
-                    hv_pl011_receive(board->uart, ch);
-                }
-            }
-        }
     }
 #else
     (void)text;

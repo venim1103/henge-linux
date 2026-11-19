@@ -18,10 +18,16 @@ struct SessionView: View {
         var id: String { rawValue }
     }
 
+    private struct PasteRequest: Equatable {
+        let id = UUID()
+        let text: String
+    }
+
     @State private var activeTab: SessionTab = .display
     @State private var showModifierBar: Bool = true
     @State private var showDebugConsole: Bool = false
     @State private var focusSoftwareKeyboard: Bool = false
+    @State private var pendingPaste: PasteRequest?
     @State private var shiftActive: Bool = false
     @State private var ctrlActive: Bool = false
     @State private var altActive: Bool = false
@@ -49,6 +55,8 @@ struct SessionView: View {
                         lifecycle: lifecycle,
                         focusKeyboard: $focusSoftwareKeyboard,
                         suppressSoftwareKeyboard: !focusSoftwareKeyboard,
+                        pendingPasteID: pendingPaste?.id,
+                        pendingPasteText: pendingPaste?.text,
                         onCharacterTyped: {
                             releaseActiveModifiers()
                         }
@@ -218,6 +226,7 @@ struct SessionView: View {
                 Button("Paste") {
                     if let clip = UIPasteboard.general.string, !clip.isEmpty {
                         HengeVMBridge.shared.pushHostClipboard(clip)
+                        pendingPaste = PasteRequest(text: clip)
                     }
                 }
                 .buttonStyle(.bordered)
@@ -304,13 +313,9 @@ struct SessionView: View {
     }
 
     private func hidPulseButton(_ label: String, usage: UInt8) -> some View {
-        Button(label) {
-            HengeVMBridge.shared.tapHidKeyUsage(usage)
+        HidHoldKeyButton(label: label, usage: usage) {
             releaseActiveModifiers()
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .font(.caption.monospaced())
     }
 
     private func modifierToggle(_ label: String, usage: UInt8, isOn: Binding<Bool>) -> some View {
@@ -324,7 +329,102 @@ struct SessionView: View {
     }
 }
 
-final class MetalDisplaySurfaceView: UIView, UIKeyInput {
+/// Hold-capable HID key button that preserves horizontal ScrollView gestures:
+/// sends key-down on press and holds until release (enabling native guest key
+/// repeat for Esc, Backspace, Delete, arrows, F1-F12, etc.).
+private struct HidHoldKeyButton: View {
+    let label: String
+    let usage: UInt8
+    let onRelease: () -> Void
+
+    @State private var didHandlePress: Bool = false
+
+    var body: some View {
+        Button {
+            if !didHandlePress {
+                HengeVMBridge.shared.tapHidKeyUsage(usage)
+                onRelease()
+            }
+            didHandlePress = false
+        } label: {
+            Text(label)
+        }
+        .buttonStyle(HidHoldKeyButtonStyle(usage: usage, didHandlePress: $didHandlePress, onRelease: onRelease))
+    }
+}
+
+private struct HidHoldKeyButtonStyle: ButtonStyle {
+    let usage: UInt8
+    @Binding var didHandlePress: Bool
+    let onRelease: () -> Void
+
+    func makeBody(configuration: Configuration) -> some View {
+        HidHoldKeyBody(
+            configuration: configuration,
+            usage: usage,
+            didHandlePress: $didHandlePress,
+            onRelease: onRelease
+        )
+    }
+}
+
+private struct HidHoldKeyBody: View {
+    let configuration: ButtonStyle.Configuration
+    let usage: UInt8
+    @Binding var didHandlePress: Bool
+    let onRelease: () -> Void
+
+    @State private var isHeld: Bool = false
+    @State private var pressedAt: Date?
+
+    var body: some View {
+        configuration.label
+            .font(.caption.monospaced())
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(configuration.isPressed ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.22))
+            )
+            .foregroundStyle(configuration.isPressed ? .white : .primary)
+            .onChange(of: configuration.isPressed) { _, pressed in
+                if pressed {
+                    if !isHeld {
+                        isHeld = true
+                        didHandlePress = true
+                        pressedAt = Date()
+                        HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: true)
+                    }
+                } else if isHeld {
+                    isHeld = false
+                    let elapsed = pressedAt.map { Date().timeIntervalSince($0) } ?? 0.0
+                    let minDwell = max(0.0, 0.02 - elapsed)
+                    pressedAt = nil
+                    if minDwell > 0.0 {
+                        let keyUsage = usage
+                        let dwellNanos = UInt64(minDwell * 1_000_000_000.0)
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: dwellNanos)
+                            HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: false)
+                            onRelease()
+                        }
+                    } else {
+                        HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: false)
+                        onRelease()
+                    }
+                }
+            }
+            .onDisappear {
+                if isHeld {
+                    isHeld = false
+                    pressedAt = nil
+                    HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: false)
+                }
+            }
+    }
+}
+
+final class MetalDisplaySurfaceView: UIView, UIKeyInput, UIEditMenuInteractionDelegate {
     var onFocusChanged: ((Bool) -> Void)?
     var onCharacterTyped: (() -> Void)?
     /// When true, `inputView` returns an empty `UIView` so the view remains first
@@ -338,6 +438,7 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
         }
     }
     private let emptyInputView = UIView(frame: .zero)
+    private var editMenuInteraction: UIEditMenuInteraction?
     private var pendingKeystrokes: [(usage: UInt8, shift: Bool)] = []
     private var isDrainingKeystrokes = false
 
@@ -426,6 +527,15 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
         pan.minimumNumberOfTouches = 1
         pan.maximumNumberOfTouches = 2
         addGestureRecognizer(pan)
+
+        let editMenu = UIEditMenuInteraction(delegate: self)
+        addInteraction(editMenu)
+        editMenuInteraction = editMenu
+
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleCanvasLongPress(_:)))
+        longPress.minimumPressDuration = 0.5
+        longPress.numberOfTouchesRequired = 1
+        addGestureRecognizer(longPress)
     }
 
     override func didMoveToWindow() {
@@ -651,6 +761,64 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput {
         let buttons: UInt8 = (gr.state == .began || gr.state == .changed) ? 1 : 0
         HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: buttons, wheel: 0)
     }
+
+    @objc private func handleCanvasLongPress(_ gr: UILongPressGestureRecognizer) {
+        guard gr.state == .began else { return }
+        if !isFirstResponder {
+            _ = becomeFirstResponder()
+        }
+        let feedback = UIImpactFeedbackGenerator(style: .medium)
+        feedback.impactOccurred()
+        let location = gr.location(in: self)
+        let config = UIEditMenuConfiguration(identifier: nil, sourcePoint: location)
+        editMenuInteraction?.presentEditMenu(with: config)
+    }
+
+    private func sendHidChord(modifiers: [UInt8], key: UInt8) {
+        for mod in modifiers {
+            HengeVMBridge.shared.sendHidKeyUsage(mod, pressed: true)
+        }
+        HengeVMBridge.shared.sendHidKeyUsage(key, pressed: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+            HengeVMBridge.shared.sendHidKeyUsage(key, pressed: false)
+            for mod in modifiers.reversed() {
+                HengeVMBridge.shared.sendHidKeyUsage(mod, pressed: false)
+            }
+        }
+    }
+
+    private func pullGuestClipboardAfterCopy() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            if let guestClip = HengeVMBridge.shared.takeGuestClipboard(), !guestClip.isEmpty {
+                UIPasteboard.general.string = guestClip
+            }
+        }
+    }
+
+    func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        menuFor configuration: UIEditMenuConfiguration,
+        suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        let selectAllAction = UIAction(title: "Select All") { [weak self] _ in
+            self?.sendHidChord(modifiers: [0xE0], key: 0x04) // Ctrl+A
+        }
+        let copyAction = UIAction(title: "Copy") { [weak self] _ in
+            self?.sendHidChord(modifiers: [0xE0], key: 0x06) // Ctrl+C
+            self?.pullGuestClipboardAfterCopy()
+        }
+        let copyTermAction = UIAction(title: "Copy (Term)") { [weak self] _ in
+            self?.sendHidChord(modifiers: [0xE0, 0xE1], key: 0x06) // Ctrl+Shift+C
+            self?.pullGuestClipboardAfterCopy()
+        }
+        let pasteAction = UIAction(title: "Paste") { [weak self] _ in
+            if let clip = UIPasteboard.general.string, !clip.isEmpty {
+                HengeVMBridge.shared.pushHostClipboard(clip)
+                self?.insertText(clip)
+            }
+        }
+        return UIMenu(children: [selectAllAction, copyAction, copyTermAction, pasteAction])
+    }
 }
 
 final class MultiTouchTrackpadUIView: UIView {
@@ -744,10 +912,20 @@ struct TrackpadSurfaceRepresentable: UIViewRepresentable {
 }
 
 struct MetalFramebufferRepresentable: UIViewRepresentable {
+    final class Coordinator {
+        var lastHandledPasteID: UUID?
+    }
+
     @ObservedObject var lifecycle: MetalLifecycleGuard
     @Binding var focusKeyboard: Bool
     var suppressSoftwareKeyboard: Bool
+    var pendingPasteID: UUID?
+    var pendingPasteText: String?
     var onCharacterTyped: (() -> Void)?
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeUIView(context: Context) -> MetalDisplaySurfaceView {
         let view = MetalDisplaySurfaceView(frame: .zero)
@@ -784,9 +962,16 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
         if let metalLayer = uiView.metalLayer {
             HengeVMBridge.shared.attachDisplayLayer(metalLayer)
         }
+        if let pasteID = pendingPasteID,
+           let pasteText = pendingPasteText,
+           !pasteText.isEmpty,
+           context.coordinator.lastHandledPasteID != pasteID {
+            context.coordinator.lastHandledPasteID = pasteID
+            uiView.insertText(pasteText)
+        }
     }
 
-    static func dismantleUIView(_ uiView: MetalDisplaySurfaceView, coordinator: ()) {
+    static func dismantleUIView(_ uiView: MetalDisplaySurfaceView, coordinator: Coordinator) {
         HengeVMBridge.shared.detachDisplayLayer(ifMatching: uiView.metalLayer)
     }
 }
