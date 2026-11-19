@@ -280,6 +280,24 @@ bool henge_virtio_gpu_is_virgl_ready(const HengeVirtioGpuDevice *dev) {
     return dev != NULL && dev->virgl_backend_ready;
 }
 
+void henge_virtio_gpu_reset(HengeVirtioGpuDevice *dev) {
+    if (dev == NULL) {
+        return;
+    }
+    pthread_mutex_lock(&dev->lock);
+    for (size_t i = 0U; i < HENGE_VIRTIO_GPU_MAX_RESOURCES; i++) {
+        free_resource_buffers_locked(&dev->resources[i]);
+    }
+    memset(dev->resources, 0, sizeof(dev->resources));
+    memset(dev->contexts, 0, sizeof(dev->contexts));
+    for (size_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+        dev->scanouts[s].resource_id = 0U;
+    }
+    dev->flush_count = 0ULL;
+    dev->cmd_count = 0ULL;
+    pthread_mutex_unlock(&dev->lock);
+}
+
 void henge_virtio_gpu_destroy(HengeVirtioGpuDevice *dev) {
     if (dev == NULL) {
         return;

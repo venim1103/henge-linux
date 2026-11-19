@@ -114,8 +114,9 @@ bool henge_virtio_gpu_supports_virgl(const HengeVirtioGpuConfig *cfg);
 /* Return true if native libvirglrenderer headers/runtime are linked into this build. */
 bool henge_virtio_gpu_has_virglrenderer(void);
 
-/* Allocate and tear down a VirtIO-GPU 1.0 control-queue device instance. */
+/* Allocate, reset, and tear down a VirtIO-GPU 1.0 control-queue device instance. */
 HengeVirtioGpuDevice *henge_virtio_gpu_create(const HengeVirtioGpuConfig *cfg);
+void henge_virtio_gpu_reset(HengeVirtioGpuDevice *dev);
 void henge_virtio_gpu_destroy(HengeVirtioGpuDevice *dev);
 
 /* Query negotiated VirtIO-GPU feature bits and live state counters. */

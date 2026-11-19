@@ -447,6 +447,24 @@ static void test_virtio_gpu_backends(void) {
         HENGE_VIRTIO_GPU_RESP_OK_NODATA);
     HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == -1);
 
+    /* Simulate UEFI VirtioGpuDxe -> Linux virtio-gpu status=0 reset: resource ID 1 must be reusable
+     * after henge_virtio_gpu_reset() while preserving configured scanout display dimensions. */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 0U, 1U, 0U, 8U, 8U,
+        HENGE_VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_SET_SCANOUT, 0U, 1U, 0U, 8U, 8U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_set_display_mode(gpu, 0U, 1280U, 800U, true) == 0);
+    henge_virtio_gpu_reset(gpu);
+    HENGE_CHECK(henge_virtio_gpu_active_resources(gpu) == 0U);
+    HENGE_CHECK(henge_virtio_gpu_scanout_resource(gpu, 0U) == 0U);
+    HENGE_CHECK(henge_virtio_gpu_get_display_info(gpu, 0U, &disp_w, &disp_h, &disp_en) == 0);
+    HENGE_CHECK(disp_w == 1280U && disp_h == 800U && disp_en);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 0U, 1U, 0U, 16U, 16U,
+        HENGE_VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+
     henge_virtio_gpu_destroy(gpu);
 }
 

@@ -41,6 +41,7 @@ struct SessionView: View {
     @State private var cursorNormX: Double = 0.5
     @State private var cursorNormY: Double = 0.5
     @State private var heldMouseButtons: UInt8 = 0
+    @State private var keyboardHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,7 +62,7 @@ struct SessionView: View {
                     lifecycle: lifecycle,
                     focusKeyboard: $focusSoftwareKeyboard,
                     suppressSoftwareKeyboard: !focusSoftwareKeyboard,
-                    layoutTrigger: "\(posture)-\(showModifierBar)-\(focusSoftwareKeyboard)",
+                    layoutTrigger: "\(posture)-\(showModifierBar)-\(focusSoftwareKeyboard)-\(Int(keyboardHeight))",
                     pendingPasteID: pendingPaste?.id,
                     pendingPasteText: pendingPaste?.text,
                     onPasteConsumed: {
@@ -87,21 +88,58 @@ struct SessionView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .padding(.bottom, keyboardHeight)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .background(Color.black.ignoresSafeArea())
         .sheet(isPresented: $showDebugConsole) {
             DebugConsoleSheetView()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            updateKeyboardHeight(from: note)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardHeight = 0
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            keyboardHeight = 0
+        }
+        .onChange(of: focusSoftwareKeyboard) { _, show in
+            if !show {
+                keyboardHeight = 0
+            }
+        }
         .onChange(of: activeTab) { _, _ in
             pendingPaste = nil
+            keyboardHeight = 0
         }
         .onDisappear {
             pendingPaste = nil
+            keyboardHeight = 0
             releaseActiveModifiers()
             if heldMouseButtons != 0 {
                 heldMouseButtons = 0
                 HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: 0, wheel: 0)
             }
+        }
+    }
+
+    private func updateKeyboardHeight(from notification: Notification) {
+        guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
+            return
+        }
+        let windowScene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive })
+            ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
+        let keyWindow = windowScene?.windows.first(where: \.isKeyWindow) ?? windowScene?.windows.first
+        let screenHeight = keyWindow?.bounds.height ?? windowScene?.screen.bounds.height ?? 0
+        let bottomInset = keyWindow?.safeAreaInsets.bottom ?? 0
+        guard screenHeight > 0 else { return }
+        if endFrame.minY >= screenHeight - 1 || endFrame.height <= 0 {
+            keyboardHeight = 0
+        } else {
+            keyboardHeight = max(0, screenHeight - endFrame.minY - bottomInset)
         }
     }
 
@@ -676,12 +714,18 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
     private func syncResponderState() {
         guard window != nil else { return }
         if suppressSoftwareKeyboard {
-            if softwareKeyboardProxy.isFirstResponder {
+            let wasShowing = softwareKeyboardProxy.isFirstResponder
+            if wasShowing {
                 isProgrammaticResponderChange = true
                 _ = softwareKeyboardProxy.resignFirstResponder()
                 isProgrammaticResponderChange = false
-            }
-            if !isFirstResponder {
+                // Let UIKit finish dispatching keyboardWillHide before restoring
+                // hardware-keyboard first-responder ownership on the Metal view.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                    guard let self, self.window != nil, self.suppressSoftwareKeyboard, !self.isFirstResponder else { return }
+                    _ = self.becomeFirstResponder()
+                }
+            } else if !isFirstResponder {
                 _ = becomeFirstResponder()
             }
         } else {
@@ -786,8 +830,20 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
         pendingKeystrokes.removeAll()
     }
 
+    override var bounds: CGRect {
+        didSet {
+            if oldValue.size != bounds.size {
+                syncMetalDrawableSize()
+            }
+        }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
+        syncMetalDrawableSize()
+    }
+
+    private func syncMetalDrawableSize() {
         guard let metalLayer else { return }
         let scale = window?.screen.scale ?? traitCollection.displayScale
         let effectiveScale = scale > 0 ? scale : 2.0

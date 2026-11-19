@@ -439,6 +439,31 @@ static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) 
 
     # 6. Milestone 6.2 (Phase B3): virtio-input tablet (EV_ABS), dormant virtio-input/virtio-blk
     #    attachment on GPEX, toggleable xHCI & ACPI SPCR, and unified HID/tablet routing in winvm.
+    virtio_h = upstream / "devices/virtio.h"
+    patch_file(
+        virtio_h,
+        "void (*on_reset)(struct HvVirtio *v);",
+        """    void (*notify)(struct HvVirtio *v, int q);
+    void (*config_write)(struct HvVirtio *v, uint32_t off, uint64_t val, unsigned size);
+    void *dev;""",
+        """    void (*notify)(struct HvVirtio *v, int q);
+    void (*config_write)(struct HvVirtio *v, uint32_t off, uint64_t val, unsigned size);
+    void (*on_reset)(struct HvVirtio *v);
+    void *dev;""",
+    )
+    virtio_c = upstream / "devices/virtio.c"
+    patch_file(
+        virtio_c,
+        "if (v->on_reset) v->on_reset(v);",
+        """    for (int i = 0; i < v->nq; i++) v->q[i] = (HvVirtq){.size = HV_VIRTQ_MAX_SIZE};
+    hv_pci_set_intx(&v->pci, 0);
+}""",
+        """    for (int i = 0; i < v->nq; i++) v->q[i] = (HvVirtq){.size = HV_VIRTQ_MAX_SIZE};
+    hv_pci_set_intx(&v->pci, 0);
+    if (v->on_reset) v->on_reset(v);
+}""",
+    )
+
     virtio_input_h = upstream / "devices/virtio_input.h"
     patch_file(
         virtio_input_h,
@@ -750,6 +775,19 @@ static void vgpu_sync_scanout0(HvVirtioGpuPci *g) {
     hengelinux_render_unlock();
 }
 
+static void vgpu_reset(HvVirtio *v) {
+    HvVirtioGpuPci *g = v->dev;
+    if (!g || !g->gpu) return;
+    hengelinux_render_lock();
+    if (g->fb) {
+        hv_fb_display_set_host_buffer(g->fb, NULL, 0u, 0u, 0u, 0u);
+    }
+    henge_virtio_gpu_reset(g->gpu);
+    hengelinux_render_unlock();
+    uint32_t zero_ev = 0u;
+    memcpy(v->config, &zero_ev, 4);
+}
+
 static void vgpu_config_write(HvVirtio *v, uint32_t off, uint64_t val, unsigned size) {
     if (off == 4u && size >= 4u) {
         uint32_t ev = 0;
@@ -896,6 +934,11 @@ static void vgpu_notify(HvVirtio *v, int q) {
                 g->gpu, type, ctx_id, res_id, scanout_id, rw, rh, 0u, NULL, 0u);
             if (resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA && scanout_id == 0u) {
                 vgpu_sync_scanout0(g);
+                static int logged_scanout = 0;
+                if (res_id != 0u && logged_scanout < 4) {
+                    logged_scanout++;
+                    fprintf(stderr, "winvm: virtio-gpu SET_SCANOUT0 res=%u (%ux%u)\\n", res_id, rw, rh);
+                }
             }
         } else if (type == HENGE_VIRTIO_GPU_CMD_RESOURCE_FLUSH) {
             uint32_t req[5] = {0};
@@ -909,6 +952,13 @@ static void vgpu_notify(HvVirtio *v, int q) {
             }
         } else {
             resp_type = HENGE_VIRTIO_GPU_RESP_ERR_UNSPEC;
+        }
+        if (resp_type >= 0x1200u) {
+            static int logged_err = 0;
+            if (logged_err < 16) {
+                logged_err++;
+                fprintf(stderr, "winvm: virtio-gpu cmd=0x%x -> err=0x%x\\n", type, resp_type);
+            }
         }
 
         uint8_t resp[24];
@@ -942,6 +992,7 @@ static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, Hv
     g->vio.dev = g;
     g->vio.notify = vgpu_notify;
     g->vio.config_write = vgpu_config_write;
+    g->vio.on_reset = vgpu_reset;
     g->vio.config_len = 16;
     uint32_t num_scanouts = 1u;
     memcpy(g->vio.config + 8, &num_scanouts, 4);
@@ -991,13 +1042,15 @@ void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t heigh
         return;
     }
     if (henge_virtio_gpu_set_display_mode(g->gpu, 0u, width, height, true) == 0) {
-        uint32_t ev = 0u;
-        memcpy(&ev, g->vio.config, 4);
-        ev |= 1u; /* VIRTIO_GPU_EVENT_DISPLAY */
-        memcpy(g->vio.config, &ev, 4);
-        g->vio.config_gen++;
-        g->vio.isr |= 2u; /* VirtIO device configuration interrupt */
-        hv_pci_set_intx(&g->vio.pci, 1);
+        if ((g->vio.status & 4u) != 0u) {
+            uint32_t ev = 0u;
+            memcpy(&ev, g->vio.config, 4);
+            ev |= 1u; /* VIRTIO_GPU_EVENT_DISPLAY */
+            memcpy(g->vio.config, &ev, 4);
+            g->vio.config_gen++;
+            g->vio.isr |= 2u; /* VirtIO device configuration interrupt */
+            hv_pci_set_intx(&g->vio.pci, 1);
+        }
     }
     hv_dev_unlock(b->m);
     hv_machine_kick_all(b->m);
@@ -1210,8 +1263,24 @@ void hv_winvm_send_ctrl_alt_del(void) {
 }""",
     )
 
-    # 8. Milestone 6.5 (Phase E): HvFbDisplay host-buffer hook + Linux xhci_hcd 1.1+ hardening
+    # 8. Milestone 6.5 (Phase E): HvFbDisplay host-buffer hook (preserving ramfb fallback) + Linux xhci_hcd 1.1+ hardening
     fb_display_h = upstream / "devices/fb_display.h"
+    patch_file(
+        fb_display_h,
+        "vgpu_host;",
+        """    uint32_t fourcc; /* DRM fourcc, e.g. XR24 / AR24 (32-bit BGRX) */
+    int active;""",
+        """    uint32_t fourcc; /* DRM fourcc, e.g. XR24 / AR24 (32-bit BGRX) */
+    int active;
+
+    /* Optional VirtIO-GPU 2D KMS host-buffer override (falls back to ramfb when inactive) */
+    const uint8_t *vgpu_host;
+    uint32_t vgpu_width;
+    uint32_t vgpu_height;
+    uint32_t vgpu_stride;
+    uint32_t vgpu_fourcc;
+    int vgpu_active;""",
+    )
     patch_file(
         fb_display_h,
         "hv_fb_display_set_host_buffer",
@@ -1224,14 +1293,36 @@ void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uin
     patch_file(
         fb_display_c,
         "hv_fb_display_set_host_buffer",
-        """    *pixels = fb->fb_host;
+        """int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride) {
+    if (!fb) return -1;
+    pthread_mutex_lock(&fb->mu);
+    if (!fb->active || !fb->fb_host || !fb->width || !fb->height) {
+        pthread_mutex_unlock(&fb->mu);
+        return -1;
+    }
+    *pixels = fb->fb_host;
     *w = fb->width;
     *h = fb->height;
     *stride = fb->stride;
     pthread_mutex_unlock(&fb->mu);
     return 0;
 }""",
-        """    *pixels = fb->fb_host;
+        """int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride) {
+    if (!fb) return -1;
+    pthread_mutex_lock(&fb->mu);
+    if (fb->vgpu_active && fb->vgpu_host && fb->vgpu_width && fb->vgpu_height) {
+        *pixels = fb->vgpu_host;
+        *w = fb->vgpu_width;
+        *h = fb->vgpu_height;
+        *stride = fb->vgpu_stride;
+        pthread_mutex_unlock(&fb->mu);
+        return 0;
+    }
+    if (!fb->active || !fb->fb_host || !fb->width || !fb->height) {
+        pthread_mutex_unlock(&fb->mu);
+        return -1;
+    }
+    *pixels = fb->fb_host;
     *w = fb->width;
     *h = fb->height;
     *stride = fb->stride;
@@ -1243,20 +1334,19 @@ void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uin
     if (!fb) return;
     pthread_mutex_lock(&fb->mu);
     if (host_ptr && width > 0 && height > 0 && stride >= width * 4u) {
-        fb->fb_pa = 0;
-        fb->fb_host = host_ptr;
-        fb->width = width;
-        fb->height = height;
-        fb->stride = stride;
-        fb->fourcc = fourcc;
-        fb->active = 1;
+        fb->vgpu_host = host_ptr;
+        fb->vgpu_width = width;
+        fb->vgpu_height = height;
+        fb->vgpu_stride = stride;
+        fb->vgpu_fourcc = fourcc;
+        fb->vgpu_active = 1;
     } else {
-        fb->fb_pa = 0;
-        fb->fb_host = NULL;
-        fb->width = 0;
-        fb->height = 0;
-        fb->stride = 0;
-        fb->active = 0;
+        fb->vgpu_host = NULL;
+        fb->vgpu_width = 0;
+        fb->vgpu_height = 0;
+        fb->vgpu_stride = 0;
+        fb->vgpu_fourcc = 0;
+        fb->vgpu_active = 0;
     }
     pthread_mutex_unlock(&fb->mu);
 }""",
