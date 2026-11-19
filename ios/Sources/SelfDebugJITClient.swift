@@ -133,17 +133,26 @@ final class SelfDebugJITClient: ObservableObject {
             henge-linux iOS Sandbox Container
             =================================
 
-            1. Optional TXM Self-Debug Pairing File:
-               Place `pairing.plist` (or `.mobiledevicepairing`) here in `Documents/pairing.plist`
-               or import it directly from the in-app "Import pairing.plist..." button.
-
-            2. Arch Linux Guest Files (`Machines/ArchLinux/`):
+            1. Arch Linux Guest Files (`Machines/ArchLinux/`):
                - `archlinux.hvsparse` (or `archlinux.img`)
                - `code.fd` (64 MiB EDK2 AArch64 UEFI code firmware)
                - `vars.fd` (64 MiB EDK2 AArch64 UEFI variable store)
+               Import all three via the in-app "Import Guest Files..." button.
 
-            3. Host <-> Guest WebDAV Shared Folder (`Shared/`):
-               Mounted inside Arch Linux via `http://10.0.2.4/`.
+            2. TXM JIT Setup (StikDebug + LocalDevVPN):
+               - Save `henge-jit.js` into `Files -> On My iPhone -> StikDebug`.
+               - Long-press HengeLinux in StikDebug -> Assign Script -> `henge-jit.js`.
+               - Optional: import `pairing.plist` (or `.mobiledevicepairing`) into `Documents/pairing.plist`.
+
+            3. Guest RAM & LXQt Desktop Quick-Start:
+               - Customize Guest RAM (512-10240 MiB; default 1664 MiB) before booting.
+               - Inside Arch Linux (`tty1`), run `henge-install-desktop` to install LXQt + SDDM on `vt2`
+                 with full touch, Split Deck trackpad, and keyboard input via `/dev/uinput`.
+               - Press Ctrl+Alt+F1 (or `chvt 1`) to return to the root console, Ctrl+Alt+F2 for LXQt.
+
+            4. Host <-> Guest WebDAV Shared Folder (`Shared/`):
+               Mount inside Arch Linux via:
+               rclone mount :webdav: /mnt/ios-share --webdav-url http://10.0.2.4/ --webdav-vendor other --daemon
             """
             try? text.write(to: rootReadme, atomically: true, encoding: .utf8)
         }
@@ -152,9 +161,11 @@ final class SelfDebugJITClient: ObservableObject {
         if !fm.fileExists(atPath: machineReadme.path) {
             let text = """
             Place your Arch Linux AArch64 VM files in this directory:
-            - archlinux.hvsparse (packed sparse NVMe image)
-            - code.fd (EDK2 UEFI firmware code)
-            - vars.fd (EDK2 UEFI NVRAM variables)
+            - archlinux.hvsparse (packed sparse NVMe image; unpacked automatically to archlinux.img)
+            - code.fd (64 MiB EDK2 UEFI firmware code)
+            - vars.fd (64 MiB EDK2 UEFI NVRAM variables)
+
+            Tip: Inside the booted Arch Linux console, run `henge-install-desktop` to set up LXQt + SDDM on VT2.
             """
             try? text.write(to: machineReadme, atomically: true, encoding: .utf8)
         }

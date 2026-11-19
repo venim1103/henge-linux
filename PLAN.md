@@ -44,9 +44,9 @@ henge-linux/
 │   │   └── henge-jit.js            # StikDebug / LLDB GDB RSP brk #0x69 / #0xf00d TXM page-blessing script
 │   ├── Sources/
 │   │   ├── HengeJITExtensionBridge.{h,mm} # ObjC++ NSExtension (com.apple.ar.viewer) XPC bridge with timeout/cancellation guards
-│   │   ├── HengeVMBridge.{h,mm}    # ObjC++/C++20 runtime bridge: HvWinVmConfig, async hv_sparse_unpack, CAMetalLayer, xHCI + PL011 HID, 10.0.2.4/.henge/
-│   │   ├── HengeLinuxApp.swift     # Launcher, fileImporter, Share Sheet .onOpenURL, container file list, async JIT boot, SafariSheetView
-│   │   ├── SessionView.swift       # Metal framebuffer host, serialized HID keyboard, clamshell trackpad & modifier strip
+│   │   ├── HengeVMBridge.{h,mm}    # ObjC++/C++20 runtime bridge: HvWinVmConfig, async hv_sparse_unpack, CAMetalLayer, xHCI + PL011 + OSC 9999 HID, 10.0.2.4/.henge/
+│   │   ├── HengeLinuxApp.swift     # Launcher, editable Guest RAM (512-10240 MiB), fileImporter, Share Sheet .onOpenURL, container file list, async JIT boot, SafariSheetView
+│   │   ├── SessionView.swift       # Metal framebuffer host, serialized HID keyboard, clamshell trackpad & complete special-key strip (F1-F12, Shift/Ctrl/Alt/Super, Caps, etc.)
 │   │   ├── HingeSensorView.swift   # Runtime UIHingeInteraction detector + live angle observer + single-screen clamshell preview toggle
 │   │   ├── MetalLifecycleGuard.swift # Synchronous NotificationCenter observer + C pthread_mutex render fence
 │   │   ├── SelfDebugJITClient.swift  # P_TRACED / CS_DEBUGGED state machine, SideStore bundle ID resolver, pairing.plist sync, & container scanner
@@ -55,7 +55,8 @@ henge-linux/
 │       ├── Info.plist              # Nested NSExtension dictionary (com.apple.ar.viewer)
 │       ├── HengeLinuxJITExtension.entitlements # Shared App Group entitlement
 │       └── JITExtensionHandler.swift # NSExtension request handler + pipelined 10.7.0.1 GDB RSP TXM blesser
-├── guest/                          # Scripts deployed inside the Arch Linux aarch64 guest
+├── guest/                          # Native binary & scripts deployed inside the Arch Linux aarch64 guest
+│   ├── henge_dual_console.c        # Static C PL011->tty1 mirror, stateful OSC 9999 parser, HENGE_HID_READY handshake, & /dev/uinput Virtual Keyboard/Tablet bridge
 │   ├── henge-xdg-open              # Non-blocking double-fork dual-stack OAuth relay + EADDRINUSE + SafariSheet bridge
 │   └── setup-arch-bridge.sh        # Installs xdg-open handler, $BROWSER export, systemd-networkd VirtIO DHCP, and /mnt/ios-share
 ├── scripts/
@@ -152,6 +153,12 @@ Every code change in `henge-linux` must preserve these verified platform invaria
   - Fixed the `CNTVCT_EL0` / `CNTPCT_EL0` clock-domain deadlock in `scripts/apply_upstream_patches.py` by preserving Darwin's `COMMPAGE_TIMEBASE_OFFSET` (`0xfffffc088ull`) alongside `*hengelinux_negative_counter_offset_ptr()` in `core/translate.c` (`translate_counter()`) and aligning `core/dispatch.c` timer deadlines (`timer_due`, `next_due`, `wait_for_interrupt`) to `hv_counter()` (`CI Run #44243183836` green), ensuring EDK2's 10 ms `ArmTimerDxe` interrupt fires immediately on iPhones with non-zero sleep offsets.
   - Wired `henge_forward_hid_to_pl011()` in `ios/Sources/HengeVMBridge.mm` so on-screen and hardware HID key presses are forwarded as ASCII / VT100 escape sequences into `hv_pl011_receive(hv_winvm_board()->uart, ...)` alongside `hv_winvm_key_hid()`.
   - Updated `scripts/build_prebuilt_archlinux_arm64.sh` to configure `systemd-bootaa64.efi` with `timeout 0` and `console-mode keep`, match `HengeVM`'s GPEX PCIe slot layout (`00:01.0` `virtio-net-pci`, `00:02.0` `nvme` `WIN11IOS01`) in `VERIFY_BOOT=1`, and persist QEMU-initialized `verify_vars.fd` into `vars.fd`.
+- [x] **Milestone 5.9–5.10 — Interactive Console Polish, Full-Frame Metal Hash & Pre-Configured LXQt Desktop (`5ce42f2`–`dd45fa9`):**
+  - Kept `MetalDisplaySurfaceView` permanently first responder with `inputView` suppression for immediate Bluetooth keyboard input, added `usbcore.nousb` + `rcupdate.rcu_cpu_stall_timeout=300` to eliminate initrd xHCI stalls, patched `quick_frame_hash()` in `devices/fb_metal.m` to hash every scanline/qword for instant single-glyph rendering, added `henge-pacman-keyring.service` + `pacman.conf` `NoExtract`, and pre-configured `/etc/X11/xorg.conf.d/10-fbdev.conf`, `/etc/sddm.conf.d/hengelinux.conf` (`vt2` autologin), and `/usr/local/bin/henge-install-desktop`.
+- [x] **Milestone 5.11 — Native Static C `/dev/uinput` HID Bridge, Editable Guest RAM & Full Special-Key Strip (`4809648`–`7319ac4`):**
+  - Added user-editable **Guest RAM (MiB)** controls (`512`–`10,240 MiB` numeric field, stepper, slider, quick-pick chips) in `HengeLinuxApp.swift` and removed hardcoded silent `1,664 MiB` clamping in `HengeVMBridge.mm`.
+  - Replaced Python guest scripts with a zero-dependency static ARM64 C binary (`guest/henge_dual_console.c`) that launches a direct interactive root login shell (`/bin/bash`), runs a stateful OSC `9999` parser, announces `HENGE_HID_READY` (gated in `host/henge_platform.{h,c}` + `HengeVMBridge.mm` so UEFI and older images never receive OSC bytes), and creates separate `/dev/uinput` `HengeLinux Virtual Keyboard` and `HengeLinux Virtual Tablet` devices for full X11/LXQt mouse, touch, scroll, and keyboard input even with `usbcore.nousb`.
+  - Expanded `SessionView.swift`'s modifier strip to include all special keys (`Esc`, `Tab`, `Bck`, `Del`, `Shift`, `Ctrl`, `Alt`, `Super`, `Caps`, arrows, `Home`, `End`, `PgUp`, `PgDn`, `Ins`, `Prnt`, `ScrLk`, `Pause`, `Menu`, `F1`–`F12`, `Paste`, `CAD`) plus full `F1`–`F12` / `Insert` PL011 escape sequences in `HengeVMBridge.mm`.
 
 ---
 
@@ -214,12 +221,12 @@ Four files are used to boot Arch Linux in `HengeLinux` on iOS: `code.fd`, `vars.
 - **Linux:** `sudo apt install libimobiledevice-utils && idevicepair pair && sudo cp "/var/lib/lockdown/$(idevice_id -l | head -n1).plist" ~/pairing.plist && sudo chown $USER ~/pairing.plist`
 - **Windows / Cross-Platform GUI:** Use [`idevice_pair`](https://github.com/jkcoxson/idevice_pair) (the official SideStore / StikDebug pairing generator) to export `pairing.plist` or `.mobiledevicepairing`, then import it in `HengeLinux` via **Import pairing.plist / .mobiledevicepairing...**.
 
-### 6.4 Automated Pre-Built Guest Image via GitHub Actions (Milestone 5.6–5.8 Architecture)
+### 6.4 Automated Pre-Built Guest Image via GitHub Actions (Milestone 5.6–5.11 Architecture)
 
-To eliminate manual QEMU provisioning on a desktop computer, Milestones 5.6–5.8 provide an automated `ubuntu-24.04-arm` GitHub Actions pipeline:
+To eliminate manual QEMU provisioning on a desktop computer, Milestones 5.6–5.11 provide an automated `ubuntu-24.04-arm` GitHub Actions pipeline:
 1. **Firmware Packaging & NVRAM Initialization:** Extracts `/usr/share/AAVMF/AAVMF_CODE.fd` -> `code.fd` (64 MiB) and `/usr/share/AAVMF/AAVMF_VARS.fd` -> `vars.fd` (64 MiB), then persists the QEMU-initialized `Boot0000` NVRAM written during the `VERIFY_BOOT=1` smoke test back into `vars.fd`.
 2. **Non-Interactive Rootfs & ESP Provisioning (`scripts/build_prebuilt_archlinux_arm64.sh`):**
    - Allocates a sparse raw disk image (`archlinux.img`), partitions GPT (`256 MiB` `EFI System` FAT32 + `ext4` rootfs), formats filesystems, and extracts the official Arch Linux ARM (`ArchLinuxARM-aarch64-latest.tar.gz`) rootfs.
-   - Installs Arch Linux ARM's native `systemd-bootaa64.efi` as `EFI/BOOT/BOOTAA64.EFI`, configures `/etc/fstab`, `/boot/loader/loader.conf` (`timeout 0`, `console-mode keep`), `/boot/loader/entries/arch.conf`, `/boot/startup.nsh` (`console=tty0 console=ttyAMA0,115200 rw`), and executes `guest/setup-arch-bridge.sh` inside the rootfs.
+   - Installs Arch Linux ARM's native `systemd-bootaa64.efi` as `EFI/BOOT/BOOTAA64.EFI`, compiles the zero-dependency static ARM64 `guest/henge_dual_console.c` binary into `/usr/local/bin/henge-dual-console`, configures `/etc/fstab`, `/boot/loader/loader.conf` (`timeout 0`, `console-mode keep`), `/boot/loader/entries/arch.conf`, `/boot/startup.nsh`, `/etc/modules-load.d/uinput.conf`, `/etc/X11/xorg.conf.d/10-fbdev.conf`, `/etc/sddm.conf.d/hengelinux.conf`, `/usr/local/bin/henge-install-desktop`, and executes `guest/setup-arch-bridge.sh` inside the rootfs.
    - Runs a headless QEMU AArch64 ACPI 6.3 boot smoke test (`-machine virt,gic-version=3,acpi=on` with `00:01.0` `virtio-net-pci` and `00:02.0` `nvme` `WIN11IOS01` matching `HengeVM`) to verify UEFI -> `BOOTAA64.EFI` -> Linux kernel serial entry before packing `archlinux.img` into `archlinux.hvsparse`.
 3. **Release Publishing:** Uploads `code.fd`, `vars.fd`, and `archlinux.hvsparse` (plus `SHA256SUMS.txt`) to the rolling `latest-ipa` GitHub Pre-Release alongside `HengeLinux-unsigned.ipa`.

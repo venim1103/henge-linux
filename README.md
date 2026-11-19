@@ -6,9 +6,9 @@
 
 > **Documentation & Builds:**
 > - **Latest Unsigned `.ipa` & Pre-Built Guest Image:** [`latest-ipa` Pre-Release](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) (`HengeLinux-unsigned.ipa`, `archlinux.hvsparse`, `code.fd`, `vars.fd`) · [All Releases](https://github.com/venim1103/henge-linux/releases) · [GitHub Actions CI](https://github.com/venim1103/henge-linux/actions)
-> - [`docs/SETUP.md`](docs/SETUP.md) — Complete step-by-step setup guide for SideStore/AltStore sideloading, importing guest files, configuring **StikDebug** (`henge-jit.js` + `Assign Script`) & **LocalDevVPN**, and using Safari OAuth / WebDAV bridges.
+> - [`docs/SETUP.md`](docs/SETUP.md) — Complete step-by-step setup guide for SideStore/AltStore sideloading, importing guest files, configuring **StikDebug** (`henge-jit.js` + `Assign Script`) & **LocalDevVPN**, installing the **LXQt graphical desktop**, and using Safari OAuth / WebDAV bridges.
 > - [`PLAN.md`](PLAN.md) — Detailed engineering implementation plan, module architecture, technical invariants, and Phase 1–5 roadmap.
-> - [`HANDOVER.md`](HANDOVER.md) — Current repository status, 42-file inventory, CI build guide, and next-session handover checklist.
+> - [`HANDOVER.md`](HANDOVER.md) — Current repository status, 43-file inventory, CI build guide, and next-session handover checklist.
 > - [`docs/RESEARCH.md`](docs/RESEARCH.md) — Complete technical review of `WindowsiOS`/`HengeVM` and all 6 Linux-on-iOS execution architectures.
 > - [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — GPLv3 §5a / §6(d) attribution and license provenance for all upstream and linked dependencies.
 
@@ -26,8 +26,10 @@ Every green push to `main` automatically builds and publishes the unsigned iOS 2
 3. **Configure TXM JIT in StikDebug + LocalDevVPN:**
    - Save [`ios/Resources/henge-jit.js`](https://raw.githubusercontent.com/venim1103/henge-linux/main/ios/Resources/henge-jit.js) into **Files ▸ On My iPhone ▸ StikDebug**.
    - Enable **LocalDevVPN**, open **StikDebug**, **long-press `HengeLinux` -> Assign Script -> `henge-jit.js`** (starring the script alone does not assign it to an app), and tap **HengeLinux** to launch with JIT attached.
-4. **Boot Arch Linux:**
-   - Select your device RAM profile (`2,560 MiB` on 8 GB iPhone Pro; `4,608 MiB` on 12 GB Pro/Duo; `6,144 MiB` on 16 GB iPad Pro) and tap **Boot Arch Linux**. `systemd-bootaa64.efi` (`timeout 0`) immediately hands off to `/Image` + `/initramfs-linux.img`; allow 30–60 seconds on cold boot while the ARM64 DBT compiles the kernel and `initramfs`.
+4. **Boot Arch Linux & Launch LXQt Desktop (Optional):**
+   - Pick a hardware profile (`4` or `6` vCPU) and optionally customize **Guest RAM (MiB)** (`512`–`10,240 MiB`; defaults to `1,664 MiB` for safe standard-ledger Jetsam headroom), then tap **Boot Arch Linux**.
+   - `systemd-bootaa64.efi` (`timeout 0`) boots `/Image` + `/initramfs-linux.img` automatically into `[root@hengelinux ~]#` with full on-screen (`Esc`–`F12`, `Shift`, `Ctrl`, `Alt`, `Super`, arrows, `Home`/`End`/`PgUp`/`PgDn`, `Ins`, `Prnt`, `ScrLk`, `Pause`, `Menu`) and Bluetooth keyboard support.
+   - To launch a graphical desktop with working touch, Split Deck trackpad, and keyboard input, run `henge-install-desktop` at the root prompt (installs **LXQt** + **SDDM** autologin on `vt2` backed by the native `/dev/uinput` HID bridge).
 
 ---
 
@@ -49,9 +51,9 @@ Stock iOS 16.4+ restricts `com.apple.developer.kernel.hypervisor` on non-jailbro
 
 | Device Class | Example Hardware | Recommended Guest RAM | UI & Input Mode |
 | :--- | :--- | :--- | :--- |
-| **Foldable Dual-Screen iPhone** | iPhone Duo (`iPhone19,4`, A20 Pro, iOS 27) | **4,608 MiB** (4.5 GB) | `UIHingeInteraction` clamshell laptop deck + 7.6" Open Studio canvas |
-| **Standard Single-Screen iPhone (8 GB+)** | iPhone 16 Pro (A18 Pro, 8 GB RAM, iOS 26/27) | **2,048–3,072 MiB** (2–3 GB) | Direct `SessionView` canvas + external Bluetooth/USB-C HID or on-screen input bar |
-| **12 GB+ Pro iPhone / M-Series iPad** | iPhone 17 Pro / M-series iPad Pro | **4,096–6,144 MiB** (4–6 GB) | Full-screen canvas + USB-C external display output |
+| **Foldable Dual-Screen iPhone** | iPhone Duo (`iPhone19,4`, A20 Pro, iOS 27) | **1,664 MiB** *(standard ledger)* / **4,608 MiB** *(ledger-exempt)* | `UIHingeInteraction` clamshell laptop deck + 7.6" Open Studio canvas |
+| **Standard Single-Screen iPhone (8 GB+)** | iPhone 16 Pro (A18 Pro, 8 GB RAM, iOS 26/27) | **1,664 MiB** *(editable 512–10,240 MiB)* | Direct `SessionView` canvas + Split Deck trackpad + full special-key strip / Bluetooth HID |
+| **12 GB+ Pro iPhone / M-Series iPad** | iPhone 17 Pro / M-series iPad Pro | **1,664–2,048 MiB** *(standard ledger)* / **4,096–6,144 MiB** *(ledger-exempt)* | Full-screen canvas + USB-C external display output |
 
 ---
 
@@ -71,7 +73,7 @@ Stock iOS 16.4+ restricts `com.apple.developer.kernel.hypervisor` on non-jailbro
 2. **Phase 2 — Core Engine, Host Layer & Single/Dual-Screen iOS Shell:** Port `HengeVM` / `WindowsiOS` `core/`, `devices/`, `host/`, `tests/`, and `ios/` targets—Verify instruction/block unit tests (`make test-core`), enforce `< 104`-byte `AF_UNIX` `sun_path` socket paths inside the iOS sandbox `<container>/tmp/` directory, serialize `CAMetalLayer` rendering under a `pthread_mutex_t` pause fence on `willResignActive`, and guard `UIHingeInteraction` for both foldable iPhone Duo and single-screen iPhones (e.g., iPhone 16 Pro).
 3. **Phase 3 — Arch Linux AArch64 Guest & Dual-Stack Native Bridge:** Provision an upstream-compatible `"HVSPARSE"` streaming-extent Arch Linux image via Archboot AArch64 (evaluating both 4 KiB default and 16 KiB `HV_TLB_PAGE_BITS=14` kernels), mount `http://10.0.2.4/` WebDAV, and ship non-blocking `henge-xdg-open` with dual-stack (`127.0.0.1` / `[::1]` ↔ `10.0.2.15`) OAuth port-forwarding and auto-dismiss (`/.henge/oauth-done`).
 4. **Phase 4 — In-App Self-Debugging & VirtIO-GPU 3D Metal Acceleration:** Integrate embedded `StikJIT` (`MPL-2.0`) XPC self-blessing (`HengeLinuxJITExtension` with nested `Info.plist`) and add `virtio-gpu-gl-pci` (`virglrenderer` → `ANGLE` → `Metal`) for 3D Wayland compositors (`Hyprland`, `Wayfire`, `Sway`) alongside `tctiSH`-style background state persistence (since `Henge`'s `pvg_lite.c` targets macOS-only `ParavirtualizedGraphics.framework`).
-5. **Phase 5 — Upstream `WindowsiOS` Engine Linkage & Live Arch Linux Runtime (*Milestones 5.1–5.8 Landed; On-Device Boot & 3D VirGL PCIe Bring-Up Active*):** Upstream `WindowsiOS` patcher (`scripts/apply_upstream_patches.py` with Darwin `COMMPAGE_TIMEBASE_OFFSET` + `hv_counter()` timer clock-domain alignment), cached `libffi`/`glib`/`libslirp` static deps (`scripts/build_ios_deps.sh` + `.github/workflows/ci.yml`), `"HVSPARSE"` extent unpacking + dual USB xHCI & PL011 UART keyboard input (`HengeVMBridge.mm`), decoupled `CNTVCT_EL0` suspend compensation (`host/henge_platform.c`), `HengeLinuxJITExtension` XPC + pipelined GDB RSP TXM blesser (`JITExtensionHandler.swift` + `SelfDebugJITClient.swift`), `virtio-gpu-gl-pci` 3D VirGL control-queue + durable background state snapshots (`host/henge_virtio_gpu.{h,c}`), `CFBundleDocumentTypes` + in-app file browser importers/container viewer (`ios/project.yml`, `HengeLinuxApp.swift`), and automated pre-built Arch Linux ARM64 guest image CI (`scripts/build_prebuilt_archlinux_arm64.sh` + `.github/workflows/prebuilt-guest-image.yml`) are landed; see [`docs/SETUP.md`](docs/SETUP.md), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), [`PLAN.md`](PLAN.md), and [`HANDOVER.md`](HANDOVER.md).
+5. **Phase 5 — Upstream `WindowsiOS` Engine Linkage, Live Arch Linux & LXQt Desktop (*Milestones 5.1–5.11 Landed; Ready for `v0.1.0` Pre-Release & 3D VirGL PCIe Bring-Up*):** Upstream `WindowsiOS` patcher (`scripts/apply_upstream_patches.py` with Darwin `COMMPAGE_TIMEBASE_OFFSET` + `hv_counter()` timer alignment and full-frame `fb_metal.m` hash), cached `libffi`/`glib`/`libslirp` static deps (`scripts/build_ios_deps.sh` + `.github/workflows/ci.yml`), `"HVSPARSE"` extent unpacking + user-editable Guest RAM (`512`–`10,240 MiB`) + dual USB xHCI & PL011 UART + OSC `9999` `/dev/uinput` HID input (`HengeVMBridge.mm`, `guest/henge_dual_console.c`, `SessionView.swift` full special-key strip), decoupled `CNTVCT_EL0` suspend compensation (`host/henge_platform.c`), `HengeLinuxJITExtension` XPC + pipelined GDB RSP TXM blesser (`JITExtensionHandler.swift` + `SelfDebugJITClient.swift`), `virtio-gpu-gl-pci` 3D VirGL control-queue + durable background state snapshots (`host/henge_virtio_gpu.{h,c}`), `CFBundleDocumentTypes` + in-app file browser importers/container viewer (`ios/project.yml`, `HengeLinuxApp.swift`), and automated pre-built Arch Linux ARM64 guest image CI with one-command `henge-install-desktop` LXQt + SDDM (`scripts/build_prebuilt_archlinux_arm64.sh` + `.github/workflows/prebuilt-guest-image.yml`) are landed; see [`docs/SETUP.md`](docs/SETUP.md), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), [`PLAN.md`](PLAN.md), and [`HANDOVER.md`](HANDOVER.md).
 
 ---
 

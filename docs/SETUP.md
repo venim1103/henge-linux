@@ -71,21 +71,40 @@ iOS 26/27 Trusted Execution Monitor (`TXM`) blocks anonymous executable memory (
 ## Step 4: Boot Arch Linux on iOS
 
 1. Open **StikDebug** (with **LocalDevVPN** active and `henge-jit.js` assigned to `HengeLinux`) and tap **HengeLinux** to launch it with the debugger attached.
-2. In **HengeLinux**, pick your **Hardware Profile**:
-   - **iPhone Pro (8 GB RAM):** `2,560 MiB` (2.5 GiB) · `4 vCPU` *(recommended for iPhone 16 Pro / 17 Pro 8 GB; RAM automatically clamped to `1,664 MiB` under standard Mach ledger to prevent Jetsam kills during large `pacman` transactions)*
-   - **iPhone Duo / 12 GB Pro:** `4,608 MiB` (4.5 GiB) · `4 vCPU`
-   - **M-Series iPad Pro (16 GB):** `6,144 MiB` (6.0 GiB) · `6 vCPU`
+2. In **HengeLinux**, pick your **Hardware Profile** (`4` or `6` vCPU) and optionally customize **Guest RAM (MiB)** directly via the numeric field, `128 MiB` stepper, slider, or quick-pick buttons (`1024`, `1664`, `2048`, `2560`, `4096` MiB; range `512`–`10,240 MiB`):
+   - **Recommended default (`1,664 MiB`):** Leaves safe headroom under iOS's ~3 GiB standard Mach ledger Jetsam ceiling (`1,664 MiB` guest RAM + `384 MiB` TXM JIT pool + host overhead) during heavy `pacman` installs.
+   - **iPhone Pro (8 GB RAM):** `4 vCPU` (`2,560 MiB` preset)
+   - **iPhone Duo / 12 GB Pro:** `4 vCPU` (`4,608 MiB` preset)
+   - **M-Series iPad Pro (16 GB):** `6 vCPU` (`6,144 MiB` preset)
 3. Leave **Display Adapter** set to **2D UEFI GOP (Metal)** for initial bring-up.
 4. Tap **Boot Arch Linux**.
    - On first boot, `HengeLinux` unpacks `archlinux.hvsparse` into an APFS sparse `archlinux.img` on a background thread (`Unpacking Disk Image...`).
    - `henge-jit.js` blesses the `384 MiB` dual-mapped RX/RW JIT pool (`< 0x7000000000`) and detaches cleanly (`CS_DEBUGGED` remains active for the session).
 5. **Allow 30–60 seconds on cold boot past TianoCore (`Start boot option`):**
    - `systemd-bootaa64.efi` (`timeout 0`, `console-mode keep`) launches `\Image` + `\initramfs-linux.img` (`usbcore.nousb`) automatically with zero keypresses required.
-   - `henge-dual-console` mirrors the PL011 serial session (`ttyAMA0`) directly onto the main Metal display (`tty1`) and auto-logs into `root@hengelinux:~#`, so both the on-screen iPhone keyboard (`⌨️` toolbar button) and external Bluetooth keyboards echo immediately on the main screen.
+   - The native static C `henge-dual-console` binary mirrors the PL011 serial session (`ttyAMA0`) directly onto the main Metal display (`tty1`), announces `HENGE_HID_READY`, and drops straight into `[root@hengelinux ~]#`.
+   - Both the on-screen iPhone keyboard (`⌨️` toolbar button + scrollable special-key strip with `Esc`, `Tab`, `Bck`, `Del`, `Shift`, `Ctrl`, `Alt`, `Super`, `Caps`, arrows, `Home`/`End`/`PgUp`/`PgDn`, `Ins`, `Prnt`, `ScrLk`, `Pause`, `Menu`, `F1`–`F12`, `Paste`, and `CAD`) and external Bluetooth keyboards work immediately.
 
 ---
 
-## Step 5: Guest Networking, Safari OAuth & WebDAV File Sharing
+## Step 5: Installing the LXQt Graphical Desktop (Optional)
+
+The pre-built `archlinux.hvsparse` image comes pre-configured with `/etc/X11/xorg.conf.d/10-fbdev.conf` (`/dev/fb0`), `/etc/sddm.conf.d/hengelinux.conf` (autologin on `vt2`), `/etc/modules-load.d/uinput.conf`, and the native `henge-dual-console` `/dev/uinput` Virtual Keyboard + Virtual Tablet bridge:
+
+1. At the `[root@hengelinux ~]#` prompt, run:
+   ```bash
+   henge-install-desktop
+   ```
+   - This installs `lxqt`, `sddm`, `xorg-server`, `xorg-xinit`, `xf86-video-fbdev`, `xf86-input-libinput`, and `ttf-dejavu`, creates desktop user `arch` (password: `arch`), enables `sddm`, and switches the display to `vt2`.
+2. **Using Touch, Trackpad & Keyboard in LXQt:**
+   - Tap directly on the LXQt canvas to click, drag to move/drag, two-finger tap to right-click, or toggle **Split Deck** for a dedicated multi-touch trackpad + Left/Right Click buttons.
+   - All touch, trackpad, and keyboard events are injected into Linux `/dev/uinput` by `henge-dual-console` whenever `vt2` is active—even with `usbcore.nousb` enabled.
+3. **Switching Between LXQt (`vt2`) and the Root Console (`vt1`):**
+   - Press **`Ctrl` + `Alt` + `F1`** (via the special-key strip or a Bluetooth keyboard) to return to the `tty1` root console, or **`Ctrl` + `Alt` + `F2`** to return to LXQt. From the root console, you can also run `chvt 2` / `chvt 1`.
+
+---
+
+## Step 6: Guest Networking, Safari OAuth & WebDAV File Sharing
 
 The pre-built `archlinux.hvsparse` image comes pre-configured with `guest/setup-arch-bridge.sh`:
 
@@ -105,7 +124,7 @@ The pre-built `archlinux.hvsparse` image comes pre-configured with `guest/setup-
 
 ---
 
-## Step 6: Building Your Own Custom Disk Image (Optional)
+## Step 7: Building Your Own Custom Disk Image (Optional)
 
 If you prefer to customize packages, disk size, or kernel options instead of downloading the pre-built image:
 
@@ -142,5 +161,5 @@ Inside the Archboot QEMU console:
   - Wait 30–60 seconds on cold boot for initial DBT translation. If you want to inspect the UEFI menu manually, tap **Stop**, tap **Boot Arch Linux**, and press **`Esc`** or **`F2`** on the TianoCore logo to open **Boot Manager -> EFI Internal Shell** (`fs0:\startup.nsh`).
 - **Guest RAM & iOS Jetsam Ceiling (`~3 GiB` standard ledger):**
   - You can edit **Guest RAM (MiB)** freely (`512`–`10,240 MiB`) before tapping **Boot Arch Linux**. When `CS_DEBUGGED` is active via StikDebug (`ptraced=0`) without `VM_LEDGER_FLAG_NO_FOOTPRINT`, iOS enforces a ~3 GiB total process footprint ceiling under the standard Mach ledger—so keeping RAM around `1,664`–`2,048 MiB` (`+ 384 MiB` JIT pool) avoids Jetsam kills during heavy `pacman` installs.
-- **Getting the LXQt + SDDM Graphical Login Screen (`vt2`) & Mouse/Keyboard Input:**
-  - Re-import the latest `archlinux.hvsparse` and `HengeLinux-unsigned.ipa` from `latest-ipa`, then run `henge-install-desktop` in the guest console. This installs `lxqt`, `sddm`, `xorg-server`, `xf86-video-fbdev`, and `ttf-dejavu`, configures SDDM autologin on `vt2` for user `arch` (password `arch`), and activates `henge-uinput-bridge.service` so touch taps, Split Deck trackpad gestures, and keyboard events inject directly into X11 via `/dev/uinput`.
+- **Getting the LXQt + SDDM Graphical Desktop (`vt2`) & Mouse/Keyboard Input:**
+  - Re-import the latest `archlinux.hvsparse` and `HengeLinux-unsigned.ipa` from `latest-ipa`, then run `henge-install-desktop` in the guest console. This installs `lxqt`, `sddm`, `xorg-server`, `xf86-video-fbdev`, `xf86-input-libinput`, and `ttf-dejavu`, configures SDDM autologin on `vt2` for user `arch` (password `arch`), and uses the built-in native `/dev/uinput` Virtual Keyboard + Virtual Tablet bridge inside `henge-dual-console` so touch taps, Split Deck trackpad gestures, and keyboard events work in X11 even with `usbcore.nousb` enabled.
