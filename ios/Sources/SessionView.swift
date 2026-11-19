@@ -574,11 +574,21 @@ final class MetalDisplaySurfaceView: UIView, UIKeyInput, @MainActor UIEditMenuIn
         super.layoutSubviews()
         guard let metalLayer else { return }
         let scale = window?.screen.scale ?? traitCollection.displayScale
-        metalLayer.contentsScale = scale > 0 ? scale : 2.0
+        let effectiveScale = scale > 0 ? scale : 2.0
+        metalLayer.contentsScale = effectiveScale
         metalLayer.drawableSize = CGSize(
-            width: max(bounds.width * scale, 1),
-            height: max(bounds.height * scale, 1)
+            width: max(bounds.width * effectiveScale, 1),
+            height: max(bounds.height * effectiveScale, 1)
         )
+        let kmsScale = min(effectiveScale, 2.0)
+        let pxW = Int(bounds.width * kmsScale) & ~1
+        let pxH = Int(bounds.height * kmsScale) & ~1
+        if pxW >= 320 && pxH >= 240 {
+            HengeVMBridge.shared.updateDisplaySize(
+                width: UInt32(min(pxW, 4096)),
+                height: UInt32(min(pxH, 4096))
+            )
+        }
     }
 
     // MARK: - Hardware Keyboard (UIResponder presses)

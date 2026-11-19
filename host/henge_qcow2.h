@@ -40,6 +40,16 @@ typedef struct HengeQcow2Info {
 HengeImageFormat henge_detect_image_format(const char *path);
 
 /*
+ * Return the preferred logical block size for an attached secondary image:
+ *   - 2048 for pure El Torito ISO-9660 optical images (lacking a 512-byte GPT/MBR)
+ *   - 512 for isohybrid ISOs, CIDATA seeds, and standard disk images
+ */
+uint32_t henge_iso_preferred_block_size(const char *path);
+
+/* Return true if this build was compiled with libzstd QCOW2 cluster support. */
+bool henge_qcow2_has_zstd(void);
+
+/*
  * Inspect and validate a QCOW2 v2/v3 header without unpacking.
  * Fails closed (-1) on encrypted, backing-file, corrupt, or unsupported images.
  */

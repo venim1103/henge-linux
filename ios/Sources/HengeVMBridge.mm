@@ -28,6 +28,8 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
     BOOL _vmCreated;
     uint32_t _activeRamMiB;
     int _activeCpuCount;
+    uint32_t _lastDisplayWidth;
+    uint32_t _lastDisplayHeight;
     uint8_t _hidModifiers;
     NSString *_statusText;
     CAMetalLayer *__weak _displayLayer;
@@ -73,6 +75,8 @@ static void henge_on_vm_exit(int reason) {
         _vmCreated = NO;
         _activeRamMiB = 0;
         _activeCpuCount = 4;
+        _lastDisplayWidth = 1280U;
+        _lastDisplayHeight = 800U;
         _hidModifiers = 0;
         _statusText = self.isEngineLinked
             ? @"Engine linked · Ready"
@@ -222,6 +226,28 @@ static void henge_on_vm_exit(int reason) {
     if (layer == nil || _displayLayer == layer) {
         [self attachDisplayLayer:nil];
     }
+}
+
+- (void)updateDisplaySizeWidth:(uint32_t)width height:(uint32_t)height {
+    if (width < 320U) width = 320U;
+    if (width > 4096U) width = 4096U;
+    if (height < 240U) height = 240U;
+    if (height > 4096U) height = 4096U;
+    width &= ~1U;
+    height &= ~1U;
+    if (_lastDisplayWidth == width && _lastDisplayHeight == height) {
+        return;
+    }
+    _lastDisplayWidth = width;
+    _lastDisplayHeight = height;
+    if (_gpuDevice != nullptr) {
+        henge_virtio_gpu_set_display_mode(_gpuDevice, 0U, width, height, true);
+    }
+#if HENGE_HAS_UPSTREAM_ENGINE && defined(HENGE_WINVM_HAS_V4_RESIZE)
+    if (_running && _vmCreated) {
+        hv_winvm_set_virtio_gpu_size(width, height);
+    }
+#endif
 }
 
 - (void)prepareDiskImageWithCompletion:(void (^)(BOOL success, NSError * _Nullable error))completion {
@@ -610,6 +636,9 @@ static void henge_on_vm_exit(int reason) {
 #if defined(HENGE_WINVM_HAS_V3_GPU)
     cfg.enable_virtio_gpu = (gpuBackend == 1 || gpuBackend == 2) ? 1 : 0;
 #endif
+#if defined(HENGE_WINVM_HAS_V4_RESIZE)
+    cfg.disk1_blk_size = _disk1PathStr.empty() ? 512U : henge_iso_preferred_block_size(_disk1PathStr.c_str());
+#endif
 
     char errBuf[512];
     std::memset(errBuf, 0, sizeof(errBuf));
@@ -661,6 +690,11 @@ static void henge_on_vm_exit(int reason) {
     if (layer != nil) {
         hv_winvm_set_display_layer((__bridge void *)layer);
     }
+#if defined(HENGE_WINVM_HAS_V4_RESIZE)
+    if (_lastDisplayWidth >= 320U && _lastDisplayHeight >= 240U) {
+        hv_winvm_set_virtio_gpu_size(_lastDisplayWidth, _lastDisplayHeight);
+    }
+#endif
     hengelinux_console_append_line("[bridge] Calling hv_winvm_start(1, henge_on_vm_exit)...");
     hv_winvm_start(1, henge_on_vm_exit);
     hengelinux_console_append_line("[bridge] hv_winvm_start returned; vCPUs running");

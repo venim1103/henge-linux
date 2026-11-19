@@ -147,6 +147,7 @@ targets:
           - "-lresolv"
           - "-liconv"
           - "-lz"
+          - "-lzstd"
           - "-framework"
           - "AudioToolbox"
           - "-framework"

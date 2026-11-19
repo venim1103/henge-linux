@@ -14,6 +14,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
+#if defined(HENGE_HAVE_ZSTD)
+#include <zstd.h>
+#endif
 
 #if defined(__APPLE__)
 #include <sys/clonefile.h>
@@ -142,6 +145,67 @@ HengeImageFormat henge_detect_image_format(const char *path) {
     return (st.st_size > 0) ? HENGE_IMG_FORMAT_RAW : HENGE_IMG_FORMAT_UNKNOWN;
 }
 
+uint32_t henge_iso_preferred_block_size(const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        return 512U;
+    }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return 512U;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || (uint64_t)st.st_size < 0x881EU) {
+        close(fd);
+        return 512U;
+    }
+
+    uint8_t pvd[6] = {0};
+    if (pread(fd, pvd, sizeof(pvd), 0x8000) != 6 || memcmp(pvd + 1, "CD001", 5) != 0) {
+        close(fd);
+        return 512U;
+    }
+
+    /* Check for 512-byte GPT header ("EFI PART" at LBA 1 = offset 0x200). */
+    uint8_t gpt[8] = {0};
+    if (pread(fd, gpt, sizeof(gpt), 0x200) == 8 && memcmp(gpt, "EFI PART", 8) == 0) {
+        close(fd);
+        return 512U;
+    }
+
+    /* Check for a populated MBR partition table (isohybrid optical image). */
+    uint8_t mbr[512] = {0};
+    if (pread(fd, mbr, sizeof(mbr), 0) == 512 && mbr[510] == 0x55U && mbr[511] == 0xAAU) {
+        for (int p = 0; p < 4; p++) {
+            uint8_t ptype = mbr[446 + p * 16 + 4];
+            if (ptype != 0U) {
+                close(fd);
+                return 512U;
+            }
+        }
+    }
+
+    /* Check for El Torito boot record volume descriptor at sector 17 (0x8800). */
+    uint8_t bvd[32] = {0};
+    if (pread(fd, bvd, sizeof(bvd), 0x8800) == 32 &&
+        bvd[0] == 0x00U &&
+        memcmp(bvd + 1, "CD001", 5) == 0 &&
+        memcmp(bvd + 7, "EL TORITO SPECIFICATION", 23) == 0) {
+        close(fd);
+        return 2048U;
+    }
+
+    close(fd);
+    return 512U;
+}
+
+bool henge_qcow2_has_zstd(void) {
+#if defined(HENGE_HAVE_ZSTD)
+    return true;
+#else
+    return false;
+#endif
+}
+
 static int parse_qcow2_header(int fd,
                               uint64_t file_size,
                               HengeQcow2Info *info,
@@ -222,10 +286,16 @@ static int parse_qcow2_header(int fd,
                     return -1;
                 }
             }
-            if (comp_type != 0U) {
-                set_err(err_buf, err_cap, "Unsupported QCOW2 compression type (only zlib/deflate is supported).");
+            if (comp_type != 0U && comp_type != 1U) {
+                set_err(err_buf, err_cap, "Unsupported QCOW2 compression type (only zlib and zstd are supported).");
                 return -1;
             }
+#if !defined(HENGE_HAVE_ZSTD)
+            if (comp_type == 1U) {
+                set_err(err_buf, err_cap, "QCOW2 image uses zstd compression, which is not linked in this build.");
+                return -1;
+            }
+#endif
         }
     }
 
@@ -316,6 +386,37 @@ static int inflate_raw_cluster(const uint8_t *in_buf,
     return 0;
 }
 
+#if defined(HENGE_HAVE_ZSTD)
+static int decompress_zstd_cluster(ZSTD_DCtx *dctx,
+                                   const uint8_t *in_buf,
+                                   size_t in_len,
+                                   uint8_t *out_buf,
+                                   size_t out_len) {
+    if (dctx == NULL) {
+        return -1;
+    }
+    ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
+    ZSTD_inBuffer zin = {in_buf, in_len, 0U};
+    ZSTD_outBuffer zout = {out_buf, out_len, 0U};
+    while (zin.pos < zin.size && zout.pos < zout.size) {
+        size_t ret = ZSTD_decompressStream(dctx, &zout, &zin);
+        if (ZSTD_isError(ret)) {
+            return -1;
+        }
+        if (ret == 0U) {
+            break;
+        }
+    }
+    if (zout.pos == 0U && in_len > 0U) {
+        return -1;
+    }
+    if (zout.pos < out_len) {
+        memset(out_buf + zout.pos, 0, out_len - zout.pos);
+    }
+    return 0;
+}
+#endif
+
 int henge_qcow2_unpack_to_raw(const char *qcow2_path,
                               const char *raw_path,
                               uint64_t min_virtual_bytes,
@@ -392,6 +493,10 @@ int henge_qcow2_unpack_to_raw(const char *qcow2_path,
         set_err(err_buf, err_cap, "Out of memory allocating QCOW2 buffers.");
         return -1;
     }
+
+#if defined(HENGE_HAVE_ZSTD)
+    ZSTD_DCtx *zstd_ctx = (info.compression_type == 1U) ? ZSTD_createDCtx() : NULL;
+#endif
 
     int rc = 0;
     if (pread_exact(in_fd, l1_buf, (size_t)l1_size * 8U, l1_offset) != 0) {
@@ -470,7 +575,19 @@ int henge_qcow2_unpack_to_raw(const char *qcow2_path,
                     rc = -1;
                     goto cleanup;
                 }
-                if (inflate_raw_cluster(comp_buf, (size_t)comp_bytes, cluster_buf, cluster_size) != 0) {
+                if (info.compression_type == 1U) {
+#if defined(HENGE_HAVE_ZSTD)
+                    if (decompress_zstd_cluster(zstd_ctx, comp_buf, (size_t)comp_bytes, cluster_buf, cluster_size) != 0) {
+                        set_err(err_buf, err_cap, "Failed to decompress zstd-compressed QCOW2 cluster.");
+                        rc = -1;
+                        goto cleanup;
+                    }
+#else
+                    set_err(err_buf, err_cap, "QCOW2 image uses zstd compression, which is not linked in this build.");
+                    rc = -1;
+                    goto cleanup;
+#endif
+                } else if (inflate_raw_cluster(comp_buf, (size_t)comp_bytes, cluster_buf, cluster_size) != 0) {
                     set_err(err_buf, err_cap, "Failed to inflate zlib-compressed QCOW2 cluster.");
                     rc = -1;
                     goto cleanup;
@@ -554,6 +671,11 @@ int henge_qcow2_unpack_to_raw(const char *qcow2_path,
     }
 
 cleanup:
+#if defined(HENGE_HAVE_ZSTD)
+    if (zstd_ctx != NULL) {
+        ZSTD_freeDCtx(zstd_ctx);
+    }
+#endif
     free(comp_buf);
     free(cluster_buf);
     free(l2_buf);

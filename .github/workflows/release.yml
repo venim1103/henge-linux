@@ -25,6 +25,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install host test dependencies (libzstd-dev, pkg-config)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libzstd-dev pkg-config
       - name: Run 4 KiB TLB compatibility tests & build hvsparse
         run: make HV_TLB_PAGE_BITS=12 test-core hvsparse
       - name: Verify hvsparse pack/unpack round-trip
@@ -49,12 +53,42 @@ jobs:
           bash -n scripts/build_prebuilt_archlinux_arm64.sh
           bash scripts/build_prebuilt_archlinux_arm64.sh --dry-run
 
+  guest-agent-arm64:
+    name: Build Static ARM64 musl Guest Agent
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build static aarch64-linux-musl henge-guest-agent
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools file
+          mkdir -p build/musl-uapi build/guest-tools
+          ln -sfn /usr/include/linux build/musl-uapi/linux
+          ln -sfn /usr/include/asm-generic build/musl-uapi/asm-generic
+          ln -sfn "/usr/include/$(uname -m)-linux-gnu/asm" build/musl-uapi/asm
+          musl-gcc -O2 -Wall -Wextra -Werror -static -isystem build/musl-uapi guest/henge_guest_agent.c -o build/guest-tools/henge-guest-agent
+          strip build/guest-tools/henge-guest-agent
+          file build/guest-tools/henge-guest-agent | grep -qi "aarch64"
+          ./build/guest-tools/henge-guest-agent --version
+      - name: Upload static ARM64 guest agent artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-guest-agent-arm64
+          path: build/guest-tools/henge-guest-agent
+
   ios-build:
     name: Build Unsigned iOS IPA (macOS)
+    needs: [guest-agent-arm64]
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Download static ARM64 guest agent into app bundle resources
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-guest-agent-arm64
+          path: ios/Resources
       - name: Select Xcode 26 toolchain if installed
         run: |
           if [ -d /Applications/Xcode_26.6.app ]; then

@@ -10,6 +10,9 @@
 #include "henge_cidata.h"
 
 #include <zlib.h>
+#if defined(HENGE_HAVE_ZSTD)
+#include <zstd.h>
+#endif
 
 #include <pthread.h>
 #include <stdio.h>
@@ -628,15 +631,79 @@ static void test_qcow2_and_storage_tools(void) {
     HENGE_CHECK(henge_qcow2_inspect(bad_path, &qinfo, err, sizeof(err)) == -1);
     HENGE_CHECK(henge_qcow2_unpack_to_raw(bad_path, raw_path, 0ULL, err, sizeof(err)) == -1);
 
-    /* 5. ISO9660 magic detection ("CD001" at 0x8001) */
+    /* 5. ISO9660 magic detection ("CD001" at 0x8001) & preferred block size (512 vs 2048) */
     uint8_t *iso = (uint8_t *)calloc(1U, 0x9000U);
     HENGE_CHECK(iso != NULL);
+    iso[0x8000U] = 0x01U;
     memcpy(iso + 0x8001U, "CD001", 5U);
+    /* Pure El Torito ISO (no MBR/GPT) -> 2048-byte logical sectors */
+    iso[0x8800U] = 0x00U;
+    memcpy(iso + 0x8801U, "CD001", 5U);
+    memcpy(iso + 0x8807U, "EL TORITO SPECIFICATION", 23U);
     fp = fopen(iso_path, "wb");
     HENGE_CHECK(fp != NULL);
     HENGE_CHECK(fwrite(iso, 1U, 0x9000U, fp) == 0x9000U);
     fclose(fp);
     HENGE_CHECK(henge_detect_image_format(iso_path) == HENGE_IMG_FORMAT_ISO9660);
+    HENGE_CHECK(henge_iso_preferred_block_size(iso_path) == 2048U);
+
+    /* Isohybrid GPT ISO ("EFI PART" at 0x200) -> 512-byte logical sectors */
+    memcpy(iso + 0x200U, "EFI PART", 8U);
+    fp = fopen(iso_path, "wb");
+    HENGE_CHECK(fp != NULL);
+    HENGE_CHECK(fwrite(iso, 1U, 0x9000U, fp) == 0x9000U);
+    fclose(fp);
+    HENGE_CHECK(henge_iso_preferred_block_size(iso_path) == 512U);
+
+#if defined(HENGE_HAVE_ZSTD)
+    /* 6. Zstd-compressed QCOW2 v3 (compression_type = 1) round-trip */
+    HENGE_CHECK(henge_qcow2_has_zstd());
+    {
+        const char *zstd_qcow2 = "build/test_zstd.qcow2";
+        const char *zstd_raw = "build/test_zstd.raw";
+        uint8_t zcomp[16384];
+        size_t zlen = ZSTD_compress(zcomp, sizeof(zcomp), c2, cs, 1);
+        HENGE_CHECK(!ZSTD_isError(zlen) && zlen > 0U && zlen < cs);
+
+        size_t ztotal = cs * 3U + ((zlen + 511U) & ~511U);
+        uint8_t *zqimg = (uint8_t *)calloc(1U, ztotal);
+        HENGE_CHECK(zqimg != NULL);
+        write_be32(zqimg + 0, 0x514649FBU);
+        write_be32(zqimg + 4, 3U);
+        write_be32(zqimg + 20, 14U);           /* 16 KiB clusters */
+        write_be64(zqimg + 24, cs);            /* 16 KiB virtual size */
+        write_be32(zqimg + 36, 1U);            /* l1_size = 1 */
+        write_be64(zqimg + 40, cs * 1ULL);     /* L1 at 0x4000 */
+        write_be64(zqimg + 72, (1ULL << 3));   /* INCOMPAT_COMP_TYPE */
+        write_be32(zqimg + 100, 105U);         /* header_length includes byte 104 */
+        zqimg[104] = 1U;                       /* compression_type = zstd */
+        write_be64(zqimg + cs * 1U, cs * 2ULL);
+        uint64_t zcoff = cs * 3ULL;
+        uint64_t zsectors = (zlen + 511U) / 512U;
+        uint64_t zl2 = (1ULL << 62) | ((zsectors - 1ULL) << csize_shift) | zcoff;
+        write_be64(zqimg + cs * 2U, zl2);
+        memcpy(zqimg + zcoff, zcomp, zlen);
+
+        fp = fopen(zstd_qcow2, "wb");
+        HENGE_CHECK(fp != NULL);
+        HENGE_CHECK(fwrite(zqimg, 1U, ztotal, fp) == ztotal);
+        fclose(fp);
+
+        HengeQcow2Info zinfo;
+        HENGE_CHECK(henge_qcow2_inspect(zstd_qcow2, &zinfo, err, sizeof(err)) == 0);
+        HENGE_CHECK(zinfo.compression_type == 1U);
+        HENGE_CHECK(henge_qcow2_unpack_to_raw(zstd_qcow2, zstd_raw, 0ULL, err, sizeof(err)) == 0);
+        fp = fopen(zstd_raw, "rb");
+        HENGE_CHECK(fp != NULL);
+        HENGE_CHECK(fread(verify, 1U, cs, fp) == cs);
+        fclose(fp);
+        HENGE_CHECK(memcmp(verify, c2, cs) == 0);
+
+        free(zqimg);
+        remove(zstd_qcow2);
+        remove(zstd_raw);
+    }
+#endif
 
     free(iso);
     free(eimg);

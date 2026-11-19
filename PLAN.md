@@ -32,47 +32,54 @@ henge-linux/
 ├── THIRD_PARTY_NOTICES.md          # GPLv3 §5a / §6(d) attribution & pinned source provenance
 ├── host/                           # C11 & ARM64 assembly host substrate (compiled into libhengelinux.a & iOS app)
 │   ├── henge_platform.{h,c}        # Darwin <104B sun_path formatter (iOS sandbox /tmp), TCR_EL1 decoder, RAM aligner, render & CNTVCT_EL0 guards
-│   ├── henge_txm_jit.{h,c}         # TXM [4GiB, 64GiB) VA validator, 0x69 blessing, P_TRACED vs CS_DEBUGGED, MAP_MEM_NAMED_CREATE RAM
+│   ├── henge_txm_jit.{h,c}         # Dual-mode CLASSIC/TXM JIT, [4GiB, 64GiB) VA validator, 0x69 blessing, os_proc_available_memory(), LEDGER_NO_FOOTPRINT RAM
 │   ├── henge_brk.S                 # ARM64 brk #0x69 & brk #0xf00d traps with .cfi unwind & BTI landing pads
-│   └── henge_virtio_gpu.{h,c}      # VirtIO-GPU 1.0 PCI (0x1af4:0x1050) 2D/3D VirGL control-queue & atomic FNV-1a suspend.state snapshots
+│   ├── henge_virtio_gpu.{h,c}      # VirtIO-GPU 1.0 PCI (0x1af4:0x1050) 2D KMS + VESA EDID 1.4, 3D VirGL control-queue & atomic FNV-1a suspend.state snapshots
+│   ├── henge_qcow2.{h,c}           # Streaming QCOW2 v2/v3 unpacker (zlib/zstd, Extended L2), magic-byte detector, El Torito 2048B ISO check, APFS clone/compact
+│   └── henge_cidata.{h,c}          # In-app 2 MiB FAT16 CIDATA NoCloud cloud-init seed generator (POSIX /bin/sh compatible)
 ├── tools/
 │   └── hvsparse.c                  # Upstream-compatible "HVSPARSE" streaming [offset, len] extent packer/unpacker
-├── ios/                            # XcodeGen iOS 26.0+ SwiftUI app + embedded JIT helper extension (links libhengelinux.a)
-│   ├── project.yml                 # Generates HengeLinux.xcodeproj with CFBundleDocumentTypes/UTIs, Files sharing, App Group, & nested JITExtension/Info.plist
-│   ├── HengeLinux.entitlements     # com.apple.developer.kernel.increased-memory-limit & group.io.hengelinux.shared
+├── ios/                            # XcodeGen iOS 18.0–27+ SwiftUI app + embedded JIT helper extension (links libhengelinux.a)
+│   ├── project.yml                 # Generates HengeLinux.xcodeproj (iOS 18.0+, .hvsparse/.qcow2/.iso/.raw/.fd UTIs, extended-virtual-addressing, -lzstd)
+│   ├── HengeLinux.entitlements     # increased-memory-limit, extended-virtual-addressing & group.io.hengelinux.shared
 │   ├── Resources/
-│   │   └── henge-jit.js            # StikDebug / LLDB GDB RSP brk #0x69 / #0xf00d TXM page-blessing script
+│   │   └── henge-jit.js            # StikDebug / LLDB GDB RSP brk #0x69 / #0xf00d TXM page-blessing script (CI also stages static aarch64 henge-guest-agent)
 │   ├── Sources/
+│   │   ├── VMStore.swift           # Multi-VM vm.json store, shared Documents/Firmware/, legacy ArchLinux migration, magic-byte importer & APFS clone/compact
 │   │   ├── HengeJITExtensionBridge.{h,mm} # ObjC++ NSExtension (com.apple.ar.viewer) XPC bridge with timeout/cancellation guards
-│   │   ├── HengeVMBridge.{h,mm}    # ObjC++/C++20 runtime bridge: HvWinVmConfig, async hv_sparse_unpack, CAMetalLayer, xHCI + PL011 + OSC 9999 HID, 10.0.2.4/.henge/
-│   │   ├── HengeLinuxApp.swift     # Launcher, editable Guest RAM (512-10240 MiB), fileImporter, Share Sheet .onOpenURL, container file list, async JIT boot, SafariSheetView
-│   │   ├── SessionView.swift       # Metal framebuffer host, serialized HID keyboard, clamshell trackpad & complete special-key strip (F1-F12, Shift/Ctrl/Alt/Super, Caps, etc.)
+│   │   ├── HengeVMBridge.{h,mm}    # ObjC++/C++20 per-VM bridge: HvWinVmConfig, async hvsparse/QCOW2 unpack, live KMS resize, 2048B ISO, VirtIO/xHCI/PL011
+│   │   ├── HengeLinuxApp.swift     # Multi-VM launcher, Quick Create/CIDATA wizard, editable Guest RAM, StikDebug deep-link, SafariSheetView
+│   │   ├── SessionView.swift       # Metal framebuffer host (live KMS resize), interactive ttyAMA0 tab, hold-capable HID keys, Display Paste & context menu
 │   │   ├── HingeSensorView.swift   # Runtime UIHingeInteraction detector + live angle observer + single-screen clamshell preview toggle
 │   │   ├── MetalLifecycleGuard.swift # Synchronous NotificationCenter observer + C pthread_mutex render fence
-│   │   ├── SelfDebugJITClient.swift  # P_TRACED / CS_DEBUGGED state machine, SideStore bundle ID resolver, pairing.plist sync, & container scanner
+│   │   ├── SelfDebugJITClient.swift  # Dual-mode CLASSIC/TXM JIT + selftest crash sentinel, LiveContainer detection, SideStore bundle ID & pairing sync
 │   │   └── HengeLinux-Bridging-Header.h
 │   └── JITExtension/
 │       ├── Info.plist              # Nested NSExtension dictionary (com.apple.ar.viewer)
 │       ├── HengeLinuxJITExtension.entitlements # Shared App Group entitlement
-│       └── JITExtensionHandler.swift # NSExtension request handler + pipelined 10.7.0.1 GDB RSP TXM blesser
-├── guest/                          # Native binary & scripts deployed inside the Arch Linux aarch64 guest
-│   ├── henge_dual_console.c        # Static C PL011->tty1 mirror, stateful OSC 9999 parser, HENGE_HID_READY handshake, & /dev/uinput Virtual Keyboard/Tablet bridge
-│   ├── henge-xdg-open              # Non-blocking double-fork dual-stack OAuth relay + EADDRINUSE + SafariSheet bridge
-│   └── setup-arch-bridge.sh        # Installs xdg-open handler, $BROWSER export, systemd-networkd VirtIO DHCP, and /mnt/ios-share
+│       └── JITExtensionHandler.swift # NSExtension request handler + iOS 18 attach-detach & iOS 26+ pipelined GDB RSP TXM blesser
+├── guest/                          # Native binaries & portable scripts deployed inside ARM64 Linux guests
+│   ├── henge_guest_agent.c         # Unified static aarch64-linux-musl multi-call agent (dual-console, xdg-open, clipboard)
+│   ├── install.sh                  # Strict-POSIX #!/bin/sh guest additions installer (systemd/OpenRC/runit) served at 10.0.2.4/.henge/guest-tools/
+│   ├── henge_dual_console.c        # Legacy Arch static C PL011->tty1 mirror, OSC 9999 parser & /dev/uinput HID bridge
+│   ├── henge-xdg-open              # Python fallback non-blocking dual-stack OAuth relay + SafariSheet bridge
+│   └── setup-arch-bridge.sh        # Legacy Arch setup script for prebuilt images
 ├── scripts/
 │   ├── sync_upstream.sh            # Initializes/fetches ammaarreshi/WindowsiOS and runs apply_upstream_patches.py
-│   ├── apply_upstream_patches.py   # Idempotently patches share.c (<104B sun_path), fb_metal.m, audio_mac.c, jit_region.c, sysreg.c, translate.c, dispatch.c
-│   ├── build_ios_deps.sh           # Cross-compiles iOS static deps with /opt/homebrew vs /usr/local detection
+│   ├── apply_upstream_patches.py   # Idempotently patches share.c, fb_metal.m, fb_display.c, audio_mac.c, jit_region.c, sysreg.c, translate.c (commpage check), dispatch.c, virtio_input/blk/gpu, xhci.c, acpi.c, winvirt.c, winvm.c
+│   ├── build_ios_deps.sh           # Cross-compiles iOS 18.0+ arm64 static deps (libffi, glib, libslirp, libintl, libpcre2-8, libzstd)
+│   ├── build_guest_image.sh        # Parameterized multi-distro image builder (arch, debian, alpine, void)
 │   ├── build_prebuilt_archlinux_arm64.sh # Headless GPT+FAT32 ESP+ext4 Arch Linux ARM64 rootfs & hvsparse image builder (< 2 GiB)
 │   └── provision_archlinux_arm64.sh # Interactive QEMU virt + EDK2 + NVMe Archboot AArch64 installer and hvsparse packer
 ├── tests/
-│   └── test_core.c                 # Unit tests for iOS sandbox sun_path, MMU granules, RAM, render lock, TXM JIT, VirtIO-GPU, & snapshots
+│   └── test_core.c                 # Unit tests for sun_path, MMU granules, RAM, render lock, JIT, VirtIO-GPU 2D/3D/EDID, QCOW2 (zlib/zstd/ExtL2), ISO 2048B, CIDATA & console
 ├── docs/
 │   ├── RESEARCH.md                 # Deep technical review of WindowsiOS and 6 Linux-on-iOS architectures
-│   └── SETUP.md                    # Step-by-step SideStore/AltStore, StikDebug Assign Script, & guest artifact setup guide
+│   └── SETUP.md                    # Step-by-step SideStore/AltStore, StikDebug, multi-distro QCOW2/ISO/CIDATA & troubleshooting guide
 └── .github/workflows/
-    ├── ci.yml                      # Least-privilege Linux unit tests + Xcode 26 macOS unsigned .ipa build & latest-ipa release
-    └── prebuilt-guest-image.yml    # Automated ubuntu-24.04-arm builder publishing code.fd, vars.fd, & archlinux.hvsparse to latest-ipa
+    ├── ci.yml                      # Linux unit tests (zstd+musl), static aarch64 guest agent build, macOS iOS 18.0 .ipa build & Nightly release
+    ├── prebuilt-guest-image.yml    # Parameterized ubuntu-24.04-arm guest builder (arch/debian/alpine/void) publishing to Nightly (latest-ipa)
+    └── release.yml                 # Tag-triggered versioned GitHub Pre-Release pipeline (v0.x.y)
 ```
 
 ---

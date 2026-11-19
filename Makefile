@@ -35,8 +35,17 @@ $(TLB_STAMP): | $(BUILD_DIR)
 HOST_SRCS := host/henge_platform.c host/henge_txm_jit.c host/henge_virtio_gpu.c host/henge_qcow2.c host/henge_cidata.c
 HOST_ASM  := $(if $(filter aarch64 arm64,$(UNAME_M)),host/henge_brk.S,)
 
+HOST_HAVE_ZSTD := $(shell pkg-config --exists libzstd 2>/dev/null && echo 1 || echo 0)
+ifeq ($(HOST_HAVE_ZSTD),1)
+HOST_ZSTD_CFLAGS := -DHENGE_HAVE_ZSTD=1 $(shell pkg-config --cflags libzstd)
+HOST_ZSTD_LIBS   := $(shell pkg-config --libs libzstd)
+else
+HOST_ZSTD_CFLAGS :=
+HOST_ZSTD_LIBS   :=
+endif
+
 $(BUILD_DIR)/test_core: tests/test_core.c $(HOST_SRCS) $(HOST_ASM) $(TLB_STAMP) | $(BUILD_DIR)
-	$(CC) $(CFLAGS_COMMON) -pthread tests/test_core.c $(HOST_SRCS) $(HOST_ASM) -lz -o $(BUILD_DIR)/test_core
+	$(CC) $(CFLAGS_COMMON) $(HOST_ZSTD_CFLAGS) -pthread tests/test_core.c $(HOST_SRCS) $(HOST_ASM) -lz $(HOST_ZSTD_LIBS) -o $(BUILD_DIR)/test_core
 
 $(BUILD_DIR)/hvsparse: tools/hvsparse.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS_COMMON) tools/hvsparse.c -o $(BUILD_DIR)/hvsparse
@@ -119,8 +128,9 @@ UPSTREAM_ALL_OBJS  := \
 
 ifeq ($(UNAME_S),Darwin)
 IOS_SDK := $(shell xcrun --sdk iphoneos --show-sdk-path)
+IOS_ZSTD_CFLAGS := $(if $(wildcard $(UPSTREAM_DIR)/ios/deps/include/zstd.h),-DHENGE_HAVE_ZSTD=1 -I$(UPSTREAM_DIR)/ios/deps/include,)
 IOS_BASE := -O2 -arch arm64 -mios-version-min=$(IOS_MIN_VERSION) -isysroot $(IOS_SDK) -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost -Werror=implicit-function-declaration -Werror=incompatible-pointer-types
-IOS_CFLAGS := -std=c11 -Wall -Wextra -Werror $(IOS_BASE)
+IOS_CFLAGS := -std=c11 -Wall -Wextra -Werror $(IOS_BASE) $(IOS_ZSTD_CFLAGS)
 IOS_UP_CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers $(IOS_BASE)
 ENG_INC := -I$(UPSTREAM_DIR)/core -I$(UPSTREAM_DIR)/host -I$(UPSTREAM_DIR)/devices -I$(UPSTREAM_DIR)/ios/deps/include -I$(UPSTREAM_DIR)/ios/deps/include/slirp -I$(UPSTREAM_DIR)/ios/deps/include/glib-2.0 -I$(UPSTREAM_DIR)/ios/deps/lib/glib-2.0/include
 

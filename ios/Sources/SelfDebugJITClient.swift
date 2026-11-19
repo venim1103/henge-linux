@@ -98,6 +98,7 @@ final class SelfDebugJITClient: ObservableObject {
     @Published private(set) var containerFiles: [ContainerFileEntry] = []
 
     static let jitStrategyDefaultsKey: String = "jitStrategyOverride"
+    nonisolated static let jitSelftestInProgressKey: String = "jitSelftestInProgress"
     static let defaultJitPoolMiB: Int = 384
     static let defaultAppGroupIdentifier: String = "group.io.hengelinux.shared"
     static let defaultExtensionIdentifier: String = "io.hengelinux.app.jit-extension"
@@ -167,11 +168,24 @@ final class SelfDebugJITClient: ObservableObject {
     }
 
     init() {
-        let savedRaw = UserDefaults.standard.integer(forKey: Self.jitStrategyDefaultsKey)
-        let savedStrategy = JitStrategyOverride(rawValue: savedRaw) ?? .auto
+        let defaults = UserDefaults.standard
+        let savedRaw = defaults.integer(forKey: Self.jitStrategyDefaultsKey)
+        var savedStrategy = JitStrategyOverride(rawValue: savedRaw) ?? .auto
+        var crashedPreviousSelftest = false
+        if defaults.bool(forKey: Self.jitSelftestInProgressKey) {
+            defaults.set(false, forKey: Self.jitSelftestInProgressKey)
+            if savedStrategy == .auto && henge_ios_major_version() >= 26 {
+                savedStrategy = .txmBroker
+                defaults.set(savedStrategy.rawValue, forKey: Self.jitStrategyDefaultsKey)
+                crashedPreviousSelftest = true
+            }
+        }
         self.jitStrategy = savedStrategy
         henge_jit_set_policy(savedStrategy.cPolicy)
         henge_jit_install_trap_guard()
+        if crashedPreviousSelftest {
+            extensionDiagnostic = "Previous JIT selftest terminated unexpectedly; auto-escalated to TXM Broker mode."
+        }
         bootstrapSandboxFolders()
         syncPairingRecordToAppGroup()
         refreshFileStatus()
@@ -601,7 +615,12 @@ final class SelfDebugJITClient: ObservableObject {
             var pool = HengeJitPool()
             let attempts = max(1, maxAttempts)
             for idx in 0..<attempts {
-                if henge_jit_acquire_pool(poolBytes, true, &pool) {
+                let defaults = UserDefaults.standard
+                defaults.set(true, forKey: Self.jitSelftestInProgressKey)
+                defaults.synchronize()
+                let ok = henge_jit_acquire_pool(poolBytes, true, &pool)
+                defaults.set(false, forKey: Self.jitSelftestInProgressKey)
+                if ok {
                     return PoolAcquireProbeResult(
                         acquired: true,
                         poolMiB: Int(pool.size / (1024 * 1024)),

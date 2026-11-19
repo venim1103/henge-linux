@@ -356,11 +356,38 @@ static int serve_henge(Conn *c, Request *r) {
     if (el0) e->ool[slow].join = e->n;
     return 1;
 }""",
-        """#include "henge_platform.h"
+        """#include <mach/mach_time.h>
+#include <stdio.h>
+#include "henge_platform.h"
 
 static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) {
     static int type = -1;
-    if (type < 0) type = *(volatile uint8_t *)(uintptr_t)COMMPAGE_TIMEBASE_TYPE;
+    if (type < 0) {
+        int t = *(volatile uint8_t *)(uintptr_t)COMMPAGE_TIMEBASE_TYPE;
+#if defined(__aarch64__) && defined(__APPLE__)
+        if (t == 1 || t == 2) {
+            uint64_t hw = 0;
+            if (t == 1) {
+                __asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(hw));
+            } else {
+                __asm__ volatile("mrs %0, cntpct_el0" : "=r"(hw));
+            }
+            uint64_t comm_off = *(volatile uint64_t *)(uintptr_t)COMMPAGE_TIMEBASE_OFFSET;
+            uint64_t mat = mach_absolute_time();
+            uint64_t calc = hw + comm_off;
+            uint64_t diff = (calc >= mat) ? (calc - mat) : (mat - calc);
+            if (diff > 24000000ULL) {
+                fprintf(stderr, "hengevm: commpage timebase sanity check failed (diff=%llu), falling back to hv_counter()\\n",
+                        (unsigned long long)diff);
+                t = 0;
+            }
+        } else if (t != 0) {
+            fprintf(stderr, "hengevm: unexpected commpage timebase type=%d, falling back to hv_counter()\\n", t);
+            t = 0;
+        }
+#endif
+        type = t;
+    }
     if (type == 0) return 0; /* the kernel's own path: leave it to the helper */
     int rt = insn & 0x1f;
     if (rt == 31) return 1;
@@ -616,6 +643,36 @@ void hv_acpi_build_and_register(HvFwCfg *fw, int ncpus, uint64_t ram_size, int s
     for (int i = 0; i < ntbls; i++) {""",
     )
 
+    virtio_blk_h = upstream / "devices/virtio_blk.h"
+    patch_file(
+        virtio_blk_h,
+        "hv_virtio_blk_set_next_blk_size",
+        "HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int apple_variant);",
+        """HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int apple_variant);
+void hv_virtio_blk_set_next_blk_size(uint32_t blk_size);""",
+    )
+    virtio_blk_c = upstream / "devices/virtio_blk.c"
+    patch_file(
+        virtio_blk_c,
+        "g_next_vblk_size",
+        "HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int apple_variant) {",
+        """static uint32_t g_next_vblk_size = 512u;
+
+void hv_virtio_blk_set_next_blk_size(uint32_t blk_size) {
+    g_next_vblk_size = (blk_size == 2048u || blk_size == 4096u) ? blk_size : 512u;
+}
+
+HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int apple_variant) {""",
+    )
+    patch_file(
+        virtio_blk_c,
+        "uint32_t blk_size = g_next_vblk_size;",
+        "    uint32_t blk_size = 512, apple_type = (uint32_t)apple_variant;",
+        """    uint32_t blk_size = g_next_vblk_size;
+    g_next_vblk_size = 512u;
+    uint32_t apple_type = (uint32_t)apple_variant;""",
+    )
+
     winvirt_h = upstream / "devices/winvirt.h"
     patch_file(
         winvirt_h,
@@ -637,11 +694,13 @@ void hv_acpi_build_and_register(HvFwCfg *fw, int ncpus, uint64_t ram_size, int s
     )
     patch_file(
         winvirt_h,
-        "hv_winvirt_set_virtio_gpu",
+        "hv_winvirt_set_virtio_gpu_size",
         "void hv_winvirt_power_button(HvWinVirt *b);",
         """void hv_winvirt_power_button(HvWinVirt *b);
 void hv_winvirt_set_device_flags(int enable_xhci, int enable_virtio_input, int enable_acpi_spcr, int disk1_as_virtio_blk);
-void hv_winvirt_set_virtio_gpu(int enable);""",
+void hv_winvirt_set_disk1_blk_size(uint32_t blk_size);
+void hv_winvirt_set_virtio_gpu(int enable);
+void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t height);""",
     )
 
     winvirt_c = upstream / "devices/winvirt.c"
@@ -888,6 +947,7 @@ static int g_wv_enable_xhci = 1;
 static int g_wv_enable_virtio_input = 1;
 static int g_wv_enable_acpi_spcr = 1;
 static int g_wv_disk1_virtio_blk = 0;
+static uint32_t g_wv_disk1_blk_size = 512u;
 static int g_wv_enable_virtio_gpu = 0;
 
 void hv_winvirt_set_device_flags(int enable_xhci, int enable_virtio_input, int enable_acpi_spcr, int disk1_as_virtio_blk) {
@@ -897,8 +957,43 @@ void hv_winvirt_set_device_flags(int enable_xhci, int enable_virtio_input, int e
     g_wv_disk1_virtio_blk = disk1_as_virtio_blk ? 1 : 0;
 }
 
+void hv_winvirt_set_disk1_blk_size(uint32_t blk_size) {
+    g_wv_disk1_blk_size = (blk_size == 2048u || blk_size == 4096u) ? blk_size : 512u;
+}
+
 void hv_winvirt_set_virtio_gpu(int enable) {
     g_wv_enable_virtio_gpu = enable ? 1 : 0;
+}
+
+void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t height) {
+    if (!b || !b->m || !b->vgpu || !b->vgpu->gpu) return;
+    if (width < 320u) width = 320u;
+    if (width > 4096u) width = 4096u;
+    if (height < 240u) height = 240u;
+    if (height > 4096u) height = 4096u;
+    width &= ~1u;
+    height &= ~1u;
+
+    hv_dev_lock(b->m);
+    HvVirtioGpuPci *g = b->vgpu;
+    uint32_t cur_w = 0u, cur_h = 0u;
+    bool cur_en = false;
+    if (henge_virtio_gpu_get_display_info(g->gpu, 0u, &cur_w, &cur_h, &cur_en) == 0 &&
+        cur_en && cur_w == width && cur_h == height) {
+        hv_dev_unlock(b->m);
+        return;
+    }
+    if (henge_virtio_gpu_set_display_mode(g->gpu, 0u, width, height, true) == 0) {
+        uint32_t ev = 0u;
+        memcpy(&ev, g->vio.config, 4);
+        ev |= 1u; /* VIRTIO_GPU_EVENT_DISPLAY */
+        memcpy(g->vio.config, &ev, 4);
+        g->vio.config_gen++;
+        g->vio.isr |= 2u; /* VirtIO device configuration interrupt */
+        hv_pci_set_intx(&g->vio.pci, 1);
+    }
+    hv_dev_unlock(b->m);
+    hv_machine_kick_all(b->m);
 }
 
 static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
@@ -936,8 +1031,12 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
         b->vinput_tab = hv_virtio_input_create(m, b->pcie, HV_VINPUT_TABLET);
     }
     if (disk1) {
-        if (g_wv_disk1_virtio_blk) b->vblk1 = hv_virtio_blk_create(m, b->pcie, disk1, HV_VBLK_PLAIN);
-        else b->nvme1 = hv_nvme_create(m, b->pcie, disk1, "WIN11INST");
+        if (g_wv_disk1_virtio_blk) {
+            hv_virtio_blk_set_next_blk_size(g_wv_disk1_blk_size);
+            b->vblk1 = hv_virtio_blk_create(m, b->pcie, disk1, HV_VBLK_PLAIN);
+        } else {
+            b->nvme1 = hv_nvme_create(m, b->pcie, disk1, "WIN11INST");
+        }
     }
     if (g_wv_enable_virtio_gpu) {
         b->vgpu = henge_virtio_gpu_pci_create(m, b->pcie, b->fb);
@@ -947,7 +1046,7 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     winvm_h = upstream / "host/winvm.h"
     patch_file(
         winvm_h,
-        "HENGE_WINVM_HAS_V3_GPU",
+        "HENGE_WINVM_HAS_V4_RESIZE",
         """    int log;
     int stats_interval;
 } HvWinVmConfig;""",
@@ -957,23 +1056,37 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     int enable_virtio_input;  /* 1 = attach virtio-input keyboard + absolute tablet */
     int disable_acpi_spcr;    /* 1 = omit ACPI SPCR so Linux defaults /dev/console to tty0 */
     int disk1_virtio_blk;     /* 1 = expose disk1 as read-only virtio-blk instead of NVMe1 */
+    uint32_t disk1_blk_size;  /* 512 (default/isohybrid/CIDATA) or 2048 (pure El Torito ISO) */
     int enable_virtio_gpu;    /* 1 = attach PCIe virtio-gpu 2D KMS (0x1af4:0x1050) */
 } HvWinVmConfig;
 
 #define HENGE_WINVM_HAS_V2_FLAGS 1
-#define HENGE_WINVM_HAS_V3_GPU 1""",
+#define HENGE_WINVM_HAS_V3_GPU 1
+#define HENGE_WINVM_HAS_V4_RESIZE 1
+void hv_winvm_set_virtio_gpu_size(uint32_t width, uint32_t height);""",
     )
 
     winvm_c = upstream / "host/winvm.c"
     patch_file(
         winvm_c,
-        "hv_winvirt_set_virtio_gpu(c->enable_virtio_gpu);",
+        "hv_winvirt_set_disk1_blk_size(c->disk1_blk_size);",
         """    if (hv_winvirt_create(&board, &m, cpus, ncpus, ram_bytes, c->prealloc_ram, c->code_fd, c->vars_fd,
                           d0_ptr, d1_ptr, mac, c->enable_sound) != 0) {""",
         """    hv_winvirt_set_device_flags(!c->disable_xhci, c->enable_virtio_input, !c->disable_acpi_spcr, c->disk1_virtio_blk);
+    hv_winvirt_set_disk1_blk_size(c->disk1_blk_size);
     hv_winvirt_set_virtio_gpu(c->enable_virtio_gpu);
     if (hv_winvirt_create(&board, &m, cpus, ncpus, ram_bytes, c->prealloc_ram, c->code_fd, c->vars_fd,
                           d0_ptr, d1_ptr, mac, c->enable_sound) != 0) {""",
+    )
+    patch_file(
+        winvm_c,
+        "void hv_winvm_set_virtio_gpu_size(",
+        "void hv_winvm_power_button(void) {",
+        """void hv_winvm_set_virtio_gpu_size(uint32_t width, uint32_t height) {
+    hv_winvirt_set_virtio_gpu_size(&board, width, height);
+}
+
+void hv_winvm_power_button(void) {""",
     )
     patch_file(
         winvm_c,

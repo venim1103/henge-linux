@@ -36,6 +36,8 @@ NS_SWIFT_UI_ACTOR
 /// Attach or detach the `MetalDisplaySurfaceView` `CAMetalLayer` for UEFI GOP / framebuffer output.
 - (void)attachDisplayLayer:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(attachDisplayLayer(_:));
 - (void)detachDisplayLayerIfMatching:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(detachDisplayLayer(ifMatching:));
+/// Notify the 2D VirtIO-GPU KMS backend of viewport / orientation pixel-size changes.
+- (void)updateDisplaySizeWidth:(uint32_t)width height:(uint32_t)height NS_SWIFT_NAME(updateDisplaySize(width:height:));
 
 /// Unpack primary `.hvsparse` disk image into a raw APFS sparse image off the main thread.
 - (void)prepareDiskImageWithCompletion:(void (^)(BOOL success, NSError * _Nullable error))completion;

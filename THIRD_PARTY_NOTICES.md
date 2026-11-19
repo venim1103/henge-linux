@@ -17,6 +17,7 @@ To satisfy GPLv3 §6(d) and LGPLv2.1 §4(d) Corresponding Source requirements fo
 - **`libffi`** — **MIT** (foreign function interface runtime; pinned in `WindowsiOS@0071d6975287`).
 - **`PCRE2` (`libpcre2-8`)** — **BSD-3-Clause** (regular expression support for GLib; pinned in `WindowsiOS@0071d6975287`).
 - **`GNU gettext / libintl`** — **LGPL-2.1-or-later** (internationalization support for GLib; pinned in `WindowsiOS@0071d6975287`).
+- **`Zstandard` (`libzstd.a` `v1.5.7`, `https://github.com/facebook/zstd`)** — Dual-licensed **BSD-3-Clause / GPL-2.0** (QCOW2 `compression_type=1` Zstd cluster decompression; built from `v1.5.7` release tarball in `scripts/build_ios_deps.sh`).
 
 ## 3. Optional Self-Debugging & 3D Graphics Subsystems
 - **`StikJIT` / `StikDebug` (`https://github.com/StephenDev0/StikDebug`)** — **MPL-2.0** (compatible with `GPL-3.0-or-later` per MPL 2.0 §3.3; optional `StikJIT.xcframework` integration).

@@ -52,18 +52,15 @@ if [ -x ".upstream/WindowsiOS/scripts/build_ios_deps.sh" ]; then
     done
 
     if [ "$HAVE_ALL_CACHED" -eq 1 ] && [ "${FORCE_REBUILD_DEPS:-0}" != "1" ]; then
-        echo "[deps] Using cached iOS static dependencies in $UPSTREAM_DEPS"
-        ls -lh "$UPSTREAM_DEPS/lib"
-        exit 0
-    fi
-
-    PYTHON3_BIN="$(command -v python3)"
-    echo "[deps] Delegating to .upstream/WindowsiOS/scripts/build_ios_deps.sh (python3=$PYTHON3_BIN)"
-    (
-        cd .upstream/WindowsiOS
-        PATCHED_SCRIPT="scripts/.build_ios_deps.patched.sh"
-        trap 'rm -f "$PATCHED_SCRIPT"' EXIT
-        python3 -c '
+        echo "[deps] Using cached upstream iOS static dependencies in $UPSTREAM_DEPS"
+    else
+        PYTHON3_BIN="$(command -v python3)"
+        echo "[deps] Delegating to .upstream/WindowsiOS/scripts/build_ios_deps.sh (python3=$PYTHON3_BIN)"
+        (
+            cd .upstream/WindowsiOS
+            PATCHED_SCRIPT="scripts/.build_ios_deps.patched.sh"
+            trap 'rm -f "$PATCHED_SCRIPT"' EXIT
+            python3 -c '
 from pathlib import Path
 import re
 import sys
@@ -80,20 +77,56 @@ txt = re.sub(r"-m(?:iphoneos|ios)-version-min=[0-9]+\.[0-9]+", f"-miphoneos-vers
 txt = re.sub(r"IPHONEOS_DEPLOYMENT_TARGET=[0-9]+\.[0-9]+", f"IPHONEOS_DEPLOYMENT_TARGET={ios_min}", txt)
 Path(sys.argv[3]).write_text(txt, encoding="utf-8")
 ' "$PYTHON3_BIN" "$BREW_PREFIX/bin" "$PATCHED_SCRIPT" "$IOS_MIN_VERSION"
-        chmod +x "$PATCHED_SCRIPT"
-        IPHONEOS_DEPLOYMENT_TARGET="$IOS_MIN_VERSION" BREW_PREFIX="$BREW_PREFIX" "./$PATCHED_SCRIPT"
+            chmod +x "$PATCHED_SCRIPT"
+            IPHONEOS_DEPLOYMENT_TARGET="$IOS_MIN_VERSION" BREW_PREFIX="$BREW_PREFIX" "./$PATCHED_SCRIPT"
 
-        # Ensure GLib headers (if built in sysroot) are staged alongside slirp headers
-        if [ -d "work/ios_deps_build/sysroot/include/glib-2.0" ]; then
-            rm -rf "ios/deps/include/glib-2.0"
-            cp -R "work/ios_deps_build/sysroot/include/glib-2.0" "ios/deps/include/glib-2.0"
+            # Ensure GLib headers (if built in sysroot) are staged alongside slirp headers
+            if [ -d "work/ios_deps_build/sysroot/include/glib-2.0" ]; then
+                rm -rf "ios/deps/include/glib-2.0"
+                cp -R "work/ios_deps_build/sysroot/include/glib-2.0" "ios/deps/include/glib-2.0"
+            fi
+            if [ -d "work/ios_deps_build/sysroot/lib/glib-2.0/include" ]; then
+                mkdir -p "ios/deps/lib/glib-2.0"
+                rm -rf "ios/deps/lib/glib-2.0/include"
+                cp -R "work/ios_deps_build/sysroot/lib/glib-2.0/include" "ios/deps/lib/glib-2.0/include"
+            fi
+        )
+    fi
+
+    # Cross-compile static libzstd.a (v1.5.7) for Zstd-compressed QCOW2 cluster support
+    ZSTD_VER="1.5.7"
+    ZSTD_URL="https://github.com/facebook/zstd/releases/download/v${ZSTD_VER}/zstd-${ZSTD_VER}.tar.gz"
+    if [ ! -s "$UPSTREAM_DEPS/lib/libzstd.a" ] || [ ! -s "$UPSTREAM_DEPS/include/zstd.h" ] || [ ! -s "$UPSTREAM_DEPS/include/zstd_errors.h" ] || [ "${FORCE_REBUILD_DEPS:-0}" = "1" ]; then
+        echo "[deps] Cross-compiling libzstd ${ZSTD_VER} for arm64-apple-ios${IOS_MIN_VERSION}"
+        ZSTD_WORK=".upstream/WindowsiOS/work/zstd_ios_build"
+        mkdir -p "$ZSTD_WORK" "$UPSTREAM_DEPS/lib" "$UPSTREAM_DEPS/include"
+        ZSTD_TAR="$ZSTD_WORK/zstd-${ZSTD_VER}.tar.gz"
+        if [ ! -s "$ZSTD_TAR" ]; then
+            curl -fL --retry 3 -o "${ZSTD_TAR}.part" "$ZSTD_URL"
+            mv "${ZSTD_TAR}.part" "$ZSTD_TAR"
         fi
-        if [ -d "work/ios_deps_build/sysroot/lib/glib-2.0/include" ]; then
-            mkdir -p "ios/deps/lib/glib-2.0"
-            rm -rf "ios/deps/lib/glib-2.0/include"
-            cp -R "work/ios_deps_build/sysroot/lib/glib-2.0/include" "ios/deps/lib/glib-2.0/include"
-        fi
-    )
+        rm -rf "$ZSTD_WORK/zstd-${ZSTD_VER}"
+        tar -xzf "$ZSTD_TAR" -C "$ZSTD_WORK"
+        SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+        NCPU="$(sysctl -n hw.ncpu)"
+        make -C "$ZSTD_WORK/zstd-${ZSTD_VER}/lib" -j"$NCPU" \
+            CC="$(xcrun --sdk iphoneos --find clang)" \
+            AR="$(xcrun --sdk iphoneos --find ar)" \
+            CFLAGS="-O2 -arch arm64 -target arm64-apple-ios${IOS_MIN_VERSION} -miphoneos-version-min=${IOS_MIN_VERSION} -isysroot ${SDKROOT} -DZSTD_DISABLE_ASM" \
+            ZSTD_LIB_COMPRESSION=0 \
+            ZSTD_LIB_DICTBUILDER=0 \
+            ZSTD_LIB_DEPRECATED=0 \
+            ZSTD_LEGACY_SUPPORT=0 \
+            libzstd.a
+        cp "$ZSTD_WORK/zstd-${ZSTD_VER}/lib/libzstd.a" "$UPSTREAM_DEPS/lib/libzstd.a"
+        cp "$ZSTD_WORK/zstd-${ZSTD_VER}/lib/zstd.h" "$UPSTREAM_DEPS/include/zstd.h"
+        cp "$ZSTD_WORK/zstd-${ZSTD_VER}/lib/zstd_errors.h" "$UPSTREAM_DEPS/include/zstd_errors.h"
+    else
+        echo "[deps] Using cached libzstd.a in $UPSTREAM_DEPS/lib"
+    fi
+
+    REQUIRED_LIBS+=(libzstd.a)
+    REQUIRED_HDRS+=("$UPSTREAM_DEPS/include/zstd.h" "$UPSTREAM_DEPS/include/zstd_errors.h")
 
     for lib in "${REQUIRED_LIBS[@]}"; do
         if [ ! -s "$UPSTREAM_DEPS/lib/$lib" ]; then
@@ -107,6 +140,7 @@ Path(sys.argv[3]).write_text(txt, encoding="utf-8")
             exit 1
         fi
     done
+    ls -lh "$UPSTREAM_DEPS/lib"
 else
     echo "[deps] Upstream not yet synced; run ./scripts/sync_upstream.sh first."
     exit 1
