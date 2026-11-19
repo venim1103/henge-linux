@@ -81,7 +81,8 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `f0b60bd` | Added start-screen **About** tab (`TabView` **Machines** / **About** in `ios/Sources/HengeLinuxApp.swift`) displaying version, build channel (`Nightly` / `Release`), short Git commit hash, build timestamp, copy button, and runtime capabilities (`HengeGitCommit`, `HengeBuildChannel`, `HengeBuildDate` stamped in `ios/project.yml` & `.github/workflows/{ci,release}.yml`; `CI Run #44584347873` green) |
 | `c755f30` | Added host-paced key-repeat pulses (`350 ms` initial delay, `~15.4 Hz`, `20 ms` dwell) for held repeatable special keys in `ios/Sources/SessionView.swift` and advertised `HV_EV_REP` (`0x14`) on `virtio-input` keyboard in `scripts/apply_upstream_patches.py` (`CI Run #44588286891` green) |
 | `2581491` | Prepped `v0.2.2` user-facing documentation in `README.md`, `docs/SETUP.md`, and `HANDOVER.md` |
-| `HEAD` | Prepared `v0.2.2` release: bumped `MARKETING_VERSION` to `0.2.2` (`CURRENT_PROJECT_VERSION: 4`) in `ios/project.yml`, updated `.github/workflows/release.yml` default tag (`v0.2.2`) and release highlights, and synced `docs/SETUP.md` and `HANDOVER.md` |
+| `adf7159` | Prepared `v0.2.2` release: bumped `MARKETING_VERSION` to `0.2.2` (`CURRENT_PROJECT_VERSION: 4`) in `ios/project.yml`, updated `.github/workflows/release.yml` default tag (`v0.2.2`) and release highlights, and synced `docs/SETUP.md` and `HANDOVER.md` |
+| `HEAD` | Fixed Darwin `COMMPAGE_TIMEBASE_TYPE == 3` (`S3_4_C15_C10_6`) & `type == 2` (`CNTVCTSS_EL0`) sanity check in `scripts/apply_upstream_patches.py` so Apple Silicon iPhones keep fast inline `CNTVCT_EL0` JIT emission instead of falling back to `hv_counter()` (`CI Run #44592177365` green; ready for `v0.2.2` tag release) |
 
 ---
 

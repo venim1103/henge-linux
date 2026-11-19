@@ -365,20 +365,22 @@ static int translate_counter(Emit *e, uint32_t insn, uint64_t pc, int physical) 
     if (type < 0) {
         int t = *(volatile uint8_t *)(uintptr_t)COMMPAGE_TIMEBASE_TYPE;
 #if defined(__aarch64__) && defined(__APPLE__)
-        if (t == 1 || t == 2) {
+        if (t == 1 || t == 2 || t == 3) {
             uint64_t hw = 0;
             if (t == 1) {
                 __asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(hw));
+            } else if (t == 2) {
+                __asm__ volatile("mrs %0, S3_3_C14_C0_6" : "=r"(hw)); /* CNTVCTSS_EL0 */
             } else {
-                __asm__ volatile("mrs %0, cntpct_el0" : "=r"(hw));
+                __asm__ volatile("mrs %0, S3_4_C15_C10_6" : "=r"(hw)); /* Apple timebase (0xd53cfac0) */
             }
             uint64_t comm_off = *(volatile uint64_t *)(uintptr_t)COMMPAGE_TIMEBASE_OFFSET;
             uint64_t mat = mach_absolute_time();
             uint64_t calc = hw + comm_off;
             uint64_t diff = (calc >= mat) ? (calc - mat) : (mat - calc);
             if (diff > 24000000ULL) {
-                fprintf(stderr, "hengevm: commpage timebase sanity check failed (diff=%llu), falling back to hv_counter()\\n",
-                        (unsigned long long)diff);
+                fprintf(stderr, "hengevm: commpage timebase sanity check failed (type=%d diff=%llu), falling back to hv_counter()\\n",
+                        t, (unsigned long long)diff);
                 t = 0;
             }
         } else if (t != 0) {
