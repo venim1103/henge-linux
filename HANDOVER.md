@@ -66,7 +66,8 @@ All foundational documentation, cross-platform C/ASM host primitives, `hvsparse`
 | `09c3525`–`b90a8f0` | Added `/dev/uinput` HID bridge prototype and expanded `SessionView` special keys (`F1`–`F12`, `Home`/`End`/`PgUp`/`PgDn`/`Ins`/`Prnt`) |
 | `2852a83` | Replaced Python guest console/uinput scripts with native static C `guest/henge_dual_console.c`, gated host OSC `9999` emission on `HENGE_HID_READY`, added `F5`–`F11`/`Insert` PL011 sequences, and completed `SessionView` special-key strip |
 | `1b95f25`–`7319ac4` | Replaced `agetty`/`login` child spawn in `guest/henge_dual_console.c` with direct interactive login `/bin/bash` (eliminating the 1.8 s `serial-getty@ttyAMA0` respawn loop), guarded `customGuestRamMiB` updates in `HengeLinuxApp.swift`, and fixed `-Werror=unused-result` on `chdir` — verified working on physical iPhone hardware |
-| `HEAD` | Synchronized `README.md`, `docs/SETUP.md`, `PLAN.md`, `HANDOVER.md`, and in-app `README-HengeLinux.txt` / `README-ArchLinux.txt` sandbox help files across all 43 repository files ahead of `v0.1.0` pre-release |
+| `4f4bb2b`–`6285cae` | Synchronized all repository docs and in-app sandbox help files (`4f4bb2b`), set `MARKETING_VERSION: "0.1.0"`, and added tag-triggered `.github/workflows/release.yml` pre-release pipeline (`6285cae`) |
+| `HEAD` | Upgraded `PLAN.md` with **Phase 6 (`v0.2.0` Target): Multi-Distro ARM64 Linux & iOS 18.0–27+ Generalization** (Milestones 6.1–6.5 / Phases A–E and Section 7 full technical design) |
 
 ---
 
@@ -299,6 +300,6 @@ A complete 5-batch audit across all 42 repository files plus physical iPhone boo
 
 ## 6. Starter Prompt for a New Chat Window
 
-Copy and paste the following into your next session to cut the `v0.1.0` pre-release or begin 3D VirGL PCIe bus bring-up:
+Copy and paste the following into your next session to begin **Phase 6 (`v0.2.0` Target: Multi-Distro ARM64 Linux & iOS 18.0–27+ Support)**:
 
-> `@github-code-editor @GitHubCodeEditor Open venim1103/henge-linux and read HANDOVER.md, PLAN.md, and docs/SETUP.md. Milestones 5.1–5.11 are landed and verified on physical iPhone hardware (interactive Arch Linux root console, native static C guest/henge_dual_console.c /dev/uinput Virtual Keyboard & Tablet bridge, user-editable Guest RAM, full special-key strip, and one-command henge-install-desktop LXQt + SDDM on vt2). Next, let's: (1) cut pre-release v0.1.0 with release notes, or (2) wire PCIe device 0x1af4:0x1050 (virtio-gpu-gl-pci) MMIO/virtqueue routing into scripts/apply_upstream_patches.py (devices/pcie.c + host/winvm.c) for 3D VirGL acceleration.`
+> `@github-code-editor @GitHubCodeEditor Open venim1103/henge-linux and read PLAN.md (Phase 6 & §7), HANDOVER.md, and ios/project.yml. v0.1.0 is ready for release. Let's start Milestone 6.1 (Phase A — iOS 18.0 Deployment Floor & Unified Dual-Mode JIT): (1) lower ios/project.yml, Makefile, and scripts/build_ios_deps.sh to IOS_MIN_VERSION ?= 18.0 and verify LC_BUILD_VERSION minos 18.0 in CI, (2) add extended-virtual-addressing to ios/HengeLinux.entitlements, (3) implement HENGE_JIT_MODE_CLASSIC alongside TXM_BROKER in host/henge_txm_jit.{h,c} and relax hv_jit_region_attach() in scripts/apply_upstream_patches.py, and (4) add stikdebug://enable-jit deep-linking, LC_HOME_PATH LiveContainer detection, and os_proc_available_memory() adaptive RAM/JIT sizing in Swift.`

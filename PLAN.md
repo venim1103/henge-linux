@@ -2,8 +2,8 @@
 
 **Repository:** `venim1103/henge-linux`
 **License:** GNU General Public License v3.0 or later (`GPL-3.0-or-later`)
-**Target Platforms:** Non-jailbroken iOS 26.0 – iOS 27+ (`arm64`, single-screen iPhones/iPads and foldable iPhone Duo) without `Hypervisor.framework`
-**Target Guest:** Mainline `aarch64` Arch Linux (Archboot AArch64 / Collabora-Valve Holo Core AArch64)
+**Target Platforms:** Non-jailbroken iOS 18.0 – iOS 27+ (`arm64`, single-screen iPhones/iPads and foldable iPhone Duo) without `Hypervisor.framework` *(iOS 26+ shipped in `v0.1.0`; iOS 18.0+ dual-mode JIT targeted in Phase 6 / `v0.2.0`)*
+**Target Guest:** Any mainline `aarch64` Linux distribution — Arch Linux (`v0.1.0` baseline), Debian, Ubuntu, Fedora, Alpine, openSUSE, Void, and standard ARM64 Live/Netinstall ISOs (Phase 6)
 
 ---
 
@@ -160,6 +160,14 @@ Every code change in `henge-linux` must preserve these verified platform invaria
   - Replaced Python guest scripts with a zero-dependency static ARM64 C binary (`guest/henge_dual_console.c`) that launches a direct interactive root login shell (`/bin/bash`), runs a stateful OSC `9999` parser, announces `HENGE_HID_READY` (gated in `host/henge_platform.{h,c}` + `HengeVMBridge.mm` so UEFI and older images never receive OSC bytes), and creates separate `/dev/uinput` `HengeLinux Virtual Keyboard` and `HengeLinux Virtual Tablet` devices for full X11/LXQt mouse, touch, scroll, and keyboard input even with `usbcore.nousb`.
   - Expanded `SessionView.swift`'s modifier strip to include all special keys (`Esc`, `Tab`, `Bck`, `Del`, `Shift`, `Ctrl`, `Alt`, `Super`, `Caps`, arrows, `Home`, `End`, `PgUp`, `PgDn`, `Ins`, `Prnt`, `ScrLk`, `Pause`, `Menu`, `F1`–`F12`, `Paste`, `CAD`) plus full `F1`–`F12` / `Insert` PL011 escape sequences in `HengeVMBridge.mm`.
 
+### Phase 6: Multi-Distro ARM64 Linux & iOS 18.0–27+ Generalization (`v0.2.0` Target) — **PLANNED**
+*(Full architectural specification, coupling audit, and cross-matrix verification criteria in Section 7 below.)*
+- [ ] **Milestone 6.1 (Phase A) — iOS 18.0 Deployment Floor & Unified Dual-Mode JIT:** Lower `ios/project.yml`, `Makefile`, and `scripts/build_ios_deps.sh` to `IOS_MIN_VERSION ?= 18.0` (`LC_BUILD_VERSION` verified); add `com.apple.developer.kernel.extended-virtual-addressing` + CI ad-hoc entitlement signing; implement `HENGE_JIT_MODE_CLASSIC` (`CS_DEBUGGED` + `vm_remap` + `vm_protect(RX)` + mandatory `verify_rx_rw_selftest()`) alongside `HENGE_JIT_MODE_TXM_BROKER` (making `brk #0x69` optional for stock StikDebug `universal.js`); add `stikdebug://enable-jit` deep-linking, `LC_HOME_PATH` LiveContainer detection, `os_proc_available_memory()` live Jetsam sizing, adaptive `192`/`256`/`384 MiB` JIT pools, and iOS 18 attach-detach XPC mode in `JITExtensionHandler.swift`.
+- [ ] **Milestone 6.2 (Phase B) — Multi-VM Architecture, Dormant VirtIO Wiring & Interactive Serial Terminal:** Refactor `HengeVMBridge.{h,mm}`, `SelfDebugJITClient.swift`, and `HengeLinuxApp.swift` around `Documents/Firmware/` and `Documents/Machines/<UUID>/vm.json` with automatic legacy `ArchLinux` migration; attach already-compiled upstream `devices/virtio_input.c` (`00:05.0`/`00:06.0`) and secondary read-only `devices/virtio_blk.c` (`00:07.0`) onto the GPEX bus; add per-VM `enable_xhci` (`false` default for Linux, eliminating the 90 s stall with zero guest cmdline edits) and `enable_acpi_spcr` toggles; upgrade `DebugConsoleSheetView` into an interactive VT100 `ttyAMA0` terminal tab in `SessionView`.
+- [ ] **Milestone 6.3 (Phase C) — Streaming QCOW2 Unpacker, `CIDATA` NoCloud Seeder & Live ISO Booting:** Implement in-process streaming C QCOW2 v2/v3 unpacker (`host/henge_qcow2.{h,c}`, zlib/zstd + Extended L2 -> APFS sparse raw) with magic-byte importer detection (`"HVSPARSE"`, `"QFI\xfb"`, `"CD001"`); build an in-app 2 MiB FAT16 `CIDATA` seed generator and Quick Create wizard (Debian 13, Ubuntu 24.04/26.04, Fedora, Alpine, openSUSE); add APFS `clonefile` VM cloning, `F_PUNCHHOLE` disk compaction, and 2048-byte El Torito / minimal `virtio-scsi` CD-ROM support for stock ARM64 ISOs.
+- [ ] **Milestone 6.4 (Phase D) — Portable `musl` Guest Additions & Parameterized CI Distro Profiles:** Consolidate `henge_dual_console.c`, `henge-xdg-open`, and clipboard sync into a single static `aarch64-linux-musl` multi-call binary (`henge-guest-agent`) paired with a strict-POSIX `#!/bin/sh` `install.sh` (`systemd`, `OpenRC`, `runit`), served offline via `http://10.0.2.4/.henge/guest-tools/`; refactor `scripts/build_prebuilt_archlinux_arm64.sh` and `.github/workflows/prebuilt-guest-image.yml` into declarative distro profiles (Arch, Debian, Alpine, Void).
+- [ ] **Milestone 6.5 (Phase E) — 2D-First `virtio-gpu` KMS Display & Linux `xhci.c` Hardening:** Attach `host/henge_virtio_gpu.c` (`0x1af4:0x1050`) onto PCIe slot `00:08.0` in 2D KMS + EDID mode backed by `devices/fb_metal.m` for native `/dev/dri/card0` `modesetting` and dynamic iPhone/iPad/USB-C resolutions (ahead of `libvirglrenderer.a` + `ANGLE` 3D); trace and patch `devices/xhci.c` for Linux `xhci_hcd` 1.1+ ring semantics.
+
 ---
 
 ## 5. Build & Verification Matrix
@@ -230,3 +238,85 @@ To eliminate manual QEMU provisioning on a desktop computer, Milestones 5.6–5.
    - Installs Arch Linux ARM's native `systemd-bootaa64.efi` as `EFI/BOOT/BOOTAA64.EFI`, compiles the zero-dependency static ARM64 `guest/henge_dual_console.c` binary into `/usr/local/bin/henge-dual-console`, configures `/etc/fstab`, `/boot/loader/loader.conf` (`timeout 0`, `console-mode keep`), `/boot/loader/entries/arch.conf`, `/boot/startup.nsh`, `/etc/modules-load.d/uinput.conf`, `/etc/X11/xorg.conf.d/10-fbdev.conf`, `/etc/sddm.conf.d/hengelinux.conf`, `/usr/local/bin/henge-install-desktop`, and executes `guest/setup-arch-bridge.sh` inside the rootfs.
    - Runs a headless QEMU AArch64 ACPI 6.3 boot smoke test (`-machine virt,gic-version=3,acpi=on` with `00:01.0` `virtio-net-pci` and `00:02.0` `nvme` `WIN11IOS01` matching `HengeVM`) to verify UEFI -> `BOOTAA64.EFI` -> Linux kernel serial entry before packing `archlinux.img` into `archlinux.hvsparse`.
 3. **Release Publishing:** Uploads `code.fd`, `vars.fd`, and `archlinux.hvsparse` (plus `SHA256SUMS.txt`) to the rolling `latest-ipa` GitHub Pre-Release alongside `HengeLinux-unsigned.ipa`.
+
+---
+
+## 7. Phase 6 Technical Design: Multi-Distro ARM64 Linux & iOS 18.0–27+ (`v0.2.0`)
+
+An architectural audit of `main` (`v0.1.0`) established two key enablers: (1) the core ARM64-to-ARM64 DBT and Stage-1 software MMU (`core/translate.c`, `core/mmu.c`, `core/sysreg.c`) are already distribution-agnostic, and none of the six Swift UI files call compile-time iOS 26-only APIs (`UIHingeInteraction` is already dynamically guarded via `NSClassFromString`); (2) `Makefile` already compiles upstream `devices/virtio_input.c` and `devices/virtio_blk.c` into `libhengelinux.a`, awaiting PCIe bus attachment.
+
+### 7.1 Decoupling Inventory (Arch Linux & iOS 26+ Lock-Ins)
+
+| Layer / File | Current `v0.1.0` Coupling | Phase 6 Target Architecture |
+| :--- | :--- | :--- |
+| `ios/project.yml`, `Makefile`, `scripts/build_ios_deps.sh` | Hardcoded `deploymentTarget: "26.0"`, `-mios-version-min=26.0`, and iOS 26 static dep archives; UTIs limited to `.hvsparse`/`.fd`/`.img`. | Parameterize `IOS_MIN_VERSION ?= 18.0` across XcodeGen, `Makefile`, and `build_ios_deps.sh` (asserting `otool -l` `LC_BUILD_VERSION` `minos 18.0` in CI); add `.raw`, `.qcow2`, `.iso` UTIs and `LSApplicationQueriesSchemes: [stikdebug]`. |
+| `host/henge_txm_jit.{h,c}`, `scripts/apply_upstream_patches.py`, `JITExtensionHandler.swift` | Requires `P_TRACED` + `brk #0x69` (`0xE0000069`) + `brk #0xf00d` and unconditionally enforces `[4 GiB, 64 GiB)` in `hv_jit_region_attach()`. | Runtime dual-mode JIT (`CLASSIC` vs. `TXM_BROKER`) + user override (`Auto / Classic / TXM`), optional `brk #0x69` for stock StikDebug `universal.js`, and iOS 18 attach-detach XPC mode. |
+| `ios/Sources/HengeVMBridge.{h,mm}`, `SelfDebugJITClient.swift`, `HengeLinuxApp.swift` | Hardcoded `Documents/Machines/ArchLinux/`, single `cfg.disk0`, Arch-specific labels, and `physicalMemory`-based RAM cap. | `VMStore` managing `Documents/Machines/<UUID>/vm.json`, shared `Documents/Firmware/`, secondary `disk1` (ISO/seed), `os_proc_available_memory()` live Jetsam sizing, and automatic legacy `ArchLinux` migration. |
+| `devices/winvirt.c`, `devices/acpi.c` (via `apply_upstream_patches.py`) | Only `virtio_net`, `nvme`, `xhci` (causes 90 s Linux stall), `hda`, and `ramfb` attached; ACPI `SPCR` redirects `/dev/console` to `ttyAMA0`. | Attach dormant `virtio_input.c` (`00:05.0`/`00:06.0`), secondary `virtio_blk.c` (`00:07.0`), and 2D-first `henge_virtio_gpu.c` (`00:08.0`); make `xhci` (`00:03.0`) and ACPI `SPCR` toggleable per VM. |
+| `guest/henge_dual_console.c`, `guest/henge-xdg-open`, `guest/setup-arch-bridge.sh` | Hardcoded Arch banner, `systemd`-only service units, and `python3`-dependent `henge-xdg-open`. | Optional static `aarch64-linux-musl` multi-call `henge-guest-agent` + POSIX `#!/bin/sh` `install.sh` (`systemd`/`OpenRC`/`runit`), served offline from `http://10.0.2.4/.henge/guest-tools/`. |
+
+### 7.2 Unified iOS 18.0 & iOS 26+ Dual-Mode JIT Architecture
+
+Because `pthread_jit_write_protect_np()` is unavailable on iOS and single-mapping `RWX` fails with `KERN_PROTECTION_FAILURE`, **both iOS 18 and iOS 26+ use split W^X dual-mapping via Mach `vm_remap`** (`rx_base` + `rw_base`, already expected by upstream `hv_jit_region_attach()`). What changes across OS generations is how `VM_PROT_EXECUTE` is authorized:
+
+1. **`HENGE_JIT_MODE_CLASSIC` (`os_major < 26`, all Apple Silicon chips including A15+/M2+ on iOS 18):**
+   - Immediately `vm_deallocate` the `__DATA,__jit_hold` reservation at startup (reclaiming 384 MiB of virtual address space).
+   - Once any JIT enabler (`StikDebug`, `SideJITServer`, `JITStreamer 2.0`, `AltJIT`, or `HengeLinuxJITExtension` in attach-detach mode) sets persistent `CS_DEBUGGED`, allocate an anonymous RW buffer (`vm_allocate` / `mmap`), mirror it via `vm_remap(..., copy = FALSE, VM_INHERIT_NONE)`, flip the RX alias with `vm_protect(..., VM_PROT_READ | VM_PROT_EXECUTE)`, and validate via `verify_rx_rw_selftest()` (guarded by a `UserDefaults` crash sentinel).
+   - Relax `hv_jit_region_attach()` in `scripts/apply_upstream_patches.py` so `[4 GiB, 64 GiB)` low-VA enforcement applies **only** in TXM broker mode, keeping `rw != NULL && rw != rx` universal.
+2. **`HENGE_JIT_MODE_TXM_BROKER` (`os_major >= 26` with TXM, or fallback on pre-TXM iOS 26+ firmware anomalies):**
+   - Detect TXM via `os_major >= 26` + `getenv("HAS_TXM")` / `/System/Volumes/Preboot/**/usr/standalone/firmware/FUD/Ap,TrustedExecutionMonitor.img4`.
+   - **Pre-TXM iOS 26+ Guard:** Never trust `CS_DEBUGGED` or `mprotect == 0` alone (pre-TXM M1 iPads on iPadOS 26.5.2 have been observed returning `0` from `mprotect` while faulting on JIT writes). Always run `verify_rx_rw_selftest()`, escalate to `TXM_BROKER` on failure, and expose a **JIT Strategy Override** (`Auto / Classic / TXM Broker`) in launcher settings.
+   - **Native StikDebug `universal.js` Compatibility:** Drop the hard requirement that `brk #0x69` (`henge_jit26_probe`) return `0xE0000069`; when `P_TRACED` is verified, invoke `brk #0xf00d` (`x16 = 1` prepare, `x16 = 0` detach) directly so stock `universal.js` works out of the box alongside `henge-jit.js`.
+3. **One-Tap StikDebug Deep-Linking & LiveContainer Awareness:**
+   - Launch `stikdebug://enable-jit?bundle-id=<BundleID>&pid=<pid>` on iOS 18 (omitting `script-name`) and append `&script-name=universal.js` on iOS 26+ TXM.
+   - Detect `getenv("LC_HOME_PATH") != nil` to disable the embedded `.appex` inside LiveContainer and route directly to StikDebug.
+
+### 7.3 iOS 18.0 Memory Budgets, Entitlements & Jetsam Sizing
+
+- **Entitlements & Sideloading:** Add `com.apple.developer.kernel.extended-virtual-addressing` alongside `com.apple.developer.kernel.increased-memory-limit` in `ios/HengeLinux.entitlements`, embed a placeholder ad-hoc signature (`codesign --force --sign - --entitlements ...`) in CI so AltStore Classic 2.2+, Impactor, and Xcode Personal Team preserve entitlements, and document the one-time **GetMoreRam** App ID step for free-account SideStore users.
+- **Live Jetsam Budgeting (`os_proc_available_memory()`):** Replace static `ProcessInfo.processInfo.physicalMemory` caps with live `<os/proc.h>` `os_proc_available_memory()` queries, computing safe default guest RAM as `max(512 MiB, floor((avail − jitPoolBytes − 576 MiB) / 128 MiB) × 128 MiB)`.
+- **Adaptive JIT Pool Sizing:** Scale the JIT code cache by device memory tier rather than a fixed `384 MiB`: **`192 MiB`** on ≤4 GB devices (~2.1 GiB ceiling -> ~1,280–1,408 MiB safe guest RAM), **`256 MiB`** on 6 GB devices, and **`384 MiB`** on ≥8 GB devices.
+- **Commpage Timebase Sanity Check:** Verify once at boot that the Darwin commpage (`_COMM_PAGE64_BASE_ADDRESS + 0x088` / `+0x090`) matches `mach_absolute_time()`, falling back cleanly to `hv_counter()` if a future XNU release shifts offsets.
+
+### 7.4 Virtual Motherboard Expansion for Unmodified Distributions
+
+| PCIe Slot / Device | Phase 6 Wiring & Role |
+| :--- | :--- |
+| `00:01.0` `virtio-net` (`1af4:1041`) | Existing `libslirp` NAT (`10.0.2.15`, gateway `10.0.2.4`, DNS `10.0.2.3`). |
+| `00:02.0` `nvme` (`1b36:0010`) | Existing primary NVMe 1.4 root disk (`disk0.img`). |
+| `00:03.0` `xhci` (`1b36:000d`) | **Toggleable per VM (`enable_xhci: false` default for Linux):** Eliminates the 90 s `xhci_hcd` initrd stall on unmodified ISOs/cloud images without `usbcore.nousb`; Phase E patches `devices/xhci.c` for Linux `xhci_hcd` ring compliance. |
+| `00:04.0` `hda` (`8086:2668`) | Existing Intel ICH6 duplex HD Audio (`CoreAudio`). |
+| `00:05.0` & `00:06.0` `virtio-input` (`1af4:1052`) | **Attach dormant `devices/virtio_input.c`:** Separate Virtual Keyboard + Absolute Tablet PCIe devices providing native `/dev/input/event*` to X11, Wayland, and VTs on Debian, Ubuntu, Fedora, Arch, openSUSE, and Void. |
+| `00:07.0` `virtio-blk` (`1af4:1042`) / `virtio-scsi` | **Attach dormant `devices/virtio_blk.c`:** Optional read-only `disk1` for `CIDATA` NoCloud seeds and isohybrid ARM64 Live/Netinstall ISOs (with 2048-byte logical sectors or minimal read-only `virtio-scsi` CD-ROM for pure El Torito optical ISOs). |
+| `00:08.0` `virtio-gpu` (`1af4:1050`) | **Phase E 2D-First KMS:** Wire `host/henge_virtio_gpu.c` (`RESOURCE_CREATE_2D`, `SET_SCANOUT`, `RESOURCE_FLUSH`, `EDID`) into `fb_metal.m` for native `/dev/dri/card0` `modesetting`, dynamic iPhone/iPad resolutions, and software Wayland (`WLR_RENDERER=pixman`) ahead of VirGL 3D. |
+| PL011 UART (`0x0900_0000`) + ACPI `SPCR` | Upgrade `DebugConsoleSheetView` into an **interactive VT100 `ttyAMA0` terminal tab** in `SessionView`, and make ACPI `SPCR` toggleable per VM (`enable_acpi_spcr`) so desktop ISOs default `/dev/console` to `tty0` while `DBG2` stays active. |
+
+### 7.5 Multi-VM Sandbox Layout, Streaming QCOW2 & Three-Track Distro Onboarding
+
+- **Per-VM Sandbox Hierarchy:**
+  - `Documents/Firmware/{edk2-aarch64-code.fd, edk2-aarch64-vars-template.fd}` — Shared read-only UEFI code and clean NVRAM template.
+  - `Documents/Machines/<VM-UUID>/vm.json` — `Codable` manifest (`id`, `name`, `distroTag`, `ramMiB`, `cpuCount`, `jitPoolMiB`, `gpuBackend`, `enableVirtioInput`, `enableXhci`, `enableAcpiSpcr`, `primaryDisk`, `secondaryMedia`, `sharedDir`, `cloudInit`).
+  - `Documents/Machines/<VM-UUID>/{vars.fd, disk0.img, seed.img, suspend.state, boot.log}` — Isolated per-VM NVRAM (APFS-cloned), sparse raw disk, optional seed/ISO, snapshot metadata, and serial log. Legacy `Documents/Machines/ArchLinux/` directories auto-migrate to `vm.json` on first launch with zero data loss.
+- **Native Streaming QCOW2 Unpacker (`host/henge_qcow2.{h,c}`):** Parses Big-Endian QCOW2 v2/v3 headers (`"QFI\xfb"`), Extended L2 subclusters, and zlib (`-lz`) / optional zstd compressed clusters directly into an `ftruncate`-sized APFS sparse `disk0.img` off `@MainActor` with constant scratch memory and strict bounds checks; fails closed on encrypted/backing-file images. Importer classifies files by **magic bytes** (`"HVSPARSE"`, `"QFI\xfb"`, `"CD001"` at `0x8001`, raw), handling Ubuntu's QCOW2-formatted `.img` files seamlessly. Enables instant APFS `clonefile(2)` VM cloning and `F_PUNCHHOLE` compaction.
+- **Three-Track Onboarding & Distro Defaults:**
+  1. **Official Cloud Images + On-Device `CIDATA` Seeder:** Synthesize a 2 MiB read-only FAT16 volume labeled `CIDATA` (`/meta-data`, `/user-data`, `/network-config`) attached as `disk1` to provision unmodified official ARM64 cloud images offline:
+     - **Debian 13 (Trixie):** Default to `debian-13-generic-arm64.qcow2` (avoiding stripped `genericcloud` and `cloud-init`-free `nocloud`).
+     - **Ubuntu 24.04 / 26.04 LTS:** Official `server-cloudimg-arm64.img` (magic-byte detected as QCOW2).
+     - **Fedora Cloud Base:** Enforce `>= 8 GiB` sparse virtual disk (5 GiB base image); preserves Btrfs + SELinux enforcing.
+     - **Alpine Linux:** Official `nocloud_alpine-*-aarch64-uefi-cloudinit-r0.qcow2` (`tiny-cloud`, user `alpine`; recommend `linux-lts` over `linux-virt` for desktop workloads).
+     - **openSUSE:** Tumbleweed Minimal-VM Cloud and Leap 16.1 UEFI ARM64 (both 4 KiB and 64 KiB kernels boot under `HV_TLB_PAGE_BITS=12`).
+  2. **Standard ARM64 Live / Netinstall ISOs:** Create blank APFS sparse `disk0.img`, attach any `.iso` on `disk1`, install onto `/dev/nvme0n1` via Metal or interactive `ttyAMA0` tab, and eject `disk1` (covers NixOS, Gentoo, Kali, Rocky/AlmaLinux, Void Live, Archboot).
+  3. **Parameterized CI Prebuilt Profiles (`scripts/build_guest_image.sh --profile <name>`):** Curated `.hvsparse` images for rootfs-only distros (**Arch Linux ARM** and **Void Linux** `glibc`/`musl`).
+
+### 7.6 Portable `musl` Guest Additions (`henge-guest-agent`)
+
+Unmodified distributions require zero guest software once `virtio-input` and interactive `ttyAMA0` are active. Optional host integrations (Safari OAuth/Passkeys, clipboard sync, WebDAV helper, and serial-to-`uinput` fallback) consolidate into a single static `aarch64-linux-musl` multi-call C binary (`henge-guest-agent` with `xdg-open`, `dual-console`, and `clipboard` subcommands) plus a POSIX `#!/bin/sh` `install.sh` that auto-detects `systemd`, `OpenRC`, or `runit`, preserves existing network managers (`NetworkManager`, `netplan`, `ifupdown`), writes `10-fbdev.conf` only when `/dev/dri/card0` is absent, and installs offline via `curl -fsSL http://10.0.2.4/.henge/guest-tools/install.sh | sudo sh`.
+
+### 7.7 Phase 6 Cross-Matrix Verification Criteria
+
+| Test Axis | Acceptance Criteria |
+| :--- | :--- |
+| **Linux & macOS CI** | `test_core` covers QCOW2 v2/v3 (zlib, zero, unaligned) round-trips, FAT16 `CIDATA` structure, `vm.json` legacy migration, and `aarch64-linux-musl` static build of `henge-guest-agent`. macOS CI verifies `otool -l` `LC_BUILD_VERSION` `minos 18.0` across `libhengelinux.a`, all `ios/deps/*.a`, and `HengeLinux.app`. |
+| **iOS 18 Hardware** | 4/6 GB and 8 GB iOS 18 devices activate `CLASSIC` dual-map JIT via `stikdebug://enable-jit` (no `script-name`), pass `verify_rx_rw_selftest()`, bound RAM via `os_proc_available_memory()`, and survive VM stop/reboot without re-attaching. |
+| **iOS 26+ & LiveContainer** | TXM hardware (iOS 26/27) passes with stock StikDebug `universal.js`; pre-TXM iOS 26+ hardware escalates cleanly if `mprotect` selftest fails; LiveContainer (`LC_HOME_PATH`) skips `.appex` and routes via `stikdebug://`. |
+| **Multi-Distro QEMU ACPI 6.3 & iPhone** | Unmodified Debian 13, Ubuntu 24.04/26.04, Fedora Cloud, Alpine `nocloud`, openSUSE, Arch, Void, and a stock ARM64 Live/Netinstall ISO boot with `-machine virt,gic-version=3,acpi=on`, obtain `10.0.2.15` DHCP, receive `virtio-input` + interactive `ttyAMA0` input, and isolate per-VM `vars.fd` NVRAM. |
