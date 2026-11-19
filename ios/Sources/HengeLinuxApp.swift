@@ -43,9 +43,16 @@ struct HengeLinuxApp: App {
         case guestFiles
     }
 
+    private enum StartTab: Hashable {
+        case machines
+        case about
+    }
+
     @StateObject private var lifecycle = MetalLifecycleGuard()
     @StateObject private var jitClient = SelfDebugJITClient()
     @StateObject private var vmStore = VMStore()
+    @State private var selectedStartTab: StartTab = .machines
+    @State private var copiedBuildInfo: Bool = false
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
     @AppStorage("customGuestRamMiB") private var customGuestRamMiB: Int = 1664
     @State private var ramInputText: String = ""
@@ -93,7 +100,19 @@ struct HengeLinuxApp: App {
                         }
                     )
                 } else {
-                    launcherView
+                    TabView(selection: $selectedStartTab) {
+                        launcherView
+                            .tabItem {
+                                Label("Machines", systemImage: "desktopcomputer")
+                            }
+                            .tag(StartTab.machines)
+
+                        aboutView
+                            .tabItem {
+                                Label("About", systemImage: "info.circle")
+                            }
+                            .tag(StartTab.about)
+                    }
                 }
             }
             .sheet(item: $safariURL) { item in
@@ -788,6 +807,90 @@ struct HengeLinuxApp: App {
                 }
             }
             .navigationTitle("henge-linux")
+        }
+    }
+
+    private var appVersionString: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.0.0"
+    }
+
+    private var appBuildNumberString: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "1"
+    }
+
+    private var buildCommitHash: String {
+        let raw = (Bundle.main.object(forInfoDictionaryKey: "HengeGitCommit") as? String) ?? ""
+        return raw.isEmpty ? "local" : raw
+    }
+
+    private var buildChannelLabel: String {
+        let raw = (Bundle.main.object(forInfoDictionaryKey: "HengeBuildChannel") as? String) ?? ""
+        return raw.isEmpty ? "Local" : raw
+    }
+
+    private var buildDateLabel: String {
+        let raw = (Bundle.main.object(forInfoDictionaryKey: "HengeBuildDate") as? String) ?? ""
+        return raw.isEmpty ? "Local" : raw
+    }
+
+    private var buildSummaryLine: String {
+        "HengeLinux v\(appVersionString) (build \(appBuildNumberString)) · \(buildChannelLabel) · \(buildCommitHash) · \(buildDateLabel)"
+    }
+
+    private var aboutView: some View {
+        NavigationStack {
+            List {
+                Section("Installed Build") {
+                    LabeledContent("Version", value: "v\(appVersionString) (\(appBuildNumberString))")
+                    LabeledContent("Channel", value: buildChannelLabel)
+                    LabeledContent("Commit") {
+                        Text(buildCommitHash)
+                            .font(.body.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Built", value: buildDateLabel)
+                    Button {
+                        UIPasteboard.general.string = buildSummaryLine
+                        copiedBuildInfo = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                            copiedBuildInfo = false
+                        }
+                    } label: {
+                        Label(
+                            copiedBuildInfo ? "Copied Build Info" : "Copy Version & Commit Hash",
+                            systemImage: copiedBuildInfo ? "checkmark.circle.fill" : "doc.on.doc"
+                        )
+                    }
+                }
+
+                Section("Runtime & Capabilities") {
+                    LabeledContent("Bundle ID") {
+                        Text(Bundle.main.bundleIdentifier ?? "io.hengelinux.app")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    LabeledContent("iOS Version", value: UIDevice.current.systemVersion)
+                    LabeledContent("JIT Strategy", value: SelfDebugJITClient.activeJitModeLabel)
+                    LabeledContent("Engine", value: HengeVMBridge.shared.isEngineLinked ? "HengeVM Linked" : "Host Substrate Only")
+                    LabeledContent("QCOW2 Zstd", value: henge_qcow2_has_zstd() ? "Enabled (libzstd)" : "zlib Only")
+                    LabeledContent("LiveContainer", value: SelfDebugJITClient.isRunningInLiveContainer ? "Detected" : "No")
+                }
+
+                Section("Project & License") {
+                    LabeledContent("License", value: "GPL-3.0-or-later")
+                    if let repoURL = URL(string: "https://github.com/venim1103/henge-linux") {
+                        Link(destination: repoURL) {
+                            Label("GitHub Repository", systemImage: "safari")
+                        }
+                    }
+                    if let releasesURL = URL(string: "https://github.com/venim1103/henge-linux/releases") {
+                        Link(destination: releasesURL) {
+                            Label("Releases & Nightly Builds", systemImage: "arrow.down.circle")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("About")
         }
     }
 

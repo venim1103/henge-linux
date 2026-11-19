@@ -15,6 +15,9 @@ settings:
     CLANG_CXX_LANGUAGE_STANDARD: c++20
     MARKETING_VERSION: "0.2.1"
     CURRENT_PROJECT_VERSION: "3"
+    HENGE_GIT_COMMIT: "local"
+    HENGE_BUILD_CHANNEL: "Local"
+    HENGE_BUILD_DATE: "Local"
     GENERATE_INFOPLIST_FILE: YES
     HV_TLB_PAGE_BITS: "12"
     GCC_PREPROCESSOR_DEFINITIONS:
@@ -81,6 +84,9 @@ targets:
       properties:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        HengeGitCommit: $(HENGE_GIT_COMMIT)
+        HengeBuildChannel: $(HENGE_BUILD_CHANNEL)
+        HengeBuildDate: $(HENGE_BUILD_DATE)
         LSApplicationQueriesSchemes:
           - stikdebug
         CFBundleDocumentTypes:

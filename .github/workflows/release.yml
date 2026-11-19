@@ -113,7 +113,11 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate --spec ios/project.yml
       - name: Build unsigned iphoneos bundle and package .ipa
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
           xcodebuild \
             -project ios/HengeLinux.xcodeproj \
             -scheme HengeLinux \
@@ -121,6 +125,9 @@ jobs:
             -sdk iphoneos \
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
+            HENGE_GIT_COMMIT="$SHORT_SHA" \
+            HENGE_BUILD_CHANNEL="Release (${RELEASE_TAG})" \
+            HENGE_BUILD_DATE="$BUILD_DATE" \
             build
           APP_BUNDLE="build/DerivedData/Build/Products/Release-iphoneos/HengeLinux.app"
           otool -l "$APP_BUNDLE/HengeLinux" | grep -A 3 "LC_BUILD_VERSION" | grep -q "minos 18.0" || {

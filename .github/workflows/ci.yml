@@ -139,6 +139,8 @@ jobs:
         run: xcodegen generate --spec ios/project.yml
       - name: Build unsigned iphoneos bundle and package .ipa
         run: |
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M UTC')"
           xcodebuild \
             -project ios/HengeLinux.xcodeproj \
             -scheme HengeLinux \
@@ -146,6 +148,9 @@ jobs:
             -sdk iphoneos \
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
+            HENGE_GIT_COMMIT="$SHORT_SHA" \
+            HENGE_BUILD_CHANNEL="Nightly" \
+            HENGE_BUILD_DATE="$BUILD_DATE" \
             build
           APP_BUNDLE="build/DerivedData/Build/Products/Release-iphoneos/HengeLinux.app"
           test -s "$APP_BUNDLE/henge-guest-agent" || {
@@ -160,9 +165,13 @@ jobs:
               app_pl = plistlib.load(f)
           assert app_pl.get("UIFileSharingEnabled") is True, f"missing UIFileSharingEnabled: {app_pl}"
           assert app_pl.get("LSSupportsOpeningDocumentsInPlace") is True, f"missing LSSupportsOpeningDocumentsInPlace: {app_pl}"
+          git_commit = app_pl.get("HengeGitCommit")
+          build_channel = app_pl.get("HengeBuildChannel")
+          assert git_commit == sys.argv[3], f"unexpected HengeGitCommit: {git_commit}"
+          assert build_channel == "Nightly", f"unexpected HengeBuildChannel: {build_channel}"
           doc_types = app_pl.get("CFBundleDocumentTypes") or []
           assert len(doc_types) >= 2, f"missing CFBundleDocumentTypes: {app_pl}"
-          print("[verify] HengeLinux app Info.plist document types valid:", len(doc_types))
+          print("[verify] HengeLinux app Info.plist valid:", app_pl.get("CFBundleShortVersionString"), build_channel, git_commit)
           with open(sys.argv[2], "rb") as f:
               pl = plistlib.load(f)
           ext = pl.get("NSExtension") or {}
@@ -171,7 +180,7 @@ jobs:
           assert pl.get("CFBundleVersion"), f"missing CFBundleVersion: {pl}"
           assert pl.get("CFBundleShortVersionString"), f"missing CFBundleShortVersionString: {pl}"
           print("[verify] HengeLinuxJITExtension Info.plist valid:", ext)
-          ' "$APP_PLIST" "$EXT_PLIST"
+          ' "$APP_PLIST" "$EXT_PLIST" "$SHORT_SHA"
           otool -l "$APP_BUNDLE/HengeLinux" | grep -A 3 "LC_BUILD_VERSION" | grep -q "minos 18.0" || {
             echo "ERROR: Expected LC_BUILD_VERSION minos 18.0 in HengeLinux binary!" >&2
             otool -l "$APP_BUNDLE/HengeLinux" | grep -A 4 "LC_BUILD_VERSION" >&2
