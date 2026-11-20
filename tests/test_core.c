@@ -641,10 +641,30 @@ static void test_qcow2_and_storage_tools(void) {
     }
     HENGE_CHECK(memcmp(verify + cs * 2U, c2, cs) == 0);
 
-    /* 2. Clone & compact tests */
+    /* 2. Clone, compact & grow-only sparse disk expansion tests */
     HENGE_CHECK(henge_clone_file_apfs(raw_path, clone_path, err, sizeof(err)) == 0);
     uint64_t reclaimed = 0ULL;
     HENGE_CHECK(henge_compact_sparse_file(clone_path, &reclaimed, err, sizeof(err)) == 0);
+    uint64_t final_sz = 0ULL;
+    HENGE_CHECK(henge_expand_sparse_raw_disk(clone_path, cs * 5ULL, &final_sz, err, sizeof(err)) == 0);
+    HENGE_CHECK(final_sz == cs * 5ULL);
+    /* Grow-only invariant: smaller target size must not shrink the disk. */
+    HENGE_CHECK(henge_expand_sparse_raw_disk(clone_path, cs * 2ULL, &final_sz, err, sizeof(err)) == 0);
+    HENGE_CHECK(final_sz == cs * 5ULL);
+    {
+        uint8_t *expanded = (uint8_t *)malloc(cs * 5U);
+        HENGE_CHECK(expanded != NULL);
+        fp = fopen(clone_path, "rb");
+        HENGE_CHECK(fp != NULL);
+        HENGE_CHECK(fread(expanded, 1U, cs * 5U, fp) == cs * 5U);
+        fclose(fp);
+        HENGE_CHECK(memcmp(expanded, c0, cs) == 0);
+        HENGE_CHECK(memcmp(expanded + cs * 2U, c2, cs) == 0);
+        for (size_t i = cs * 3U; i < cs * 5U; i++) {
+            HENGE_CHECK(expanded[i] == 0U);
+        }
+        free(expanded);
+    }
 
     /* 3. Extended L2 subcluster test (incompat bit 4, 16-byte L2 entries) */
     uint8_t *eimg = (uint8_t *)calloc(1U, cs * 4U);

@@ -39,12 +39,19 @@ NS_SWIFT_UI_ACTOR
 /// Notify the 2D VirtIO-GPU KMS backend of viewport / orientation pixel-size changes.
 - (void)updateDisplaySizeWidth:(uint32_t)width height:(uint32_t)height NS_SWIFT_NAME(updateDisplaySize(width:height:));
 
-/// Unpack primary `.hvsparse` disk image into a raw APFS sparse image off the main thread.
+/// Unpack primary `.hvsparse` / `.qcow2` disk image into a raw APFS sparse image off the main thread,
+/// optionally growing the unpacked raw disk to at least `minDiskBytes`.
 - (void)prepareDiskImageWithCompletion:(void (^)(BOOL success, NSError * _Nullable error))completion;
 - (void)prepareDiskImageAtMachineDir:(NSString *)machineDirPath
                      primaryDiskName:(NSString *)primaryDiskName
                             codePath:(NSString *)codePath
                             varsPath:(NSString *)varsPath
+                          completion:(void (^)(BOOL success, NSError * _Nullable error))completion;
+- (void)prepareDiskImageAtMachineDir:(NSString *)machineDirPath
+                     primaryDiskName:(NSString *)primaryDiskName
+                            codePath:(NSString *)codePath
+                            varsPath:(NSString *)varsPath
+                        minDiskBytes:(uint64_t)minDiskBytes
                           completion:(void (^)(BOOL success, NSError * _Nullable error))completion;
 
 /// Start a VM using explicit per-VM paths and PCIe/ACPI device toggles.

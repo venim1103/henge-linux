@@ -397,6 +397,111 @@ else
     exit 1
 fi
 
+$SUDO tee "$MNT_DIR/usr/local/sbin/henge-grow-root" >/dev/null <<'EOF'
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Automatically grow the root GPT partition and filesystem when the host
+# expands the virtual NVMe/VirtIO disk image (idempotent; no-op if already grown).
+set -eu
+
+ROOT_DEV=""
+if command -v findmnt >/dev/null 2>&1; then
+    ROOT_DEV="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+fi
+if [ -z "$ROOT_DEV" ]; then
+    ROOT_DEV="$(awk '$2 == "/" && $1 ~ /^\/dev\// { print $1; exit }' /proc/mounts 2>/dev/null || true)"
+fi
+case "$ROOT_DEV" in
+    /dev/*) ;;
+    *) exit 0 ;;
+esac
+
+ROOT_REAL="$(readlink -f "$ROOT_DEV" 2>/dev/null || printf '%s' "$ROOT_DEV")"
+PART_NAME="${ROOT_REAL#/dev/}"
+DISK_NAME=""
+PART_NUM=""
+case "$PART_NAME" in
+    nvme*p[0-9]*|mmcblk*p[0-9]*|loop*p[0-9]*)
+        DISK_NAME="${PART_NAME%p*}"
+        PART_NUM="${PART_NAME##*p}"
+        ;;
+    [a-z]*[0-9]*)
+        DISK_NAME="$(printf '%s' "$PART_NAME" | sed 's/[0-9]*$//')"
+        PART_NUM="$(printf '%s' "$PART_NAME" | sed 's/^[^0-9]*//')"
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+
+[ -n "$DISK_NAME" ] && [ -n "$PART_NUM" ] || exit 0
+DISK_DEV="/dev/$DISK_NAME"
+SYS_DISK="/sys/class/block/$DISK_NAME"
+SYS_PART="/sys/class/block/$PART_NAME"
+[ -r "$SYS_DISK/size" ] && [ -r "$SYS_PART/start" ] && [ -r "$SYS_PART/size" ] || exit 0
+
+DISK_SECTORS="$(cat "$SYS_DISK/size")"
+PART_START="$(cat "$SYS_PART/start")"
+PART_SIZE="$(cat "$SYS_PART/size")"
+PART_END=$((PART_START + PART_SIZE))
+
+# Only run when more than 16 MiB (32768 x 512B sectors) of trailing space exists.
+if [ $((DISK_SECTORS - PART_END)) -le 32768 ]; then
+    exit 0
+fi
+
+echo "[henge-grow-root] Expanding $ROOT_REAL on $DISK_DEV (partition $PART_NUM)..."
+if command -v growpart >/dev/null 2>&1; then
+    growpart "$DISK_DEV" "$PART_NUM" || true
+elif command -v sfdisk >/dev/null 2>&1; then
+    printf ', +\n' | sfdisk --no-reread -N "$PART_NUM" --force "$DISK_DEV" >/dev/null 2>&1 || true
+    if command -v partx >/dev/null 2>&1; then
+        partx -u "$DISK_DEV" 2>/dev/null || true
+    elif command -v partprobe >/dev/null 2>&1; then
+        partprobe "$DISK_DEV" 2>/dev/null || true
+    fi
+fi
+
+FS_TYPE=""
+if command -v blkid >/dev/null 2>&1; then
+    FS_TYPE="$(blkid -o value -s TYPE "$ROOT_REAL" 2>/dev/null || true)"
+fi
+if [ -z "$FS_TYPE" ]; then
+    FS_TYPE="$(awk '$2 == "/" { print $3; exit }' /proc/mounts 2>/dev/null || true)"
+fi
+
+case "$FS_TYPE" in
+    ext2|ext3|ext4)
+        command -v resize2fs >/dev/null 2>&1 && resize2fs "$ROOT_REAL"
+        ;;
+    xfs)
+        command -v xfs_growfs >/dev/null 2>&1 && xfs_growfs /
+        ;;
+    btrfs)
+        command -v btrfs >/dev/null 2>&1 && btrfs filesystem resize max /
+        ;;
+esac
+echo "[henge-grow-root] Root filesystem resize complete ($FS_TYPE)."
+EOF
+$SUDO chmod 0755 "$MNT_DIR/usr/local/sbin/henge-grow-root"
+
+$SUDO tee "$MNT_DIR/etc/systemd/system/henge-grow-root.service" >/dev/null <<'EOF'
+[Unit]
+Description=HengeLinux Automatic Root Partition & Filesystem Expansion
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/henge-grow-root
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+$SUDO ln -sf /etc/systemd/system/henge-grow-root.service \
+    "$MNT_DIR/etc/systemd/system/multi-user.target.wants/henge-grow-root.service"
+
 $SUDO tee "$MNT_DIR/etc/systemd/system/henge-pacman-keyring.service" >/dev/null <<'EOF'
 [Unit]
 Description=Initialize Arch Linux ARM Pacman GPG Keyring

@@ -242,7 +242,122 @@ elif [ "$INIT_SYS" = "openrc" ] && [ -f /etc/modules ]; then
     grep -qx 'uinput' /etc/modules 2>/dev/null || printf 'uinput\n' >> /etc/modules
 fi
 
-# 6. Write Xorg 10-fbdev.conf ONLY when /dev/dri/card0 KMS is absent
+# 6. Install idempotent henge-grow-root helper for automatic root partition/FS expansion
+SBIN_DIR="$PREFIX/sbin"
+mkdir -p "$SBIN_DIR"
+cat <<'EOF' > "$SBIN_DIR/henge-grow-root"
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Automatically grow the root GPT partition and filesystem when the host
+# expands the virtual NVMe/VirtIO disk image (idempotent; no-op if already grown).
+set -eu
+
+ROOT_DEV=""
+if command -v findmnt >/dev/null 2>&1; then
+    ROOT_DEV="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+fi
+if [ -z "$ROOT_DEV" ]; then
+    ROOT_DEV="$(awk '$2 == "/" && $1 ~ /^\/dev\// { print $1; exit }' /proc/mounts 2>/dev/null || true)"
+fi
+case "$ROOT_DEV" in
+    /dev/*) ;;
+    *) exit 0 ;;
+esac
+
+ROOT_REAL="$(readlink -f "$ROOT_DEV" 2>/dev/null || printf '%s' "$ROOT_DEV")"
+PART_NAME="${ROOT_REAL#/dev/}"
+DISK_NAME=""
+PART_NUM=""
+case "$PART_NAME" in
+    nvme*p[0-9]*|mmcblk*p[0-9]*|loop*p[0-9]*)
+        DISK_NAME="${PART_NAME%p*}"
+        PART_NUM="${PART_NAME##*p}"
+        ;;
+    [a-z]*[0-9]*)
+        DISK_NAME="$(printf '%s' "$PART_NAME" | sed 's/[0-9]*$//')"
+        PART_NUM="$(printf '%s' "$PART_NAME" | sed 's/^[^0-9]*//')"
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+
+[ -n "$DISK_NAME" ] && [ -n "$PART_NUM" ] || exit 0
+DISK_DEV="/dev/$DISK_NAME"
+SYS_DISK="/sys/class/block/$DISK_NAME"
+SYS_PART="/sys/class/block/$PART_NAME"
+[ -r "$SYS_DISK/size" ] && [ -r "$SYS_PART/start" ] && [ -r "$SYS_PART/size" ] || exit 0
+
+DISK_SECTORS="$(cat "$SYS_DISK/size")"
+PART_START="$(cat "$SYS_PART/start")"
+PART_SIZE="$(cat "$SYS_PART/size")"
+PART_END=$((PART_START + PART_SIZE))
+
+if [ $((DISK_SECTORS - PART_END)) -le 32768 ]; then
+    exit 0
+fi
+
+if command -v growpart >/dev/null 2>&1; then
+    growpart "$DISK_DEV" "$PART_NUM" || true
+elif command -v sfdisk >/dev/null 2>&1; then
+    printf ', +\n' | sfdisk --no-reread -N "$PART_NUM" --force "$DISK_DEV" >/dev/null 2>&1 || true
+    if command -v partx >/dev/null 2>&1; then
+        partx -u "$DISK_DEV" 2>/dev/null || true
+    elif command -v partprobe >/dev/null 2>&1; then
+        partprobe "$DISK_DEV" 2>/dev/null || true
+    fi
+fi
+
+FS_TYPE=""
+if command -v blkid >/dev/null 2>&1; then
+    FS_TYPE="$(blkid -o value -s TYPE "$ROOT_REAL" 2>/dev/null || true)"
+fi
+if [ -z "$FS_TYPE" ]; then
+    FS_TYPE="$(awk '$2 == "/" { print $3; exit }' /proc/mounts 2>/dev/null || true)"
+fi
+
+case "$FS_TYPE" in
+    ext2|ext3|ext4)
+        command -v resize2fs >/dev/null 2>&1 && resize2fs "$ROOT_REAL"
+        ;;
+    xfs)
+        command -v xfs_growfs >/dev/null 2>&1 && xfs_growfs /
+        ;;
+    btrfs)
+        command -v btrfs >/dev/null 2>&1 && btrfs filesystem resize max /
+        ;;
+esac
+EOF
+chmod 0755 "$SBIN_DIR/henge-grow-root"
+if [ "$INIT_SYS" = "systemd" ]; then
+    mkdir -p /etc/systemd/system/multi-user.target.wants
+    cat <<EOF > /etc/systemd/system/henge-grow-root.service
+[Unit]
+Description=HengeLinux Automatic Root Partition & Filesystem Expansion
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=${SBIN_DIR}/henge-grow-root
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    ln -sf /etc/systemd/system/henge-grow-root.service /etc/systemd/system/multi-user.target.wants/henge-grow-root.service
+    printf '[henge-install] Installed systemd henge-grow-root.service.\n'
+elif [ "$INIT_SYS" = "openrc" ] && [ -d /etc/local.d ]; then
+    cat <<EOF > /etc/local.d/henge-grow-root.start
+#!/bin/sh
+exec ${SBIN_DIR}/henge-grow-root
+EOF
+    chmod 0755 /etc/local.d/henge-grow-root.start
+    rc-update add local default >/dev/null 2>&1 || true
+    printf '[henge-install] Installed OpenRC henge-grow-root.start.\n'
+fi
+
+# 7. Write Xorg 10-fbdev.conf ONLY when /dev/dri/card0 KMS is absent
 if [ "$HAS_DRM" -eq 0 ] && [ -d /etc/X11 ]; then
     mkdir -p /etc/X11/xorg.conf.d
     if [ ! -f /etc/X11/xorg.conf.d/10-fbdev.conf ]; then

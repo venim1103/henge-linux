@@ -70,6 +70,8 @@ struct HengeLinuxApp: App {
     @State private var cidataPassword: String = "linux"
     @State private var cidataHostname: String = "hengelinux"
     @State private var showCidataSheet: Bool = false
+    @State private var showExpandDiskSheet: Bool = false
+    @State private var expandDiskGiB: Int = 16
     @State private var fileImportMode: FileImportMode = .pairingPlist
     @State private var bootWarning: String?
     @State private var bootErrorAlert: String?
@@ -243,6 +245,72 @@ struct HengeLinuxApp: App {
                                     showCidataSheet = false
                                 } catch {
                                     bootErrorAlert = "CIDATA generation failed: \(error.localizedDescription)"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showExpandDiskSheet) {
+                let vm = vmStore.selectedMachine
+                let currentBytes = vmStore.primaryDiskVirtualSizeBytes(for: vm)
+                let currentGiB = Int(currentBytes >> 30)
+                let minSelectableGiB = max(8, currentGiB)
+                NavigationStack {
+                    Form {
+                        Section("Virtual Disk Size (\(vm.name))") {
+                            LabeledContent("Current Virtual Size") {
+                                if currentBytes > 0 {
+                                    Text(String(format: "%.2f GiB", Double(currentBytes) / Double(1 << 30)))
+                                        .monospacedDigit()
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("Archive (unpacks on boot)")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Stepper(
+                                "Target Size: \(max(expandDiskGiB, minSelectableGiB)) GiB",
+                                value: $expandDiskGiB,
+                                in: minSelectableGiB...128,
+                                step: 4
+                            )
+                            HStack(spacing: 8) {
+                                ForEach([8, 16, 32, 64], id: \.self) { preset in
+                                    Button("\(preset)G") {
+                                        expandDiskGiB = max(preset, minSelectableGiB)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .disabled(preset < minSelectableGiB)
+                                }
+                            }
+                            Text("APFS sparse expansion extends the virtual disk immediately using near-zero host storage until Linux writes data. On next boot, henge-grow-root (or cloud-init) automatically grows the GPT partition and root filesystem. Shrinking is disabled for safety.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .navigationTitle("Expand Virtual Disk")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { showExpandDiskSheet = false }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Expand") {
+                                do {
+                                    let chosen = max(expandDiskGiB, minSelectableGiB)
+                                    let result = try vmStore.expandPrimaryDisk(for: vm, targetGiB: chosen)
+                                    jitClient.refreshFileStatus()
+                                    let gib = Double(result.finalBytes) / Double(1 << 30)
+                                    if result.appliedImmediately {
+                                        bootWarning = String(format: "Expanded %@ virtual disk to %.1f GiB. Boot Linux to auto-grow the root filesystem.", vm.name, gib)
+                                    } else {
+                                        bootWarning = String(format: "Scheduled %@ virtual disk expansion to %.0f GiB on first boot.", vm.name, gib)
+                                    }
+                                    showExpandDiskSheet = false
+                                } catch {
+                                    bootErrorAlert = "Disk expansion failed: \(error.localizedDescription)"
                                 }
                             }
                         }
@@ -639,6 +707,14 @@ struct HengeLinuxApp: App {
                         Label("Clone VM (APFS Copy-on-Write)", systemImage: "doc.on.doc")
                     }
                     Button {
+                        let currentGiB = Int(vmStore.primaryDiskVirtualSizeBytes(for: activeVM) >> 30)
+                        expandDiskGiB = max(16, max(currentGiB + 8, activeVM.targetDiskSizeGiB ?? 16))
+                        if expandDiskGiB > 128 { expandDiskGiB = 128 }
+                        showExpandDiskSheet = true
+                    } label: {
+                        Label("Expand Virtual Disk...", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    Button {
                         do {
                             let reclaimed = try vmStore.compactPrimaryDisk(for: activeVM)
                             jitClient.refreshFileStatus()
@@ -730,12 +806,14 @@ struct HengeLinuxApp: App {
                             let secondaryURL = vmStore.resolvedSecondaryMediaURL(for: activeVM)
 
                             isPreparingDisk = true
+                            let minDiskBytes = UInt64(activeVM.targetDiskSizeGiB ?? 0) << 30
                             let diskReady: Result<Void, Error> = await withCheckedContinuation { continuation in
                                 HengeVMBridge.shared.prepareDiskImage(
                                     atMachineDir: machineDir.path,
                                     primaryDiskName: activeVM.primaryDiskFileName,
                                     codePath: codeURL.path,
-                                    varsPath: varsURL.path
+                                    varsPath: varsURL.path,
+                                    minDiskBytes: minDiskBytes
                                 ) { success, error in
                                     if success {
                                         continuation.resume(returning: .success(()))

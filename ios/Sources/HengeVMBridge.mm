@@ -266,6 +266,20 @@ static void henge_on_vm_exit(int reason) {
                             codePath:(NSString *)codePath
                             varsPath:(NSString *)varsPath
                           completion:(void (^)(BOOL success, NSError * _Nullable error))completion {
+    [self prepareDiskImageAtMachineDir:machineDirPath
+                       primaryDiskName:primaryDiskName
+                              codePath:codePath
+                              varsPath:varsPath
+                          minDiskBytes:0ULL
+                            completion:completion];
+}
+
+- (void)prepareDiskImageAtMachineDir:(NSString *)machineDirPath
+                     primaryDiskName:(NSString *)primaryDiskName
+                            codePath:(NSString *)codePath
+                            varsPath:(NSString *)varsPath
+                        minDiskBytes:(uint64_t)minDiskBytes
+                          completion:(void (^)(BOOL success, NSError * _Nullable error))completion {
     NSURL *machineDir = [NSURL fileURLWithPath:machineDirPath isDirectory:YES];
     NSFileManager *fm = NSFileManager.defaultManager;
     [fm createDirectoryAtURL:machineDir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -335,13 +349,17 @@ static void henge_on_vm_exit(int reason) {
                 char errBuf[256] = {0};
                 int rc = -1;
                 if (unpackQcow2) {
-                    /* Ensure at least 8 GiB virtual size for cloud images (e.g. Fedora Cloud Base). */
-                    rc = henge_qcow2_unpack_to_raw(srcStr.c_str(), rawStr.c_str(), 8ULL << 30, errBuf, sizeof(errBuf));
+                    /* Ensure at least 8 GiB (or user target) virtual size for cloud images. */
+                    uint64_t minVirt = (minDiskBytes > (8ULL << 30)) ? minDiskBytes : (8ULL << 30);
+                    rc = henge_qcow2_unpack_to_raw(srcStr.c_str(), rawStr.c_str(), minVirt, errBuf, sizeof(errBuf));
                 } else {
 #if HENGE_HAS_UPSTREAM_ENGINE
                     rc = hv_sparse_unpack(srcStr.c_str(), rawStr.c_str(), nullptr, nullptr);
                     if (rc != 0) {
                         std::snprintf(errBuf, sizeof(errBuf), "hv_sparse_unpack failed");
+                    } else if (minDiskBytes > 0ULL) {
+                        uint64_t finalSz = 0ULL;
+                        rc = henge_expand_sparse_raw_disk(rawStr.c_str(), minDiskBytes, &finalSz, errBuf, sizeof(errBuf));
                     }
 #else
                     std::snprintf(errBuf, sizeof(errBuf), "Upstream HVSPARSE unpacker not linked");
@@ -368,6 +386,23 @@ static void henge_on_vm_exit(int reason) {
                     }
                 });
             });
+            return;
+        }
+    }
+    if (minDiskBytes > 0ULL && [fm fileExistsAtPath:rawDiskURL.path]) {
+        char expandErr[256] = {0};
+        uint64_t finalSz = 0ULL;
+        if (henge_expand_sparse_raw_disk(rawDiskURL.path.fileSystemRepresentation,
+                                         minDiskBytes,
+                                         &finalSz,
+                                         expandErr,
+                                         sizeof(expandErr)) != 0) {
+            NSString *msg = [NSString stringWithFormat:@"Failed to expand %@: %s", rawDiskURL.lastPathComponent, expandErr];
+            _statusText = msg;
+            NSError *err = [NSError errorWithDomain:HengeVMErrorDomain
+                                               code:1008
+                                           userInfo:@{NSLocalizedDescriptionKey: msg}];
+            completion(NO, err);
             return;
         }
     }

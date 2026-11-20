@@ -13,6 +13,7 @@ struct VMConfig: Codable, Identifiable, Equatable, Hashable {
     var enableAcpiSpcr: Bool
     var primaryDiskFileName: String
     var secondaryMediaFileName: String?
+    var targetDiskSizeGiB: Int? = nil
 
     static let distroOptions: [(tag: String, label: String)] = [
         ("arch", "Arch Linux"),
@@ -459,23 +460,75 @@ final class VMStore: ObservableObject {
         return cloned
     }
 
-    func compactPrimaryDisk(for vm: VMConfig) throws -> UInt64 {
-        let fm = FileManager.default
+    func resolvedRawDiskURL(for vm: VMConfig) -> URL {
         let dir = machineDirectoryURL(for: vm.id)
         let primary = dir.appendingPathComponent(vm.primaryDiskFileName)
         let lower = vm.primaryDiskFileName.lowercased()
-        let rawCandidate: URL
         if lower.hasSuffix(".hvsparse") {
-            rawCandidate = dir.appendingPathComponent(
+            return dir.appendingPathComponent(
                 ((vm.primaryDiskFileName as NSString).deletingPathExtension as NSString).appendingPathExtension("img") ?? "disk0.img"
             )
         } else if lower.hasSuffix(".qcow2") {
-            rawCandidate = dir.appendingPathComponent(
+            return dir.appendingPathComponent(
                 "\((vm.primaryDiskFileName as NSString).deletingPathExtension).raw.img"
             )
-        } else {
-            rawCandidate = primary
         }
+        return primary
+    }
+
+    func primaryDiskVirtualSizeBytes(for vm: VMConfig) -> UInt64 {
+        let rawURL = resolvedRawDiskURL(for: vm)
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: rawURL.path),
+           let bytes = (attrs[.size] as? NSNumber)?.uint64Value,
+           bytes > 0 {
+            return bytes
+        }
+        if let targetGiB = vm.targetDiskSizeGiB, targetGiB > 0 {
+            return UInt64(targetGiB) << 30
+        }
+        return 0
+    }
+
+    @discardableResult
+    func expandPrimaryDisk(for vm: VMConfig, targetGiB: Int) throws -> (finalBytes: UInt64, appliedImmediately: Bool) {
+        let clampedGiB = min(max(targetGiB, 4), 128)
+        let targetBytes = UInt64(clampedGiB) << 30
+        let fm = FileManager.default
+        let rawURL = resolvedRawDiskURL(for: vm)
+
+        var updated = vm
+        updated.targetDiskSizeGiB = max(clampedGiB, vm.targetDiskSizeGiB ?? 0)
+
+        if fm.fileExists(atPath: rawURL.path) {
+            var finalBytes: UInt64 = 0
+            var errBuf = [CChar](repeating: 0, count: 256)
+            let rc = henge_expand_sparse_raw_disk(rawURL.path, targetBytes, &finalBytes, &errBuf, errBuf.count)
+            if rc != 0 {
+                let msg = String(cString: errBuf)
+                throw NSError(domain: "io.hengelinux.vm", code: 2014, userInfo: [NSLocalizedDescriptionKey: msg])
+            }
+            let oneGiB = UInt64(1) << 30
+            let finalGiB = Int((finalBytes + (oneGiB - 1)) >> 30)
+            updated.targetDiskSizeGiB = max(updated.targetDiskSizeGiB ?? clampedGiB, finalGiB)
+            updateMachine(updated)
+            return (finalBytes, true)
+        }
+
+        let primaryURL = machineDirectoryURL(for: vm.id).appendingPathComponent(vm.primaryDiskFileName)
+        guard fm.fileExists(atPath: primaryURL.path) else {
+            throw NSError(
+                domain: "io.hengelinux.vm",
+                code: 2015,
+                userInfo: [NSLocalizedDescriptionKey: "No primary disk image found to expand for \(vm.name)."]
+            )
+        }
+        updateMachine(updated)
+        return (targetBytes, false)
+    }
+
+    func compactPrimaryDisk(for vm: VMConfig) throws -> UInt64 {
+        let fm = FileManager.default
+        let rawCandidate = resolvedRawDiskURL(for: vm)
         guard fm.fileExists(atPath: rawCandidate.path) else {
             throw NSError(
                 domain: "io.hengelinux.vm",

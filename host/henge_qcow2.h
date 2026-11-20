@@ -80,6 +80,17 @@ int henge_create_sparse_raw_disk(const char *raw_path,
                                  size_t err_cap);
 
 /*
+ * Grow-only sparse raw disk expansion via ftruncate(2) (aligned up to 4 KiB).
+ * Preserves existing extents and never shrinks: if the file is already at least
+ * `new_virtual_bytes`, returns 0 with `*out_final_bytes` set to current size.
+ */
+int henge_expand_sparse_raw_disk(const char *raw_path,
+                                 uint64_t new_virtual_bytes,
+                                 uint64_t *out_final_bytes,
+                                 char *err_buf,
+                                 size_t err_cap);
+
+/*
  * Copy-on-write clone a file using APFS clonefile(2) on Darwin, falling back
  * to a sparse-preserving copy on non-APFS volumes and Linux.
  */

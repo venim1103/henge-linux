@@ -712,6 +712,51 @@ int henge_create_sparse_raw_disk(const char *raw_path,
     return 0;
 }
 
+int henge_expand_sparse_raw_disk(const char *raw_path,
+                                 uint64_t new_virtual_bytes,
+                                 uint64_t *out_final_bytes,
+                                 char *err_buf,
+                                 size_t err_cap) {
+    if (out_final_bytes != NULL) {
+        *out_final_bytes = 0ULL;
+    }
+    if (raw_path == NULL || raw_path[0] == '\0' || new_virtual_bytes < 4096ULL ||
+        new_virtual_bytes > ((uint64_t)INT64_MAX - 4095ULL)) {
+        set_err(err_buf, err_cap, "Invalid disk expansion parameters.");
+        return -1;
+    }
+    uint64_t aligned = (new_virtual_bytes + 4095ULL) & ~4095ULL;
+    int fd = open(raw_path, O_RDWR);
+    if (fd < 0) {
+        set_err(err_buf, err_cap, "Failed to open raw disk image for expansion.");
+        return -1;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        set_err(err_buf, err_cap, "Disk expansion target is not a regular file.");
+        return -1;
+    }
+    uint64_t current = (st.st_size > 0) ? (uint64_t)st.st_size : 0ULL;
+    if (aligned <= current) {
+        close(fd);
+        if (out_final_bytes != NULL) {
+            *out_final_bytes = current;
+        }
+        return 0;
+    }
+    if (ftruncate(fd, (off_t)aligned) != 0) {
+        close(fd);
+        set_err(err_buf, err_cap, "Failed to extend sparse raw disk image via ftruncate.");
+        return -1;
+    }
+    close(fd);
+    if (out_final_bytes != NULL) {
+        *out_final_bytes = aligned;
+    }
+    return 0;
+}
+
 int henge_clone_file_apfs(const char *src_path,
                           const char *dst_path,
                           char *err_buf,
