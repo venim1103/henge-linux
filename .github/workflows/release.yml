@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.2)'
+        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.3)'
         required: true
-        default: 'v0.2.2'
+        default: 'v0.2.3'
         type: string
 
 concurrency:
@@ -229,11 +229,11 @@ jobs:
           Built from commit \`${SHORT_SHA}\` on ${BUILD_DATE}. Full-system ARM64 (\`aarch64\`) multi-distro Linux virtualization on non-jailbroken iOS 18.0 – iOS 27+ devices without \`Hypervisor.framework\`.
 
           ### Highlights
-          - **Zstd-Compressed QCOW2 & El Torito 2048B ISO Support:** Cross-compiled static \`libzstd.a\` (\`v1.5.7\`) into the iOS bundle so modern Zstd-compressed ARM64 cloud images (e.g. Fedora 41+) unpack natively on-device; added automatic \`2048\`-byte logical-sector detection for pure El Torito optical ISOs alongside \`512\`-byte isohybrid/CIDATA images.
-          - **Live 2D VirtIO-GPU KMS Viewport Resize:** Forwarding iPhone/iPad viewport and orientation changes from \`SessionView\` to \`hv_winvm_set_virtio_gpu_size()\` with \`VIRTIO_GPU_EVENT_DISPLAY\` configuration interrupts for dynamic guest KMS resolutions.
-          - **Hold-to-Repeat Special Keys & \`EV_REP\` Keyboard Support:** Held repeatable special keys (\`←\`, \`→\`, \`↑\`, \`↓\`, \`Bck\`, \`Del\`, \`Tab\`, \`PgUp\`, \`PgDn\`, etc.) now emit host-paced repeat pulses (\`~350 ms\` delay, \`~15.4 Hz\`) across PL011 UART, UEFI, \`virtio-input\`, \`xHCI\`, and \`uinput\`; advertised \`EV_REP\` (\`0x14\`) on \`virtio-input\` for hardware Bluetooth keyboards.
-          - **Start-Screen About Tab & Build Metadata:** Added a **Machines / About** tab bar on launch showing the installed app version, build channel (\`Release\` / \`Nightly\`), short Git commit hash, UTC build timestamp, copy button, and runtime capabilities.
-          - **Bundled Static ARM64 Guest Agent & Runtime Hardening:** CI now compiles and bundles a static \`aarch64-linux-musl\` \`henge-guest-agent\` directly inside \`HengeLinux.app\` for offline installation on minimal distros without \`gcc\`, plus a \`UserDefaults\` JIT selftest crash sentinel and boot-time Darwin commpage timebase sanity check.
+          - **2D VirtIO-GPU KMS Handoff & Hardware Cursor Overlay:** Added \`henge_virtio_gpu_reset()\` on VirtIO \`status=0\` reset (fixing black screens during UEFI-to-Linux handoff while preserving \`ramfb\` fallback) and alpha-blended \`cursorq\` (\`UPDATE_CURSOR\` / \`MOVE_CURSOR\`) compositing onto scanout 0 so the mouse pointer renders cleanly in Xorg \`modesetting\` and Wayland.
+          - **Keyboard Dismiss, Compact Keyboard+Mouse Layout & Holdable Mouse Controls:** Replaced SwiftUI automatic keyboard safe-area tracking with explicit \`keyboardHeight\` padding + a dedicated \`SoftwareKeyboardInputProxyView\` so hiding the software keyboard immediately restores the full canvas; added compact Split Deck sizing when keyboard + trackpad are open together, holdable **Left / Right Click** buttons for trackpad dragging, 1-finger press-and-hold left-drag on the Display canvas, and 2-finger long-press context menu.
+          - **No Doubled Keystrokes & Working \`Ctrl+Alt+F1\`–\`F12\` VT Switching:** Routed Arch \`henge_dual_console\` HID exclusively over PL011/\`OSC 9999\` (eliminating doubled characters on \`tty1\` and \`tty2\`), emitted synchronous key-down + \`60 ms\` sticky modifier release on special keys, and pulsed \`Ctrl+Alt+F1..F12\` chords onto \`virtio-input\` so VT switching works reliably across distros.
+          - **Always-Active \`ttyAMA0\` Serial Terminal on VT2+ (V2 Bridge):** Upgraded \`henge-dual-console\` / \`henge-guest-agent\` to \`HENGE_HID_READY_V2\` (\`OSC 9999;T\` tty1-scoped text) so the **\`ttyAMA0\` Serial Terminal** tab continues accepting root commands even while LXQt/SDDM is active on \`vt2\`.
+          - **Apple Silicon Inline Timer Fast-Path:** Validated Darwin \`COMMPAGE_TIMEBASE_TYPE == 3\` (\`S3_4_C15_C10_6\`) and \`type == 2\` (\`CNTVCTSS_EL0\`) in \`translate_counter()\` so iPhones stay on fast inline \`CNTVCT_EL0\` JIT emission instead of falling back to \`hv_counter()\`.
 
           ### Quick Setup (iOS 18.0+)
           1. Download and sign **\`HengeLinux-unsigned.ipa\`** with **SideStore** or **AltStore**.

@@ -1,6 +1,6 @@
 # `henge-linux` Setup & Sideloading Guide
 
-This guide walks through installing **`HengeLinux`** (`v0.2.2`) on a non-jailbroken iPhone or iPad (**iOS 18.0 – iOS 27+**), importing pre-built Arch Linux or unmodified ARM64 cloud/ISO Linux images, enabling JIT with **StikDebug** + **LocalDevVPN**, and using **2D VirtIO-GPU KMS**, the interactive **`ttyAMA0` terminal**, and the offline **Safari OAuth / WebDAV** guest agent.
+This guide walks through installing **`HengeLinux`** (`v0.2.3`) on a non-jailbroken iPhone or iPad (**iOS 18.0 – iOS 27+**), importing pre-built Arch Linux or unmodified ARM64 cloud/ISO Linux images, enabling JIT with **StikDebug** + **LocalDevVPN**, and using **2D VirtIO-GPU KMS**, the interactive **`ttyAMA0` terminal**, and the offline **Safari OAuth / WebDAV** guest agent.
 
 ---
 
@@ -72,11 +72,11 @@ HengeLinux automatically detects your iOS version and selects the right JIT back
 1. Pick your **Hardware Profile** (`4` or `6` vCPU) and adjust **Guest RAM (MiB)** (`512`–`10,240 MiB`). The launcher displays live `os_proc_available_memory()` Jetsam headroom and adaptive JIT pool sizing (`192` / `256` / `384 MiB`).
 2. Select a **Display Adapter**:
    - **2D UEFI GOP (Metal):** Universal UEFI framebuffer (`simpledrm`/`efifb`) — best default for initial boot and Arch Linux LXQt (`fbdev`).
-   - **2D VirtIO-GPU KMS (EDID + Metal):** Attaches PCIe `virtio-gpu` (`0x1af4:0x1050`) with VESA EDID 1.4 and live viewport/orientation resize (`VIRTIO_GPU_EVENT_DISPLAY`) for native `/dev/dri/card0` KMS (`modesetting` / software Wayland) on stock Linux distros.
+   - **2D VirtIO-GPU KMS (EDID + Metal):** Attaches PCIe `virtio-gpu` (`0x1af4:0x1050`) with VESA EDID 1.4, hardware cursor overlay (`cursorq`), and live viewport/orientation resize (`VIRTIO_GPU_EVENT_DISPLAY`) for native `/dev/dri/card0` KMS (`modesetting` / software Wayland) on stock Linux distros. *(On the prebuilt Arch Linux image, remove `/etc/X11/xorg.conf.d/10-fbdev.conf` so Xorg/SDDM uses KMS `modesetting` instead of `/dev/fb0`.)*
 3. Per-VM device toggles (**VirtIO Input**, **USB 3.0 xHCI**, **ACPI SPCR**) default to **VirtIO Input = On** and **xHCI = Off** for Linux guests so unmodified distros receive native `/dev/input/event*` keyboard (with `EV_REP` autorepeat) + tablet input without the legacy xHCI stall.
 4. Tap **Boot**:
-   - Use the top segmented switcher in `SessionView` to toggle between the **Metal Display** and the interactive **`ttyAMA0` Serial Terminal** tab at any time (with direct PL011 typing, Paste, and `Ctrl+C` / `Esc` / `Tab`).
-   - In the Display tab, press and hold repeatable special keys (`←`, `→`, `↑`, `↓`, `Bck`, `Del`, `Tab`, `PgUp`, `PgDn`, etc.) for continuous key repeat (`~350 ms` initial delay, `~15 Hz`), or long-press the canvas for **Paste / Copy Serial Log / Desktop…**.
+   - Use the top segmented switcher in `SessionView` to toggle between the **Metal Display** and the interactive **`ttyAMA0` Serial Terminal** tab at any time (with direct PL011 typing, Paste, and `Ctrl+C` / `Esc` / `Tab`; stays active even when LXQt runs on `vt2`).
+   - In the Display tab, press and hold repeatable special keys (`←`, `→`, `↑`, `↓`, `Bck`, `Del`, `Tab`, `PgUp`, `PgDn`, etc.) for continuous key repeat (`~350 ms` initial delay, `~15 Hz`), press-and-hold with 1 finger to left-drag, or 2-finger long-press the canvas for **Paste / Copy Serial Log / Desktop…**.
    - On the pre-built Arch Linux image, `systemd-bootaa64.efi` boots automatically into `[root@hengelinux ~]#`.
 
 ---
@@ -91,7 +91,7 @@ The pre-built `archlinux.hvsparse` image comes pre-configured with `/etc/X11/xor
    ```
    - This installs `lxqt`, `sddm`, `xorg-server`, `xorg-xinit`, `xf86-video-fbdev`, `xf86-input-libinput`, and `ttf-dejavu`, creates desktop user `arch` (password: `arch`), enables `sddm`, and switches the display to `vt2`.
 2. **Using Touch, Trackpad & Keyboard in LXQt:**
-   - Tap directly on the LXQt canvas to click, drag to move/drag, two-finger tap to right-click, or toggle **Split Deck** for a dedicated multi-touch trackpad + Left/Right Click buttons.
+   - Tap directly on the LXQt canvas to click, press-and-hold (1 finger) or drag to select/move windows, two-finger tap to right-click, two-finger long-press for the iOS context menu, or toggle **Split Deck** for a dedicated multi-touch trackpad + holdable Left/Right Click buttons (which auto-compact when the on-screen keyboard is open).
    - All touch, trackpad, and keyboard events are injected into Linux `/dev/uinput` by `henge-dual-console` whenever `vt2` is active—even with `usbcore.nousb` enabled.
 3. **Switching Between LXQt (`vt2`) and the Root Console (`vt1`):**
    - Press **`Ctrl` + `Alt` + `F1`** (via the special-key strip or a Bluetooth keyboard) to return to the `tty1` root console, or **`Ctrl` + `Alt` + `F2`** to return to LXQt. From the root console, you can also run `chvt 2` / `chvt 1`.
