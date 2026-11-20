@@ -480,25 +480,47 @@ static atomic_int g_console_pipe_read_fd = -1;
 static int g_console_orig_stderr_fd = -1;
 static bool g_console_capture_started = false;
 static atomic_bool g_guest_hid_bridge_ready = false;
+static atomic_bool g_guest_hid_bridge_v2 = false;
 static size_t g_hid_ready_match_pos = 0U;
+static size_t g_hid_v2_match_pos = 0U;
 
 static void scan_guest_hid_ready_locked(const char *data, size_t len) {
     static const char kToken[] = "HENGE_HID_READY";
+    static const char kTokenV2[] = "HENGE_HID_READY_V2";
     const size_t kTokenLen = sizeof(kToken) - 1U;
-    if (atomic_load_explicit(&g_guest_hid_bridge_ready, memory_order_relaxed)) {
+    const size_t kTokenV2Len = sizeof(kTokenV2) - 1U;
+    bool ready = atomic_load_explicit(&g_guest_hid_bridge_ready, memory_order_relaxed);
+    bool v2 = atomic_load_explicit(&g_guest_hid_bridge_v2, memory_order_relaxed);
+    if (ready && v2) {
         return;
     }
     for (size_t i = 0U; i < len; ++i) {
         char ch = data[i];
-        if (ch == kToken[g_hid_ready_match_pos]) {
-            g_hid_ready_match_pos++;
-            if (g_hid_ready_match_pos == kTokenLen) {
-                atomic_store_explicit(&g_guest_hid_bridge_ready, true, memory_order_release);
-                g_hid_ready_match_pos = 0U;
-                return;
+        if (!ready) {
+            if (ch == kToken[g_hid_ready_match_pos]) {
+                g_hid_ready_match_pos++;
+                if (g_hid_ready_match_pos == kTokenLen) {
+                    atomic_store_explicit(&g_guest_hid_bridge_ready, true, memory_order_release);
+                    g_hid_ready_match_pos = 0U;
+                    ready = true;
+                }
+            } else {
+                g_hid_ready_match_pos = (ch == kToken[0]) ? 1U : 0U;
             }
-        } else {
-            g_hid_ready_match_pos = (ch == kToken[0]) ? 1U : 0U;
+        }
+        if (!v2) {
+            if (ch == kTokenV2[g_hid_v2_match_pos]) {
+                g_hid_v2_match_pos++;
+                if (g_hid_v2_match_pos == kTokenV2Len) {
+                    atomic_store_explicit(&g_guest_hid_bridge_ready, true, memory_order_release);
+                    atomic_store_explicit(&g_guest_hid_bridge_v2, true, memory_order_release);
+                    g_hid_v2_match_pos = 0U;
+                    ready = true;
+                    v2 = true;
+                }
+            } else {
+                g_hid_v2_match_pos = (ch == kTokenV2[0]) ? 1U : 0U;
+            }
         }
     }
 }
@@ -647,10 +669,16 @@ bool hengelinux_is_guest_hid_bridge_ready(void) {
     return atomic_load_explicit(&g_guest_hid_bridge_ready, memory_order_acquire);
 }
 
+bool hengelinux_is_guest_hid_bridge_v2(void) {
+    return atomic_load_explicit(&g_guest_hid_bridge_v2, memory_order_acquire);
+}
+
 void hengelinux_reset_guest_hid_bridge_ready(void) {
     pthread_mutex_lock(&g_console_mutex);
     g_hid_ready_match_pos = 0U;
+    g_hid_v2_match_pos = 0U;
     atomic_store_explicit(&g_guest_hid_bridge_ready, false, memory_order_release);
+    atomic_store_explicit(&g_guest_hid_bridge_v2, false, memory_order_release);
     pthread_mutex_unlock(&g_console_mutex);
 }
 

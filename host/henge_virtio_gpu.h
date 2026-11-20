@@ -67,7 +67,9 @@ typedef enum {
     HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D      = 0x0204U,
     HENGE_VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D     = 0x0205U,
     HENGE_VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D   = 0x0206U,
-    HENGE_VIRTIO_GPU_CMD_SUBMIT_3D               = 0x0207U
+    HENGE_VIRTIO_GPU_CMD_SUBMIT_3D               = 0x0207U,
+    HENGE_VIRTIO_GPU_CMD_UPDATE_CURSOR           = 0x0300U,
+    HENGE_VIRTIO_GPU_CMD_MOVE_CURSOR             = 0x0301U
 } HengeVirtioGpuCmdType;
 
 /* VirtIO-GPU control queue response status codes. */
@@ -160,6 +162,16 @@ int henge_virtio_gpu_transfer_to_host_2d(HengeVirtioGpuDevice *dev,
                                          uint32_t width,
                                          uint32_t height,
                                          uint64_t offset);
+
+/* Update or move the 2D hardware cursor overlay for a scanout (cursorq). */
+int henge_virtio_gpu_update_cursor(HengeVirtioGpuDevice *dev,
+                                   uint32_t scanout_id,
+                                   uint32_t resource_id,
+                                   uint32_t x,
+                                   uint32_t y,
+                                   uint32_t hot_x,
+                                   uint32_t hot_y,
+                                   bool move_only);
 
 /* Snapshot the active scanout's host BGRA8 pixel buffer pointer and geometry. */
 int henge_virtio_gpu_get_scanout_frame(const HengeVirtioGpuDevice *dev,

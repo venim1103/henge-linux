@@ -78,7 +78,7 @@ struct SessionView: View {
                 if case .clamshell = posture {
                     clamshellInputDeck
                         .containerRelativeFrame(.vertical) { height, _ in
-                            max(220, height * 0.42)
+                            clamshellDeckHeight(forContainerHeight: height)
                         }
                 } else if showModifierBar {
                     compactModifierStrip
@@ -251,18 +251,18 @@ struct SessionView: View {
                 hidPulseButton("ScrLk", usage: 0x47, repeatable: false)
                 hidPulseButton("Pause", usage: 0x48, repeatable: false)
                 hidPulseButton("Menu", usage: 0x65, repeatable: false)
-                hidPulseButton("F1", usage: 0x3A)
-                hidPulseButton("F2", usage: 0x3B)
-                hidPulseButton("F3", usage: 0x3C)
-                hidPulseButton("F4", usage: 0x3D)
-                hidPulseButton("F5", usage: 0x3E)
-                hidPulseButton("F6", usage: 0x3F)
-                hidPulseButton("F7", usage: 0x40)
-                hidPulseButton("F8", usage: 0x41)
-                hidPulseButton("F9", usage: 0x42)
-                hidPulseButton("F10", usage: 0x43)
-                hidPulseButton("F11", usage: 0x44)
-                hidPulseButton("F12", usage: 0x45)
+                hidPulseButton("F1", usage: 0x3A, repeatable: false)
+                hidPulseButton("F2", usage: 0x3B, repeatable: false)
+                hidPulseButton("F3", usage: 0x3C, repeatable: false)
+                hidPulseButton("F4", usage: 0x3D, repeatable: false)
+                hidPulseButton("F5", usage: 0x3E, repeatable: false)
+                hidPulseButton("F6", usage: 0x3F, repeatable: false)
+                hidPulseButton("F7", usage: 0x40, repeatable: false)
+                hidPulseButton("F8", usage: 0x41, repeatable: false)
+                hidPulseButton("F9", usage: 0x42, repeatable: false)
+                hidPulseButton("F10", usage: 0x43, repeatable: false)
+                hidPulseButton("F11", usage: 0x44, repeatable: false)
+                hidPulseButton("F12", usage: 0x45, repeatable: false)
                 Button("Paste") {
                     if let clip = UIPasteboard.general.string, !clip.isEmpty {
                         HengeVMBridge.shared.pushHostClipboard(clip)
@@ -285,23 +285,44 @@ struct SessionView: View {
         .background(.ultraThinMaterial)
     }
 
+    private var isSoftwareKeyboardVisible: Bool {
+        keyboardHeight > 0 || focusSoftwareKeyboard
+    }
+
+    private func clamshellDeckHeight(forContainerHeight totalHeight: CGFloat) -> CGFloat {
+        if isSoftwareKeyboardVisible {
+            let remaining = max(120, totalHeight - keyboardHeight - 52)
+            let cap: CGFloat = showModifierBar ? 164 : 118
+            let floorH: CGFloat = showModifierBar ? 112 : 84
+            return min(cap, max(floorH, remaining * 0.36))
+        }
+        return max(220, totalHeight * 0.42)
+    }
+
     private var clamshellInputDeck: some View {
-        VStack(spacing: 8) {
+        let compact = isSoftwareKeyboardVisible
+        return VStack(spacing: compact ? 4 : 8) {
             if showModifierBar {
                 compactModifierStrip
             }
 
             GeometryReader { padGeo in
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: compact ? 10 : 14, style: .continuous)
                     .fill(Color(white: 0.14))
                     .overlay(
-                        VStack(spacing: 4) {
-                            Text("Multi-Touch Trackpad & HID Deck")
-                                .font(.footnote.weight(.medium))
-                                .foregroundStyle(.secondary)
-                            Text("Relative drag · Tap click · Hold Left/Right to drag")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                        VStack(spacing: compact ? 0 : 4) {
+                            if compact {
+                                Text("Trackpad")
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Multi-Touch Trackpad & HID Deck")
+                                    .font(.footnote.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                Text("Relative drag · Tap click · Hold Left/Right to drag")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                     )
                     .contentShape(Rectangle())
@@ -337,18 +358,18 @@ struct SessionView: View {
             .padding(.horizontal, 14)
 
             HStack(spacing: 10) {
-                MouseHoldButton(label: "Left Click", buttonMask: 1) { pressed in
+                MouseHoldButton(label: "Left Click", buttonMask: 1, compact: compact) { pressed in
                     setHeldMouseButton(1, pressed: pressed)
                 }
                 .frame(maxWidth: .infinity)
 
-                MouseHoldButton(label: "Right Click", buttonMask: 2) { pressed in
+                MouseHoldButton(label: "Right Click", buttonMask: 2, compact: compact) { pressed in
                     setHeldMouseButton(2, pressed: pressed)
                 }
                 .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, 14)
-            .padding(.bottom, 10)
+            .padding(.bottom, compact ? 4 : 10)
         }
         .background(Color(white: 0.08))
     }
@@ -398,6 +419,7 @@ struct SessionView: View {
 private struct MouseHoldButton: View {
     let label: String
     let buttonMask: UInt8
+    var compact: Bool = false
     let onPressChanged: (Bool) -> Void
 
     @State private var isPressed: Bool = false
@@ -405,9 +427,9 @@ private struct MouseHoldButton: View {
 
     var body: some View {
         Text(label)
-            .font(.subheadline.weight(.medium))
+            .font(compact ? .caption.weight(.medium) : .subheadline.weight(.medium))
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.vertical, compact ? 5 : 8)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(isPressed ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.24))
@@ -465,7 +487,7 @@ private struct HidHoldKeyButton: View {
         Button {
             if !didHandlePress {
                 HengeVMBridge.shared.tapHidKeyUsage(usage)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
                     onRelease()
                 }
             }
@@ -546,18 +568,19 @@ private struct HidHoldKeyBody: View {
         repeatTask?.cancel()
         let keyUsage = usage
         let shouldRepeat = repeatable
+        // Emit initial key-down synchronously so quick taps never get dropped if
+        // SwiftUI toggles isPressed false before the async Task starts executing.
+        HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: true)
         repeatTask = Task { @MainActor in
-            var keyDown = false
+            var keyDown = true
             defer {
                 if keyDown {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.015) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
                         HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: false)
                     }
                 }
             }
 
-            HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: true)
-            keyDown = true
             do {
                 try await Task.sleep(nanoseconds: Self.pulseDwellNs)
             } catch {
@@ -598,7 +621,10 @@ private struct HidHoldKeyBody: View {
         repeatTask?.cancel()
         repeatTask = nil
         if notifyRelease {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+            // Release sticky modifiers (Ctrl/Alt/Shift/Super) strictly after the
+            // 25 ms key-up dwell completes so guest chords (e.g. Ctrl+Alt+F1)
+            // always register with modifiers held.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
                 onRelease()
             }
         }

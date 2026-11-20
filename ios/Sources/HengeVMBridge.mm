@@ -780,89 +780,118 @@ static void henge_on_vm_exit(int reason) {
 }
 
 #if HENGE_HAS_UPSTREAM_ENGINE
-static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t modifiers) {
-    if (!uart) {
-        return;
-    }
+static size_t henge_hid_to_pl011_bytes(uint8_t usage, uint8_t modifiers, uint8_t out[16]) {
     const bool shift = (modifiers & 0x22U) != 0;
     const bool ctrl = (modifiers & 0x11U) != 0;
 
-    auto sendBytes = [uart](const char *seq, size_t len) {
-        for (size_t i = 0; i < len; ++i) {
-            hv_pl011_receive(uart, static_cast<uint8_t>(seq[i]));
-        }
+    auto emit = [out](const char *seq, size_t len) -> size_t {
+        std::memcpy(out, seq, len);
+        return len;
     };
 
     if (usage >= 0x04 && usage <= 0x1D) {
         char ch = static_cast<char>('a' + (usage - 0x04));
         if (ctrl) {
-            uint8_t c = static_cast<uint8_t>((ch - 'a') + 1);
-            hv_pl011_receive(uart, c);
+            out[0] = static_cast<uint8_t>((ch - 'a') + 1);
         } else if (shift) {
-            hv_pl011_receive(uart, static_cast<uint8_t>(ch - 'a' + 'A'));
+            out[0] = static_cast<uint8_t>(ch - 'a' + 'A');
         } else {
-            hv_pl011_receive(uart, static_cast<uint8_t>(ch));
+            out[0] = static_cast<uint8_t>(ch);
         }
-        return;
+        return 1;
     }
     if (usage >= 0x1E && usage <= 0x26) {
         static const char kShiftDigits[] = "!@#$%^&*(";
-        char ch = shift ? kShiftDigits[usage - 0x1E] : static_cast<char>('1' + (usage - 0x1E));
-        hv_pl011_receive(uart, static_cast<uint8_t>(ch));
-        return;
+        out[0] = static_cast<uint8_t>(shift ? kShiftDigits[usage - 0x1E] : static_cast<char>('1' + (usage - 0x1E)));
+        return 1;
     }
     switch (usage) {
-    case 0x27: hv_pl011_receive(uart, shift ? ')' : '0'); break;
-    case 0x28: hv_pl011_receive(uart, '\r'); break;
-    case 0x29: hv_pl011_receive(uart, 0x1B); break;
-    case 0x2A: hv_pl011_receive(uart, 0x7F); break;
-    case 0x2B: hv_pl011_receive(uart, '\t'); break;
-    case 0x2C: hv_pl011_receive(uart, ' '); break;
-    case 0x2D: hv_pl011_receive(uart, shift ? '_' : '-'); break;
-    case 0x2E: hv_pl011_receive(uart, shift ? '+' : '='); break;
-    case 0x2F: hv_pl011_receive(uart, shift ? '{' : '['); break;
-    case 0x30: hv_pl011_receive(uart, shift ? '}' : ']'); break;
-    case 0x31: hv_pl011_receive(uart, shift ? '|' : '\\'); break;
-    case 0x33: hv_pl011_receive(uart, shift ? ':' : ';'); break;
-    case 0x34: hv_pl011_receive(uart, shift ? '"' : '\''); break;
-    case 0x35: hv_pl011_receive(uart, shift ? '~' : '`'); break;
-    case 0x36: hv_pl011_receive(uart, shift ? '<' : ','); break;
-    case 0x37: hv_pl011_receive(uart, shift ? '>' : '.'); break;
-    case 0x38: hv_pl011_receive(uart, shift ? '?' : '/'); break;
-    case 0x3A: sendBytes("\x1BOP", 3); break;   /* F1 */
-    case 0x3B: sendBytes("\x1BOQ", 3); break;   /* F2 */
-    case 0x3C: sendBytes("\x1BOR", 3); break;   /* F3 */
-    case 0x3D: sendBytes("\x1BOS", 3); break;   /* F4 */
-    case 0x3E: sendBytes("\x1B[15~", 5); break; /* F5 */
-    case 0x3F: sendBytes("\x1B[17~", 5); break; /* F6 */
-    case 0x40: sendBytes("\x1B[18~", 5); break; /* F7 */
-    case 0x41: sendBytes("\x1B[19~", 5); break; /* F8 */
-    case 0x42: sendBytes("\x1B[20~", 5); break; /* F9 */
-    case 0x43: sendBytes("\x1B[21~", 5); break; /* F10 */
-    case 0x44: sendBytes("\x1B[23~", 5); break; /* F11 */
-    case 0x45: sendBytes("\x1B[24~", 5); break; /* F12 */
-    case 0x49: sendBytes("\x1B[2~", 4); break;  /* Insert */
-    case 0x4A: sendBytes("\x1B[H", 3); break;   /* Home */
-    case 0x4B: sendBytes("\x1B[5~", 4); break;  /* PageUp */
-    case 0x4C: sendBytes("\x1B[3~", 4); break;  /* Delete */
-    case 0x4D: sendBytes("\x1B[F", 3); break;   /* End */
-    case 0x4E: sendBytes("\x1B[6~", 4); break;  /* PageDown */
-    case 0x4F: sendBytes("\x1B[C", 3); break;   /* Right */
-    case 0x50: sendBytes("\x1B[D", 3); break;   /* Left */
-    case 0x51: sendBytes("\x1B[B", 3); break;   /* Down */
-    case 0x52: sendBytes("\x1B[A", 3); break;   /* Up */
-    case 0x54: hv_pl011_receive(uart, '/'); break;  /* Keypad / */
-    case 0x55: hv_pl011_receive(uart, '*'); break;  /* Keypad * */
-    case 0x56: hv_pl011_receive(uart, '-'); break;  /* Keypad - */
-    case 0x57: hv_pl011_receive(uart, '+'); break;  /* Keypad + */
-    case 0x58: hv_pl011_receive(uart, '\r'); break; /* Keypad Enter */
+    case 0x27: out[0] = shift ? ')' : '0'; return 1;
+    case 0x28: out[0] = '\r'; return 1;
+    case 0x29: out[0] = 0x1B; return 1;
+    case 0x2A: out[0] = 0x7F; return 1;
+    case 0x2B: out[0] = '\t'; return 1;
+    case 0x2C: out[0] = ' '; return 1;
+    case 0x2D: out[0] = shift ? '_' : '-'; return 1;
+    case 0x2E: out[0] = shift ? '+' : '='; return 1;
+    case 0x2F: out[0] = shift ? '{' : '['; return 1;
+    case 0x30: out[0] = shift ? '}' : ']'; return 1;
+    case 0x31: out[0] = shift ? '|' : '\\'; return 1;
+    case 0x33: out[0] = shift ? ':' : ';'; return 1;
+    case 0x34: out[0] = shift ? '"' : '\''; return 1;
+    case 0x35: out[0] = shift ? '~' : '`'; return 1;
+    case 0x36: out[0] = shift ? '<' : ','; return 1;
+    case 0x37: out[0] = shift ? '>' : '.'; return 1;
+    case 0x38: out[0] = shift ? '?' : '/'; return 1;
+    case 0x3A: return emit("\x1BOP", 3);   /* F1 */
+    case 0x3B: return emit("\x1BOQ", 3);   /* F2 */
+    case 0x3C: return emit("\x1BOR", 3);   /* F3 */
+    case 0x3D: return emit("\x1BOS", 3);   /* F4 */
+    case 0x3E: return emit("\x1B[15~", 5); /* F5 */
+    case 0x3F: return emit("\x1B[17~", 5); /* F6 */
+    case 0x40: return emit("\x1B[18~", 5); /* F7 */
+    case 0x41: return emit("\x1B[19~", 5); /* F8 */
+    case 0x42: return emit("\x1B[20~", 5); /* F9 */
+    case 0x43: return emit("\x1B[21~", 5); /* F10 */
+    case 0x44: return emit("\x1B[23~", 5); /* F11 */
+    case 0x45: return emit("\x1B[24~", 5); /* F12 */
+    case 0x49: return emit("\x1B[2~", 4);  /* Insert */
+    case 0x4A: return emit("\x1B[H", 3);   /* Home */
+    case 0x4B: return emit("\x1B[5~", 4);  /* PageUp */
+    case 0x4C: return emit("\x1B[3~", 4);  /* Delete */
+    case 0x4D: return emit("\x1B[F", 3);   /* End */
+    case 0x4E: return emit("\x1B[6~", 4);  /* PageDown */
+    case 0x4F: return emit("\x1B[C", 3);   /* Right */
+    case 0x50: return emit("\x1B[D", 3);   /* Left */
+    case 0x51: return emit("\x1B[B", 3);   /* Down */
+    case 0x52: return emit("\x1B[A", 3);   /* Up */
+    case 0x54: out[0] = '/'; return 1;  /* Keypad / */
+    case 0x55: out[0] = '*'; return 1;  /* Keypad * */
+    case 0x56: out[0] = '-'; return 1;  /* Keypad - */
+    case 0x57: out[0] = '+'; return 1;  /* Keypad + */
+    case 0x58: out[0] = '\r'; return 1; /* Keypad Enter */
     case 0x59: case 0x5A: case 0x5B: case 0x5C: case 0x5D:
     case 0x5E: case 0x5F: case 0x60: case 0x61:
-        hv_pl011_receive(uart, static_cast<uint8_t>('1' + (usage - 0x59)));
-        break;
-    case 0x62: hv_pl011_receive(uart, '0'); break;  /* Keypad 0 */
-    case 0x63: hv_pl011_receive(uart, '.'); break;  /* Keypad . */
-    default: break;
+        out[0] = static_cast<uint8_t>('1' + (usage - 0x59));
+        return 1;
+    case 0x62: out[0] = '0'; return 1;  /* Keypad 0 */
+    case 0x63: out[0] = '.'; return 1;  /* Keypad . */
+    default: return 0;
+    }
+}
+
+static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t modifiers) {
+    if (!uart) {
+        return;
+    }
+    uint8_t seq[16];
+    size_t len = henge_hid_to_pl011_bytes(usage, modifiers, seq);
+    for (size_t i = 0; i < len; ++i) {
+        hv_pl011_receive(uart, seq[i]);
+    }
+}
+
+static void henge_forward_hid_to_pl011_osc_tty1(HvPl011 *uart, uint8_t usage, uint8_t modifiers) {
+    if (!uart) {
+        return;
+    }
+    uint8_t seq[16];
+    size_t len = henge_hid_to_pl011_bytes(usage, modifiers, seq);
+    if (len == 0) {
+        return;
+    }
+    static const char kHex[] = "0123456789abcdef";
+    char frame[64];
+    size_t pos = 0;
+    std::memcpy(frame, "\x1b]9999;T ", 9);
+    pos = 9;
+    for (size_t i = 0; i < len && pos + 3 < sizeof(frame); ++i) {
+        frame[pos++] = kHex[(seq[i] >> 4) & 0xFU];
+        frame[pos++] = kHex[seq[i] & 0xFU];
+    }
+    frame[pos++] = '\x07';
+    for (size_t i = 0; i < pos; ++i) {
+        hv_pl011_receive(uart, static_cast<uint8_t>(frame[i]));
     }
 }
 #endif
@@ -880,13 +909,30 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
         }
         HvWinVirt *board = hv_winvm_board();
         const bool guestHidBridgeReady = hengelinux_is_guest_hid_bridge_ready();
+        const bool isCtrlAltFKey = ((_hidModifiers & 0x11U) != 0U) &&
+                                   ((_hidModifiers & 0x44U) != 0U) &&
+                                   (usage >= 0x3AU && usage <= 0x45U);
         if (guestHidBridgeReady && board != nullptr && board->uart != nullptr) {
             /*
              * Guest is running henge_dual_console / henge-guest-agent on ttyAMA0
              * (which mirrors tty1 and injects OSC 9999 into /dev/uinput on vt2+).
              * Route exclusively over PL011 so virtio-input does not double-deliver
              * keystrokes onto tty1 (echo) or tty2/X11 (input).
+             * Exception: Ctrl+Alt+F1..F12 VT-switch chords also pulse virtio-input
+             * so switching from tty1 -> vt2 works even when henge_dual_console
+             * suppresses uinput on tty1.
              */
+            if (isCtrlAltFKey) {
+                if (pressed) {
+                    hv_winvm_key_hid(0xE0, 1);
+                    hv_winvm_key_hid(0xE2, 1);
+                    hv_winvm_key_hid(usage, 1);
+                } else {
+                    hv_winvm_key_hid(usage, 0);
+                    hv_winvm_key_hid(0xE2, 0);
+                    hv_winvm_key_hid(0xE0, 0);
+                }
+            }
             char osc[48];
             int n = std::snprintf(osc, sizeof(osc), "\x1b]9999;K %02x %d\x07", usage, pressed ? 1 : 0);
             if (n > 0) {
@@ -894,8 +940,12 @@ static void henge_forward_hid_to_pl011(HvPl011 *uart, uint8_t usage, uint8_t mod
                     hv_pl011_receive(board->uart, static_cast<uint8_t>(osc[i]));
                 }
             }
-            if (pressed && !(usage >= 0xE0 && usage <= 0xE7)) {
-                henge_forward_hid_to_pl011(board->uart, usage, _hidModifiers);
+            if (pressed && !isCtrlAltFKey && !(usage >= 0xE0 && usage <= 0xE7)) {
+                if (hengelinux_is_guest_hid_bridge_v2()) {
+                    henge_forward_hid_to_pl011_osc_tty1(board->uart, usage, _hidModifiers);
+                } else {
+                    henge_forward_hid_to_pl011(board->uart, usage, _hidModifiers);
+                }
             }
             return;
         }

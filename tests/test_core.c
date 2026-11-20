@@ -442,6 +442,32 @@ static void test_virtio_gpu_backends(void) {
     /* Verify RGBA -> BGRA swizzle at (1,1) and (2,2) */
     HENGE_CHECK(scan_px[20] == 0x33U && scan_px[21] == 0x22U && scan_px[22] == 0x11U && scan_px[23] == 0xFFU);
     HENGE_CHECK(scan_px[40] == 0xCCU && scan_px[41] == 0xBBU && scan_px[42] == 0xAAU && scan_px[43] == 0xEEU);
+
+    /* Verify 2D hardware cursor overlay compositing (UPDATE_CURSOR + MOVE_CURSOR + hide). */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 0U, 21U, 0U, 2U, 2U,
+        HENGE_VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    uint8_t cur_px[16];
+    memset(cur_px, 0, sizeof(cur_px));
+    /* Cursor (0,0) = opaque white BGRA(FF,FF,FF,FF) */
+    cur_px[0] = 0xFFU; cur_px[1] = 0xFFU; cur_px[2] = 0xFFU; cur_px[3] = 0xFFU;
+    HengeGpuBackingEntry cur_backing = {
+        .host_ptr = cur_px, .guest_addr = 0x40002000ULL, .length = sizeof(cur_px), .reserved = 0U
+    };
+    HENGE_CHECK(henge_virtio_gpu_attach_backing(gpu, 21U, &cur_backing, 1U) == 0);
+    HENGE_CHECK(henge_virtio_gpu_transfer_to_host_2d(gpu, 21U, 0U, 0U, 2U, 2U, 0ULL) == 0);
+    HENGE_CHECK(henge_virtio_gpu_update_cursor(gpu, 0U, 21U, 0U, 0U, 0U, 0U, false) == 0);
+    HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == 0);
+    HENGE_CHECK(scan_px[0] == 0xFFU && scan_px[1] == 0xFFU && scan_px[2] == 0xFFU);
+    HENGE_CHECK(henge_virtio_gpu_update_cursor(gpu, 0U, 0U, 1U, 0U, 0U, 0U, true) == 0);
+    HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == 0);
+    HENGE_CHECK(scan_px[0] == 0x00U && scan_px[4] == 0xFFU && scan_px[5] == 0xFFU && scan_px[6] == 0xFFU);
+    HENGE_CHECK(henge_virtio_gpu_update_cursor(gpu, 0U, 0U, 0U, 0U, 0U, 0U, false) == 0);
+    HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == 0);
+    HENGE_CHECK(scan_px[4] == 0x00U);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF, 0U, 21U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
     HENGE_CHECK(henge_virtio_gpu_process_ctrl(
         gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF, 0U, 20U, 0U, 0U, 0U, 0U, NULL, 0U) ==
         HENGE_VIRTIO_GPU_RESP_OK_NODATA);
@@ -490,10 +516,19 @@ static void test_console_log_capture(void) {
 
     hengelinux_reset_guest_hid_bridge_ready();
     HENGE_CHECK(!hengelinux_is_guest_hid_bridge_ready());
+    HENGE_CHECK(!hengelinux_is_guest_hid_bridge_v2());
     hengelinux_console_append_line("\x1b]9998;HENGE_HID_READY\x07");
     HENGE_CHECK(hengelinux_is_guest_hid_bridge_ready());
+    HENGE_CHECK(!hengelinux_is_guest_hid_bridge_v2());
     hengelinux_reset_guest_hid_bridge_ready();
     HENGE_CHECK(!hengelinux_is_guest_hid_bridge_ready());
+    HENGE_CHECK(!hengelinux_is_guest_hid_bridge_v2());
+    hengelinux_console_append_line("\x1b]9998;HENGE_HID_READY_V2\x07");
+    HENGE_CHECK(hengelinux_is_guest_hid_bridge_ready());
+    HENGE_CHECK(hengelinux_is_guest_hid_bridge_v2());
+    hengelinux_reset_guest_hid_bridge_ready();
+    HENGE_CHECK(!hengelinux_is_guest_hid_bridge_ready());
+    HENGE_CHECK(!hengelinux_is_guest_hid_bridge_v2());
 
     hengelinux_clear_console_log();
     remove(log_path);

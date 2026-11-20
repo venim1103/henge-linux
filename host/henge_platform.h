@@ -90,10 +90,12 @@ void hengelinux_clear_console_log(void);
 
 /*
  * Guest OSC 9999 HID bridge handshake state. Flips true only after the Linux
- * guest's native henge-dual-console binary emits "HENGE_HID_READY" on ttyAMA0,
- * keeping UEFI and older guest images free of OSC 9999 escape bytes.
+ * guest's native henge-dual-console binary emits "HENGE_HID_READY" (V1) or
+ * "HENGE_HID_READY_V2" (V2: OSC 9999;T tty1-scoped text + always-active
+ * ttyAMA0 serial shell on VT2+) on ttyAMA0.
  */
 bool hengelinux_is_guest_hid_bridge_ready(void);
+bool hengelinux_is_guest_hid_bridge_v2(void);
 void hengelinux_reset_guest_hid_bridge_ready(void);
 
 #ifdef __cplusplus

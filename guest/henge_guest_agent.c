@@ -411,7 +411,35 @@ static void ensure_uinput_open(UinputState *u) {
     }
 }
 
-static void handle_hid_frame(UinputState *u, const char *body, bool on_tty1) {
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    return -1;
+}
+
+static void handle_hid_frame(UinputState *u, int master_fd, const char *body, bool on_tty1) {
+    if (body[0] == 'T' && body[1] == ' ') {
+        if (!on_tty1 || master_fd < 0) {
+            return;
+        }
+        uint8_t decoded[64];
+        size_t dlen = 0U;
+        const char *p = body + 2;
+        while (p[0] != '\0' && p[1] != '\0' && dlen < sizeof(decoded)) {
+            int hi = hex_nibble(p[0]);
+            int lo = hex_nibble(p[1]);
+            if (hi < 0 || lo < 0) {
+                break;
+            }
+            decoded[dlen++] = (uint8_t)((hi << 4) | lo);
+            p += 2;
+        }
+        if (dlen > 0U) {
+            write_all(master_fd, decoded, dlen);
+        }
+        return;
+    }
     if (on_tty1) {
         return;
     }
@@ -590,7 +618,7 @@ static int cmd_dual_console(void) {
     UinputState uinput = {-1, -1, 0U, 0};
     ensure_uinput_open(&uinput);
 
-    static const char kReadyBanner[] = "\x1b]9998;HENGE_HID_READY\x07";
+    static const char kReadyBanner[] = "\x1b]9998;HENGE_HID_READY_V2\x07";
     write_all(STDOUT_FILENO, kReadyBanner, sizeof(kReadyBanner) - 1U);
 
     OscState st = ST_NORMAL;
@@ -626,10 +654,8 @@ static int cmd_dual_console(void) {
             break;
         }
         if (rc == 0 && st == ST_ESC) {
-            if (tty1_is_active()) {
-                uint8_t esc = 0x1BU;
-                write_all(master_fd, &esc, 1U);
-            }
+            uint8_t esc = 0x1BU;
+            write_all(master_fd, &esc, 1U);
             st = ST_NORMAL;
             continue;
         }
@@ -651,7 +677,7 @@ static int cmd_dual_console(void) {
                 if (st == ST_NORMAL) {
                     if (b == 0x1BU) {
                         st = ST_ESC;
-                    } else if (on_tty1 && pty_len < sizeof(pty_out)) {
+                    } else if (pty_len < sizeof(pty_out)) {
                         pty_out[pty_len++] = b;
                     }
                 } else if (st == ST_ESC) {
@@ -659,11 +685,11 @@ static int cmd_dual_console(void) {
                         st = ST_OSC_PREFIX;
                         prefix_len = 0U;
                     } else if (b == 0x1BU) {
-                        if (on_tty1 && pty_len < sizeof(pty_out)) {
+                        if (pty_len < sizeof(pty_out)) {
                             pty_out[pty_len++] = 0x1BU;
                         }
                     } else {
-                        if (on_tty1 && pty_len + 2U <= sizeof(pty_out)) {
+                        if (pty_len + 2U <= sizeof(pty_out)) {
                             pty_out[pty_len++] = 0x1BU;
                             pty_out[pty_len++] = b;
                         }
@@ -677,7 +703,7 @@ static int cmd_dual_console(void) {
                             osc_len = 0U;
                         }
                     } else {
-                        if (on_tty1 && pty_len + 3U + prefix_len <= sizeof(pty_out)) {
+                        if (pty_len + 3U + prefix_len <= sizeof(pty_out)) {
                             pty_out[pty_len++] = 0x1BU;
                             pty_out[pty_len++] = (uint8_t)']';
                             for (size_t k = 0U; k < prefix_len; ++k) {
@@ -690,7 +716,7 @@ static int cmd_dual_console(void) {
                 } else {
                     if (b == 0x07U) {
                         osc_body[osc_len] = '\0';
-                        handle_hid_frame(&uinput, osc_body, on_tty1);
+                        handle_hid_frame(&uinput, master_fd, osc_body, on_tty1);
                         st = ST_NORMAL;
                     } else if (osc_len + 1U < sizeof(osc_body)) {
                         osc_body[osc_len++] = (char)b;
@@ -700,7 +726,7 @@ static int cmd_dual_console(void) {
                 }
             }
 
-            if (on_tty1 && pty_len > 0U) {
+            if (pty_len > 0U) {
                 write_all(master_fd, pty_out, pty_len);
             }
         }

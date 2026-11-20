@@ -142,6 +142,17 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     uint32_t resource_id;
+    uint32_t cursor_resource_id;
+    uint32_t cursor_x;
+    uint32_t cursor_y;
+    uint32_t cursor_hot_x;
+    uint32_t cursor_hot_y;
+    bool     composite_dirty;
+    uint8_t *composited_pixels;
+    size_t   composited_bytes;
+    uint32_t composited_w;
+    uint32_t composited_h;
+    uint32_t composited_stride;
 } HengeGpuScanoutState;
 
 struct HengeVirtioGpuDevice {
@@ -292,6 +303,18 @@ void henge_virtio_gpu_reset(HengeVirtioGpuDevice *dev) {
     memset(dev->contexts, 0, sizeof(dev->contexts));
     for (size_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
         dev->scanouts[s].resource_id = 0U;
+        dev->scanouts[s].cursor_resource_id = 0U;
+        dev->scanouts[s].cursor_x = 0U;
+        dev->scanouts[s].cursor_y = 0U;
+        dev->scanouts[s].cursor_hot_x = 0U;
+        dev->scanouts[s].cursor_hot_y = 0U;
+        dev->scanouts[s].composite_dirty = false;
+        free(dev->scanouts[s].composited_pixels);
+        dev->scanouts[s].composited_pixels = NULL;
+        dev->scanouts[s].composited_bytes = 0U;
+        dev->scanouts[s].composited_w = 0U;
+        dev->scanouts[s].composited_h = 0U;
+        dev->scanouts[s].composited_stride = 0U;
     }
     dev->flush_count = 0ULL;
     dev->cmd_count = 0ULL;
@@ -305,6 +328,10 @@ void henge_virtio_gpu_destroy(HengeVirtioGpuDevice *dev) {
     pthread_mutex_lock(&dev->lock);
     for (size_t i = 0; i < HENGE_VIRTIO_GPU_MAX_RESOURCES; i++) {
         free_resource_buffers_locked(&dev->resources[i]);
+    }
+    for (size_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+        free(dev->scanouts[s].composited_pixels);
+        dev->scanouts[s].composited_pixels = NULL;
     }
     pthread_mutex_unlock(&dev->lock);
     pthread_mutex_destroy(&dev->lock);
@@ -636,6 +663,107 @@ int henge_virtio_gpu_transfer_to_host_2d(HengeVirtioGpuDevice *dev,
         convert_row_to_bgra8(res->format, dst_row, width);
     }
 
+    for (size_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+        if (dev->scanouts[s].resource_id == resource_id ||
+            dev->scanouts[s].cursor_resource_id == resource_id) {
+            dev->scanouts[s].composite_dirty = true;
+        }
+    }
+
+    pthread_mutex_unlock(&dev->lock);
+    return 0;
+}
+
+static void refresh_scanout_composite_locked(HengeVirtioGpuDevice *dev,
+                                             uint32_t scanout_id,
+                                             const HengeGpuResourceSlot *res) {
+    HengeGpuScanoutState *sc = &dev->scanouts[scanout_id];
+    if (sc->cursor_resource_id == 0U || res == NULL || res->pixels == NULL) {
+        sc->composite_dirty = false;
+        return;
+    }
+    const HengeGpuResourceSlot *cur = find_resource_locked(dev, sc->cursor_resource_id);
+    if (cur == NULL || cur->pixels == NULL || cur->width == 0U || cur->height == 0U) {
+        sc->composite_dirty = false;
+        return;
+    }
+    size_t needed = (size_t)res->stride * (size_t)res->height;
+    if (needed == 0U || needed > HENGE_VIRTIO_GPU_MAX_2D_BYTES) {
+        sc->composite_dirty = false;
+        return;
+    }
+    if (sc->composited_pixels == NULL || sc->composited_bytes != needed) {
+        uint8_t *buf = malloc(needed);
+        if (buf == NULL) {
+            sc->composite_dirty = false;
+            return;
+        }
+        free(sc->composited_pixels);
+        sc->composited_pixels = buf;
+        sc->composited_bytes = needed;
+    }
+    memcpy(sc->composited_pixels, res->pixels, needed);
+    sc->composited_w = res->width;
+    sc->composited_h = res->height;
+    sc->composited_stride = res->stride;
+
+    int32_t base_x = (int32_t)sc->cursor_x - (int32_t)sc->cursor_hot_x;
+    int32_t base_y = (int32_t)sc->cursor_y - (int32_t)sc->cursor_hot_y;
+    for (uint32_t cy = 0U; cy < cur->height; cy++) {
+        int32_t dy = base_y + (int32_t)cy;
+        if (dy < 0 || (uint32_t)dy >= res->height) continue;
+        const uint8_t *src_row = cur->pixels + (size_t)cy * (size_t)cur->stride;
+        uint8_t *dst_row = sc->composited_pixels + (size_t)dy * (size_t)res->stride;
+        for (uint32_t cx = 0U; cx < cur->width; cx++) {
+            int32_t dx = base_x + (int32_t)cx;
+            if (dx < 0 || (uint32_t)dx >= res->width) continue;
+            const uint8_t *sp = src_row + (size_t)cx * 4U;
+            uint8_t a = sp[3];
+            if (a == 0U) continue;
+            uint8_t *dp = dst_row + (size_t)dx * 4U;
+            if (a == 255U) {
+                dp[0] = sp[0];
+                dp[1] = sp[1];
+                dp[2] = sp[2];
+                dp[3] = 255U;
+            } else {
+                uint32_t inv_a = 255U - (uint32_t)a;
+                /* Support both premultiplied ARGB (Xorg/DRM) and straight alpha. */
+                bool premul = (sp[0] <= a && sp[1] <= a && sp[2] <= a);
+                for (int ch = 0; ch < 3; ch++) {
+                    uint32_t v = premul
+                        ? ((uint32_t)sp[ch] + ((uint32_t)dp[ch] * inv_a + 127U) / 255U)
+                        : (((uint32_t)sp[ch] * (uint32_t)a + (uint32_t)dp[ch] * inv_a + 127U) / 255U);
+                    dp[ch] = (uint8_t)(v > 255U ? 255U : v);
+                }
+                dp[3] = 255U;
+            }
+        }
+    }
+    sc->composite_dirty = false;
+}
+
+int henge_virtio_gpu_update_cursor(HengeVirtioGpuDevice *dev,
+                                   uint32_t scanout_id,
+                                   uint32_t resource_id,
+                                   uint32_t x,
+                                   uint32_t y,
+                                   uint32_t hot_x,
+                                   uint32_t hot_y,
+                                   bool move_only) {
+    if (dev == NULL || scanout_id >= HENGE_VIRTIO_GPU_MAX_SCANOUTS) {
+        return -1;
+    }
+    pthread_mutex_lock(&dev->lock);
+    HengeGpuScanoutState *sc = &dev->scanouts[scanout_id];
+    sc->cursor_x = x;
+    sc->cursor_y = y;
+    if (!move_only) {
+        sc->cursor_resource_id = resource_id;
+        sc->cursor_hot_x = hot_x;
+        sc->cursor_hot_y = hot_y;
+    }
+    sc->composite_dirty = true;
     pthread_mutex_unlock(&dev->lock);
     return 0;
 }
@@ -651,14 +779,26 @@ int henge_virtio_gpu_get_scanout_frame(const HengeVirtioGpuDevice *dev,
     }
     HengeVirtioGpuDevice *mut = (HengeVirtioGpuDevice *)dev;
     pthread_mutex_lock(&mut->lock);
-    uint32_t res_id = dev->scanouts[scanout_id].resource_id;
+    HengeGpuScanoutState *sc = &mut->scanouts[scanout_id];
+    uint32_t res_id = sc->resource_id;
     HengeGpuResourceSlot *res = find_resource_locked(mut, res_id);
     if (res == NULL || res->pixels == NULL || res->width == 0U || res->height == 0U) {
         pthread_mutex_unlock(&mut->lock);
         return -1;
     }
+    const uint8_t *frame_ptr = res->pixels;
+    if (sc->cursor_resource_id != 0U) {
+        if (sc->composite_dirty || sc->composited_pixels == NULL ||
+            sc->composited_w != res->width || sc->composited_h != res->height) {
+            refresh_scanout_composite_locked(mut, scanout_id, res);
+        }
+        if (sc->composited_pixels != NULL &&
+            sc->composited_w == res->width && sc->composited_h == res->height) {
+            frame_ptr = sc->composited_pixels;
+        }
+    }
     if (out_pixels != NULL) {
-        *out_pixels = res->pixels;
+        *out_pixels = frame_ptr;
     }
     if (out_width != NULL) {
         *out_width = res->width;
@@ -830,6 +970,11 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
             for (size_t s = 0; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
                 if (dev->scanouts[s].resource_id == resource_id) {
                     dev->scanouts[s].resource_id = 0U;
+                    dev->scanouts[s].composite_dirty = true;
+                }
+                if (dev->scanouts[s].cursor_resource_id == resource_id) {
+                    dev->scanouts[s].cursor_resource_id = 0U;
+                    dev->scanouts[s].composite_dirty = true;
                 }
             }
             free_resource_buffers_locked(res);
@@ -934,6 +1079,7 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
                 break;
             }
             dev->scanouts[scanout_id].resource_id = resource_id;
+            dev->scanouts[scanout_id].composite_dirty = true;
             if (width > 0U && height > 0U) {
                 dev->scanouts[scanout_id].width = width;
                 dev->scanouts[scanout_id].height = height;

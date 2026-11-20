@@ -818,6 +818,19 @@ static void vgpu_notify(HvVirtio *v, int q) {
         uint32_t written = 24;
 
         if (q == 1) {
+            uint32_t creq[8] = {0};
+            hv_virtq_read(v, &e, 24, creq, sizeof creq);
+            uint32_t scanout_id = creq[0];
+            uint32_t cx = creq[1];
+            uint32_t cy = creq[2];
+            uint32_t res_id = creq[4];
+            uint32_t hot_x = creq[5];
+            uint32_t hot_y = creq[6];
+            bool move_only = (type == HENGE_VIRTIO_GPU_CMD_MOVE_CURSOR);
+            henge_virtio_gpu_update_cursor(g->gpu, scanout_id, res_id, cx, cy, hot_x, hot_y, move_only);
+            if (scanout_id == 0u) {
+                vgpu_sync_scanout0(g);
+            }
             resp_type = HENGE_VIRTIO_GPU_RESP_OK_NODATA;
         } else if (type == HENGE_VIRTIO_GPU_CMD_GET_DISPLAY_INFO) {
             uint8_t resp[24 + 16 * 24];
