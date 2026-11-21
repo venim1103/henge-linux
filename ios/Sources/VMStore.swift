@@ -286,12 +286,52 @@ final class VMStore: ObservableObject {
         }
     }
 
+    var hasSharedFirmware: Bool {
+        let fm = FileManager.default
+        let codeCandidates = [
+            firmwareDirectoryURL.appendingPathComponent("edk2-aarch64-code.fd"),
+            firmwareDirectoryURL.appendingPathComponent("code.fd"),
+            machinesRootURL.appendingPathComponent("ArchLinux/code.fd")
+        ]
+        let varsCandidates = [
+            firmwareDirectoryURL.appendingPathComponent("edk2-aarch64-vars-template.fd"),
+            firmwareDirectoryURL.appendingPathComponent("vars.fd"),
+            machinesRootURL.appendingPathComponent("ArchLinux/vars.fd")
+        ]
+        let hasCode = codeCandidates.contains { fm.fileExists(atPath: $0.path) }
+        let hasVars = varsCandidates.contains { fm.fileExists(atPath: $0.path) }
+        return hasCode && hasVars
+    }
+
+    func installSharedFirmware(codeTempURL: URL, varsTempURL: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: firmwareDirectoryURL, withIntermediateDirectories: true, attributes: nil)
+
+        let sharedCode = firmwareDirectoryURL.appendingPathComponent("edk2-aarch64-code.fd")
+        let sharedVars = firmwareDirectoryURL.appendingPathComponent("edk2-aarch64-vars-template.fd")
+        if fm.fileExists(atPath: sharedCode.path) {
+            try fm.removeItem(at: sharedCode)
+        }
+        try fm.copyItem(at: codeTempURL, to: sharedCode)
+        if fm.fileExists(atPath: sharedVars.path) {
+            try fm.removeItem(at: sharedVars)
+        }
+        try fm.copyItem(at: varsTempURL, to: sharedVars)
+
+        // Ensure existing VMs that lacked vars.fd pick up a clean copy immediately.
+        for vm in machines {
+            _ = resolvedVarsFirmwareURL(for: vm)
+        }
+    }
+
     @discardableResult
     func createMachine(
         name: String,
         distroTag: String,
         ramMiB: Int,
-        cpuCount: Int
+        cpuCount: Int,
+        gpuBackend: Int = 0,
+        targetDiskSizeGiB: Int? = nil
     ) throws -> VMConfig {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = trimmed.isEmpty ? "Linux VM" : trimmed
@@ -305,12 +345,13 @@ final class VMStore: ObservableObject {
             distroTag: distroTag,
             ramMiB: min(max(ramMiB, Int(HENGE_MIN_GUEST_RAM_MIB)), Int(HENGE_MAX_GUEST_RAM_MIB)),
             cpuCount: min(max(cpuCount, 1), 8),
-            gpuBackend: 0,
+            gpuBackend: gpuBackend,
             enableVirtioInput: true,
             enableXhci: false,
             enableAcpiSpcr: true,
             primaryDiskFileName: "disk0.img",
-            secondaryMediaFileName: nil
+            secondaryMediaFileName: nil,
+            targetDiskSizeGiB: targetDiskSizeGiB
         )
         try saveManifest(cfg)
         _ = resolvedVarsFirmwareURL(for: cfg)
@@ -388,26 +429,32 @@ final class VMStore: ObservableObject {
             (cleanHost.isEmpty ? "hengelinux" : cleanHost).withCString { cHost in
                 (cleanUser.isEmpty ? "linux" : cleanUser).withCString { cUser in
                     cleanPass.withCString { cPass in
-                        if let ssh = cleanSSH, !ssh.isEmpty {
-                            return ssh.withCString { cSSH in
+                        vm.distroTag.withCString { cDistro in
+                            if let ssh = cleanSSH, !ssh.isEmpty {
+                                return ssh.withCString { cSSH in
+                                    var cfg = HengeCidataConfig(
+                                        instance_id: cInst,
+                                        hostname: cHost,
+                                        username: cUser,
+                                        password: cPass,
+                                        ssh_authorized_key: cSSH,
+                                        distro_tag: cDistro,
+                                        default_shell: nil
+                                    )
+                                    return henge_cidata_write_image(seedURL.path, &cfg, &errBuf, errBuf.count)
+                                }
+                            } else {
                                 var cfg = HengeCidataConfig(
                                     instance_id: cInst,
                                     hostname: cHost,
                                     username: cUser,
                                     password: cPass,
-                                    ssh_authorized_key: cSSH
+                                    ssh_authorized_key: nil,
+                                    distro_tag: cDistro,
+                                    default_shell: nil
                                 )
                                 return henge_cidata_write_image(seedURL.path, &cfg, &errBuf, errBuf.count)
                             }
-                        } else {
-                            var cfg = HengeCidataConfig(
-                                instance_id: cInst,
-                                hostname: cHost,
-                                username: cUser,
-                                password: cPass,
-                                ssh_authorized_key: nil
-                            )
-                            return henge_cidata_write_image(seedURL.path, &cfg, &errBuf, errBuf.count)
                         }
                     }
                 }
@@ -544,6 +591,70 @@ final class VMStore: ObservableObject {
             throw NSError(domain: "io.hengelinux.vm", code: 2013, userInfo: [NSLocalizedDescriptionKey: msg])
         }
         return reclaimed
+    }
+
+    /// Moves a staged temporary download directly into the VM directory using
+    /// magic-byte classification (instant on APFS without duplicating large images).
+    @discardableResult
+    func importStagedGuestFile(from stagedURL: URL, originalFileName: String, into vm: VMConfig) throws -> String {
+        let fm = FileManager.default
+        let vmDir = machineDirectoryURL(for: vm.id)
+        try fm.createDirectory(at: vmDir, withIntermediateDirectories: true, attributes: nil)
+        try fm.createDirectory(at: firmwareDirectoryURL, withIntermediateDirectories: true, attributes: nil)
+
+        var updated = vm
+        let lowerName = originalFileName.lowercased()
+        let magicFmt = henge_detect_image_format(stagedURL.path)
+        let targetURL: URL
+
+        if magicFmt == HENGE_IMG_FORMAT_HVSPARSE || lowerName.hasSuffix(".hvsparse") {
+            let destName = (vm.id == "ArchLinux") ? "archlinux.hvsparse" : "disk0.hvsparse"
+            targetURL = vmDir.appendingPathComponent(destName)
+            let staleRawName = (vm.id == "ArchLinux") ? "archlinux.img" : "disk0.img"
+            let staleRawURL = vmDir.appendingPathComponent(staleRawName)
+            if fm.fileExists(atPath: staleRawURL.path) {
+                try? fm.removeItem(at: staleRawURL)
+            }
+            updated.primaryDiskFileName = destName
+        } else if magicFmt == HENGE_IMG_FORMAT_QCOW2 || lowerName.hasSuffix(".qcow2") {
+            var info = HengeQcow2Info()
+            var errBuf = [CChar](repeating: 0, count: 256)
+            if henge_qcow2_inspect(stagedURL.path, &info, &errBuf, errBuf.count) != 0 {
+                let msg = String(cString: errBuf)
+                throw NSError(
+                    domain: "io.hengelinux.import",
+                    code: 3002,
+                    userInfo: [NSLocalizedDescriptionKey: "Unsupported QCOW2 '\(originalFileName)': \(msg)"]
+                )
+            }
+            let destName = "disk0.qcow2"
+            targetURL = vmDir.appendingPathComponent(destName)
+            let staleRawURL = vmDir.appendingPathComponent("disk0.raw.img")
+            if fm.fileExists(atPath: staleRawURL.path) {
+                try? fm.removeItem(at: staleRawURL)
+            }
+            updated.primaryDiskFileName = destName
+        } else if magicFmt == HENGE_IMG_FORMAT_ISO9660 || lowerName.hasSuffix(".iso") {
+            targetURL = vmDir.appendingPathComponent(originalFileName)
+            updated.secondaryMediaFileName = originalFileName
+        } else if lowerName.hasSuffix(".img") || lowerName.hasSuffix(".raw") {
+            let destName = (vm.id == "ArchLinux") ? "archlinux.img" : "disk0.img"
+            targetURL = vmDir.appendingPathComponent(destName)
+            updated.primaryDiskFileName = destName
+        } else {
+            throw NSError(
+                domain: "io.hengelinux.import",
+                code: 3003,
+                userInfo: [NSLocalizedDescriptionKey: "Downloaded file '\(originalFileName)' is not a recognized QCOW2, HVSPARSE, ISO9660, or raw disk image."]
+            )
+        }
+
+        if fm.fileExists(atPath: targetURL.path) {
+            try fm.removeItem(at: targetURL)
+        }
+        try fm.moveItem(at: stagedURL, to: targetURL)
+        updateMachine(updated)
+        return targetURL.lastPathComponent
     }
 
     /// Imports guest disk, QCOW2, ISO, or firmware files into the specified VM using

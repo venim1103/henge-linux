@@ -167,6 +167,47 @@ static void sanitize_yaml_token(const char *src, char *dst, size_t cap, const ch
     }
 }
 
+static void sanitize_shell_path(const char *in, char *out, size_t cap, const char *fallback) {
+    size_t w = 0U;
+    if (in != NULL && in[0] == '/') {
+        for (size_t i = 0U; in[i] != '\0' && w + 1U < cap; i++) {
+            unsigned char ch = (unsigned char)in[i];
+            if (isalnum(ch) || ch == '/' || ch == '-' || ch == '_' || ch == '.') {
+                out[w++] = (char)ch;
+            }
+        }
+    }
+    if (w < 2U) {
+        snprintf(out, cap, "%s", fallback);
+    } else {
+        out[w] = '\0';
+    }
+}
+
+static bool str_eq_ci(const char *a, const char *b) {
+    if (a == NULL || b == NULL) {
+        return false;
+    }
+    while (*a != '\0' && *b != '\0') {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) {
+            return false;
+        }
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static const char *resolve_default_shell_for_distro(const char *distro_tag) {
+    if (distro_tag == NULL || distro_tag[0] == '\0') {
+        return "/bin/sh";
+    }
+    if (str_eq_ci(distro_tag, "alpine") || str_eq_ci(distro_tag, "void")) {
+        return "/bin/sh";
+    }
+    return "/bin/bash";
+}
+
 int henge_cidata_write_image(const char *out_path,
                              const HengeCidataConfig *cfg,
                              char *err_buf,
@@ -179,9 +220,13 @@ int henge_cidata_write_image(const char *out_path,
     char inst_id[64];
     char hostname[64];
     char username[64];
+    char shell_path[64];
     sanitize_yaml_token(cfg->instance_id, inst_id, sizeof(inst_id), "hengelinux-01");
     sanitize_yaml_token(cfg->hostname, hostname, sizeof(hostname), "hengelinux");
     sanitize_yaml_token(cfg->username, username, sizeof(username), "linux");
+    const char *distro_tag = (cfg->distro_tag != NULL && cfg->distro_tag[0] != '\0') ? cfg->distro_tag : NULL;
+    const char *auto_shell = resolve_default_shell_for_distro(distro_tag);
+    sanitize_shell_path(cfg->default_shell, shell_path, sizeof(shell_path), auto_shell);
     const char *password = (cfg->password != NULL && cfg->password[0] != '\0') ? cfg->password : "linux";
 
     /* Escape single quotes in YAML single-quoted password string. */
@@ -214,10 +259,15 @@ int henge_cidata_write_image(const char *out_path,
                             "#cloud-config\n"
                             "hostname: %s\n"
                             "manage_etc_hosts: true\n"
+                            "growpart:\n"
+                            "  mode: auto\n"
+                            "  devices: ['/']\n"
+                            "  ignore_growroot_disabled: false\n"
+                            "resize_rootfs: true\n"
                             "users:\n"
                             "  - name: %s\n"
                             "    groups: [sudo, wheel, adm]\n"
-                            "    shell: /bin/sh\n"
+                            "    shell: %s\n"
                             "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
                             "    lock_passwd: false\n"
                             "    plain_text_passwd: '%s'\n"
@@ -228,16 +278,21 @@ int henge_cidata_write_image(const char *out_path,
                             "  list: |\n"
                             "    %s:%s\n"
                             "ssh_pwauth: true\n",
-                            hostname, username, escaped_pw, cfg->ssh_authorized_key, username, password);
+                            hostname, username, shell_path, escaped_pw, cfg->ssh_authorized_key, username, password);
     } else {
         user_len = snprintf(user_data, sizeof(user_data),
                             "#cloud-config\n"
                             "hostname: %s\n"
                             "manage_etc_hosts: true\n"
+                            "growpart:\n"
+                            "  mode: auto\n"
+                            "  devices: ['/']\n"
+                            "  ignore_growroot_disabled: false\n"
+                            "resize_rootfs: true\n"
                             "users:\n"
                             "  - name: %s\n"
                             "    groups: [sudo, wheel, adm]\n"
-                            "    shell: /bin/sh\n"
+                            "    shell: %s\n"
                             "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
                             "    lock_passwd: false\n"
                             "    plain_text_passwd: '%s'\n"
@@ -246,7 +301,42 @@ int henge_cidata_write_image(const char *out_path,
                             "  list: |\n"
                             "    %s:%s\n"
                             "ssh_pwauth: true\n",
-                            hostname, username, escaped_pw, username, password);
+                            hostname, username, shell_path, escaped_pw, username, password);
+    }
+
+    if (user_len > 0 && (size_t)user_len < sizeof(user_data) && distro_tag != NULL) {
+        int extra = snprintf(user_data + user_len, sizeof(user_data) - (size_t)user_len,
+                             "write_files:\n"
+                             "  - path: /etc/cloud/cloud.cfg.d/99-henge-nocloud.cfg\n"
+                             "    permissions: '0644'\n"
+                             "    content: |\n"
+                             "      datasource_list: [NoCloud, None]\n");
+        if (extra > 0 && (size_t)(user_len + extra) < sizeof(user_data)) {
+            user_len += extra;
+        } else {
+            user_len = -1;
+        }
+    }
+
+    if (user_len > 0 && (size_t)user_len < sizeof(user_data) && distro_tag != NULL) {
+        int extra = 0;
+        if (str_eq_ci(distro_tag, "ubuntu")) {
+            extra = snprintf(user_data + user_len, sizeof(user_data) - (size_t)user_len,
+                             "runcmd:\n"
+                             "  - [sh, -c, \"if [ -x /bin/bash ]; then chsh -s /bin/bash %s 2>/dev/null || true; fi\"]\n"
+                             "  - [sh, -c, \"systemctl disable --now snapd.service snapd.socket snapd.seeded.service unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer multipathd.service multipathd.socket ModemManager.service 2>/dev/null || true\"]\n",
+                             username);
+        } else if (!str_eq_ci(distro_tag, "alpine") && !str_eq_ci(distro_tag, "void")) {
+            extra = snprintf(user_data + user_len, sizeof(user_data) - (size_t)user_len,
+                             "runcmd:\n"
+                             "  - [sh, -c, \"if [ -x /bin/bash ]; then chsh -s /bin/bash %s 2>/dev/null || true; fi\"]\n",
+                             username);
+        }
+        if (extra < 0 || (size_t)(user_len + extra) >= sizeof(user_data)) {
+            user_len = -1;
+        } else {
+            user_len += extra;
+        }
     }
 
     static const char network_cfg[] =

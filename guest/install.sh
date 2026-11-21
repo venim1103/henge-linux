@@ -86,7 +86,16 @@ fetch_file() {
     fi
 }
 
+detect_distro() {
+    if [ -r /etc/os-release ]; then
+        awk -F= '/^ID=/{gsub(/"/, "", $2); print tolower($2); exit}' /etc/os-release 2>/dev/null || printf 'unknown'
+    else
+        printf 'unknown'
+    fi
+}
+
 INIT_SYS="$(detect_init_system)"
+DISTRO_ID="$(detect_distro)"
 HAS_DRM=0
 if [ -e /dev/dri/card0 ]; then
     HAS_DRM=1
@@ -96,6 +105,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     printf '[henge-install] Dry-run summary:\n'
     printf '  GATEWAY      = %s\n' "$GATEWAY"
     printf '  PREFIX       = %s\n' "$PREFIX"
+    printf '  DISTRO       = %s\n' "$DISTRO_ID"
     printf '  INIT_SYSTEM  = %s\n' "$INIT_SYS"
     printf '  DRM_CARD0    = %s\n' "$HAS_DRM"
     exit 0
@@ -357,7 +367,109 @@ EOF
     printf '[henge-install] Installed OpenRC henge-grow-root.start.\n'
 fi
 
-# 7. Write Xorg 10-fbdev.conf ONLY when /dev/dri/card0 KMS is absent
+# 7. Upgrade invoking user's shell from dash/sh to /bin/bash when available (fixes arrow keys & history)
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] && [ -x /bin/bash ]; then
+    CURR_SHELL="$(awk -F: -v u="$SUDO_USER" '$1 == u { print $7; exit }' /etc/passwd 2>/dev/null || true)"
+    case "$CURR_SHELL" in
+        /bin/sh|/bin/dash|/usr/bin/dash|"")
+            if command -v chsh >/dev/null 2>&1; then
+                chsh -s /bin/bash "$SUDO_USER" >/dev/null 2>&1 || true
+            elif command -v usermod >/dev/null 2>&1; then
+                usermod -s /bin/bash "$SUDO_USER" >/dev/null 2>&1 || true
+            fi
+            printf '[henge-install] Switched login shell for %s to /bin/bash.\n' "$SUDO_USER"
+            ;;
+    esac
+fi
+
+# 8. Trim heavy Ubuntu cloud background daemons that compete for emulated CPU
+if [ "$DISTRO_ID" = "ubuntu" ] && [ "$INIT_SYS" = "systemd" ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now \
+        snapd.service snapd.socket snapd.seeded.service \
+        unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer \
+        multipathd.service multipathd.socket ModemManager.service >/dev/null 2>&1 || true
+    printf '[henge-install] Disabled heavy Ubuntu cloud background daemons.\n'
+fi
+
+# 9. Install distro-aware henge-install-desktop helper (one-command LXQt + SDDM setup)
+cat <<'EOF' > "$BIN_DIR/henge-install-desktop"
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Install lightweight LXQt + Openbox + SDDM desktop across supported ARM64 distros.
+set -eu
+
+if [ "$(id -u)" -ne 0 ]; then
+    printf 'Run with sudo: sudo henge-install-desktop\n' >&2
+    exit 1
+fi
+
+DISTRO="unknown"
+if [ -r /etc/os-release ]; then
+    DISTRO="$(awk -F= '/^ID=/{gsub(/"/, "", $2); print tolower($2); exit}' /etc/os-release 2>/dev/null || printf 'unknown')"
+fi
+printf '[henge-desktop] Detected distro: %s\n' "$DISTRO"
+
+if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        lxqt-core openbox sddm xorg xserver-xorg-video-fbdev qterminal pcmanfm-qt \
+        lxqt-themes breeze-icon-theme dbus-x11 scrot
+    systemctl set-default graphical.target >/dev/null 2>&1 || true
+    systemctl enable sddm >/dev/null 2>&1 || true
+elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y --setopt=install_weak_deps=False \
+        lxqt-session lxqt-panel lxqt-runner lxqt-config lxqt-themes openbox \
+        sddm qterminal pcmanfm-qt xorg-x11-server-Xorg xorg-x11-drv-fbdev dbus-x11
+    systemctl set-default graphical.target >/dev/null 2>&1 || true
+    systemctl enable sddm >/dev/null 2>&1 || true
+elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install --no-recommends \
+        lxqt-session lxqt-panel lxqt-config openbox sddm qterminal pcmanfm-qt \
+        xorg-x11-server xf86-video-fbdev
+    systemctl set-default graphical.target >/dev/null 2>&1 || true
+    systemctl enable sddm >/dev/null 2>&1 || true
+elif command -v apk >/dev/null 2>&1; then
+    apk update
+    apk add xorg-server xf86-video-fbdev xf86-input-libinput eudev mesa-dri-gallium \
+        lxqt-desktop openbox qterminal pcmanfm-qt sddm dbus-x11 font-dejavu
+    setup-devd udev >/dev/null 2>&1 || true
+    rc-update add dbus default >/dev/null 2>&1 || true
+    rc-update add sddm default >/dev/null 2>&1 || true
+elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm --needed \
+        xorg-server xf86-video-fbdev lxqt openbox sddm qterminal pcmanfm-qt breeze-icons
+    systemctl set-default graphical.target >/dev/null 2>&1 || true
+    systemctl enable sddm >/dev/null 2>&1 || true
+elif command -v xbps-install >/dev/null 2>&1; then
+    xbps-install -Sy xorg-minimal xf86-video-fbdev lxqt openbox sddm qterminal pcmanfm-qt dbus
+    ln -sf /etc/sv/dbus /var/service/dbus 2>/dev/null || true
+    ln -sf /etc/sv/sddm /var/service/sddm 2>/dev/null || true
+else
+    printf '[henge-desktop] Unsupported package manager on %s.\n' "$DISTRO" >&2
+    exit 1
+fi
+
+if [ -e /dev/dri/card0 ]; then
+    rm -f /etc/X11/xorg.conf.d/10-fbdev.conf
+    printf '[henge-desktop] /dev/dri/card0 detected; using native KMS modesetting.\n'
+else
+    mkdir -p /etc/X11/xorg.conf.d
+    cat <<'XEOF' > /etc/X11/xorg.conf.d/10-fbdev.conf
+Section "Device"
+    Identifier "EFIFB"
+    Driver "fbdev"
+    Option "fbdev" "/dev/fb0"
+EndSection
+XEOF
+    printf '[henge-desktop] Configured /etc/X11/xorg.conf.d/10-fbdev.conf for UEFI GOP.\n'
+fi
+
+printf '[henge-desktop] LXQt installed! Reboot now with: sudo reboot\n'
+EOF
+chmod 0755 "$BIN_DIR/henge-install-desktop"
+
+# 10. Write Xorg 10-fbdev.conf ONLY when /dev/dri/card0 KMS is absent
 if [ "$HAS_DRM" -eq 0 ] && [ -d /etc/X11 ]; then
     mkdir -p /etc/X11/xorg.conf.d
     if [ ! -f /etc/X11/xorg.conf.d/10-fbdev.conf ]; then
@@ -370,9 +482,13 @@ EndSection
 EOF
         printf '[henge-install] Installed /etc/X11/xorg.conf.d/10-fbdev.conf (no /dev/dri/card0 present).\n'
     fi
+elif [ "$HAS_DRM" -eq 1 ] && [ -f /etc/X11/xorg.conf.d/10-fbdev.conf ]; then
+    rm -f /etc/X11/xorg.conf.d/10-fbdev.conf
+    printf '[henge-install] Removed stale 10-fbdev.conf (/dev/dri/card0 KMS active).\n'
 else
     printf '[henge-install] Skipping 10-fbdev.conf (/dev/dri/card0 present or X11 absent).\n'
 fi
 
-printf '[henge-install] Done (init=%s). Mount iOS Shared folder anytime with:\n' "$INIT_SYS"
+printf '[henge-install] Done (distro=%s, init=%s). Install LXQt anytime with: sudo henge-install-desktop\n' "$DISTRO_ID" "$INIT_SYS"
+printf '  Mount iOS Shared folder anytime with:\n'
 printf '  rclone mount :webdav: /mnt/ios-share --webdav-url http://%s/ --webdav-vendor other --daemon\n' "$GATEWAY"

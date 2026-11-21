@@ -15,6 +15,8 @@ typedef struct HengeCidataConfig {
     const char *username;
     const char *password;
     const char *ssh_authorized_key; /* Optional; may be NULL or empty */
+    const char *distro_tag;         /* Optional ("ubuntu", "debian", "fedora", "alpine", "opensuse", ...) */
+    const char *default_shell;      /* Optional shell override (e.g. "/bin/bash"); auto-selected when NULL */
 } HengeCidataConfig;
 
 /*

@@ -841,6 +841,69 @@ static void test_cidata_fat16_generator(void) {
 
     free(img);
     remove(seed_path);
+
+    /* Distro-aware CIDATA profiles: Ubuntu -> /bin/bash + NoCloud + snapd disable; Alpine -> /bin/sh */
+    {
+        const char *ubuntu_seed = "build/test_cidata_ubuntu.img";
+        HengeCidataConfig ucfg;
+        memset(&ucfg, 0, sizeof(ucfg));
+        ucfg.instance_id = "henge-ubuntu-01";
+        ucfg.hostname = "ubuntu-ios";
+        ucfg.username = "linux";
+        ucfg.password = "linux";
+        ucfg.distro_tag = "ubuntu";
+        HENGE_CHECK(henge_cidata_write_image(ubuntu_seed, &ucfg, err, sizeof(err)) == 0);
+
+        FILE *ufp = fopen(ubuntu_seed, "rb");
+        HENGE_CHECK(ufp != NULL);
+        uint8_t *uimg = (uint8_t *)malloc(4224U * 512U);
+        HENGE_CHECK(uimg != NULL);
+        HENGE_CHECK(fread(uimg, 1U, 4224U * 512U, ufp) == 4224U * 512U);
+        fclose(ufp);
+
+        const char *udata = (const char *)(uimg + 67U * 512U);
+        size_t ulen = (4224U - 67U) * 512U;
+        bool has_bash = false, has_nocloud = false, has_snapd = false, has_growpart = false;
+        for (size_t i = 0U; i + 32U < ulen; i++) {
+            if (!has_bash && memcmp(udata + i, "shell: /bin/bash\n", 17U) == 0) has_bash = true;
+            if (!has_nocloud && memcmp(udata + i, "datasource_list: [NoCloud, None]", 32U) == 0) has_nocloud = true;
+            if (!has_snapd && memcmp(udata + i, "snapd.service", 13U) == 0) has_snapd = true;
+            if (!has_growpart && memcmp(udata + i, "resize_rootfs: true", 19U) == 0) has_growpart = true;
+        }
+        HENGE_CHECK(has_bash && has_nocloud && has_snapd && has_growpart);
+        free(uimg);
+        remove(ubuntu_seed);
+    }
+
+    {
+        const char *alpine_seed = "build/test_cidata_alpine.img";
+        HengeCidataConfig acfg;
+        memset(&acfg, 0, sizeof(acfg));
+        acfg.instance_id = "henge-alpine-01";
+        acfg.hostname = "alpine-ios";
+        acfg.username = "linux";
+        acfg.password = "linux";
+        acfg.distro_tag = "alpine";
+        HENGE_CHECK(henge_cidata_write_image(alpine_seed, &acfg, err, sizeof(err)) == 0);
+
+        FILE *afp = fopen(alpine_seed, "rb");
+        HENGE_CHECK(afp != NULL);
+        uint8_t *aimg = (uint8_t *)malloc(4224U * 512U);
+        HENGE_CHECK(aimg != NULL);
+        HENGE_CHECK(fread(aimg, 1U, 4224U * 512U, afp) == 4224U * 512U);
+        fclose(afp);
+
+        const char *adata = (const char *)(aimg + 67U * 512U);
+        size_t alen = (4224U - 67U) * 512U;
+        bool has_sh = false, has_snapd = false;
+        for (size_t i = 0U; i + 20U < alen; i++) {
+            if (!has_sh && memcmp(adata + i, "shell: /bin/sh\n", 15U) == 0) has_sh = true;
+            if (!has_snapd && memcmp(adata + i, "snapd.service", 13U) == 0) has_snapd = true;
+        }
+        HENGE_CHECK(has_sh && !has_snapd);
+        free(aimg);
+        remove(alpine_seed);
+    }
 }
 
 int main(void) {

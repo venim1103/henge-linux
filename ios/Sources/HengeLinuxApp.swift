@@ -51,6 +51,7 @@ struct HengeLinuxApp: App {
     @StateObject private var lifecycle = MetalLifecycleGuard()
     @StateObject private var jitClient = SelfDebugJITClient()
     @StateObject private var vmStore = VMStore()
+    @StateObject private var downloader = DistroDownloadManager()
     @State private var selectedStartTab: StartTab = .machines
     @State private var copiedBuildInfo: Bool = false
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
@@ -61,6 +62,12 @@ struct HengeLinuxApp: App {
     @State private var isImportingFile: Bool = false
     @State private var showDebugConsole: Bool = false
     @State private var showNewVMSheet: Bool = false
+    @State private var showDownloadGallery: Bool = false
+    @State private var galleryDiskGiB: Int = 16
+    @State private var customDownloadURLText: String = ""
+    @State private var customDownloadVMName: String = ""
+    @State private var customDownloadDistroTag: String = "debian"
+    @State private var customDownloadCidata: Bool = true
     @State private var newVMName: String = ""
     @State private var newVMDistroTag: String = "debian"
     @State private var newVMCreateBlankDisk: Bool = false
@@ -178,11 +185,14 @@ struct HengeLinuxApp: App {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Create") {
                                 do {
+                                    let defaultGpu = ["debian", "ubuntu", "fedora", "opensuse"].contains(newVMDistroTag) ? 2 : 0
                                     let created = try vmStore.createMachine(
                                         name: newVMName,
                                         distroTag: newVMDistroTag,
                                         ramMiB: Int(effectiveRamMiB),
-                                        cpuCount: selectedProfile.cpuCount
+                                        cpuCount: selectedProfile.cpuCount,
+                                        gpuBackend: defaultGpu,
+                                        targetDiskSizeGiB: newVMCreateBlankDisk ? newVMBlankDiskGiB : 16
                                     )
                                     if newVMCreateBlankDisk {
                                         try vmStore.createBlankDisk(for: created, sizeGiB: newVMBlankDiskGiB)
@@ -250,6 +260,9 @@ struct HengeLinuxApp: App {
                         }
                     }
                 }
+            }
+            .sheet(isPresented: $showDownloadGallery) {
+                distroDownloadGallerySheet
             }
             .sheet(isPresented: $showExpandDiskSheet) {
                 let vm = vmStore.selectedMachine
@@ -474,6 +487,33 @@ struct HengeLinuxApp: App {
                                 }
                             }
                         }
+                    }
+                    Button {
+                        showDownloadGallery = true
+                    } label: {
+                        Label("Download Distros & Firmware...", systemImage: "arrow.down.circle.fill")
+                    }
+                    if downloader.isDownloading {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Downloading \(downloader.activeTitle)")
+                                    .font(.caption.weight(.medium))
+                                Spacer()
+                                Button("Cancel", role: .destructive) {
+                                    downloader.cancelDownload()
+                                }
+                                .font(.caption)
+                            }
+                            if downloader.bytesExpected > 0 {
+                                ProgressView(value: downloader.progressFraction)
+                            } else {
+                                ProgressView()
+                            }
+                            Text(downloader.progressLabel)
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
                     }
                     Button {
                         showNewVMSheet = true
@@ -885,6 +925,193 @@ struct HengeLinuxApp: App {
                 }
             }
             .navigationTitle("henge-linux")
+        }
+    }
+
+    private var distroDownloadGallerySheet: some View {
+        NavigationStack {
+            List {
+                if downloader.isDownloading {
+                    Section("Active Download") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(downloader.activeTitle)
+                                .font(.headline)
+                            if downloader.bytesExpected > 0 {
+                                ProgressView(value: downloader.progressFraction)
+                            } else {
+                                ProgressView()
+                            }
+                            HStack {
+                                Text(downloader.progressLabel)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Cancel", role: .destructive) {
+                                    downloader.cancelDownload()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                if let dlErr = downloader.lastError, !dlErr.isEmpty {
+                    Section("Download Error") {
+                        Text(dlErr)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                Section("Shared UEFI Firmware (Required Once)") {
+                    LabeledContent("EDK2 Firmware", value: vmStore.hasSharedFirmware ? "Installed (Shared)" : "Not Installed")
+                    Button {
+                        Task {
+                            do {
+                                try await downloader.downloadSharedFirmware(into: vmStore)
+                                jitClient.refreshFileStatus()
+                                bootWarning = "Downloaded shared UEFI firmware (code.fd + vars.fd) into Documents/Firmware/."
+                            } catch is CancellationError {
+                                bootWarning = "Firmware download canceled."
+                            } catch {
+                                bootErrorAlert = "Firmware download failed: \(error.localizedDescription)"
+                            }
+                        }
+                    } label: {
+                        Label(
+                            vmStore.hasSharedFirmware ? "Re-Download UEFI Firmware (~128 MiB)" : "Download UEFI Firmware (~128 MiB)",
+                            systemImage: "cpu.fill"
+                        )
+                    }
+                    .disabled(downloader.isDownloading)
+                }
+
+                Section("Auto-Provisioning Defaults (Cloud Distros)") {
+                    TextField("Username", text: $cidataUsername)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Password", text: $cidataPassword)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Stepper("Target Virtual Disk: \(galleryDiskGiB) GiB", value: $galleryDiskGiB, in: 8...64, step: 4)
+                    Text("Cloud images automatically configure /bin/bash (or /bin/sh on Alpine), NoCloud metadata lock, root disk auto-grow, and VirtIO-GPU KMS where supported.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Supported Public ARM64 Distros") {
+                    ForEach(DistroCatalogItem.supportedDistros) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(item.name)
+                                    .font(.headline)
+                                Spacer()
+                                Text(item.approxSizeLabel)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(item.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button {
+                                Task {
+                                    do {
+                                        let created = try await downloader.downloadAndProvision(
+                                            item: item,
+                                            into: vmStore,
+                                            ramMiB: Int(effectiveRamMiB),
+                                            cpuCount: selectedProfile.cpuCount,
+                                            diskGiB: galleryDiskGiB,
+                                            username: cidataUsername,
+                                            password: cidataPassword
+                                        )
+                                        jitClient.refreshFileStatus()
+                                        if item.needsCidata {
+                                            let u = cidataUsername.isEmpty ? "linux" : cidataUsername
+                                            let p = cidataPassword.isEmpty ? "linux" : cidataPassword
+                                            bootWarning = "Ready: \(created.name) downloaded (login: \(u) / \(p)). Tap Boot!"
+                                        } else {
+                                            bootWarning = "Ready: \(created.name) downloaded. Tap Boot!"
+                                        }
+                                        showDownloadGallery = false
+                                    } catch is CancellationError {
+                                        bootWarning = "Canceled downloading \(item.name)."
+                                    } catch {
+                                        bootErrorAlert = "Download failed: \(error.localizedDescription)"
+                                    }
+                                }
+                            } label: {
+                                Label("Download & Create VM", systemImage: "arrow.down.circle")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(downloader.isDownloading)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                Section("Custom Image URL (.qcow2 / .hvsparse / .img / .iso)") {
+                    TextField("https://example.org/image-arm64.qcow2", text: $customDownloadURLText)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("VM Name (optional)", text: $customDownloadVMName)
+                    Picker("Distro Profile", selection: $customDownloadDistroTag) {
+                        ForEach(VMConfig.distroOptions, id: \.tag) { opt in
+                            Text(opt.label).tag(opt.tag)
+                        }
+                    }
+                    Toggle("Attach CIDATA Cloud-Init Seed", isOn: $customDownloadCidata)
+                    Button {
+                        let trimmed = customDownloadURLText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard let url = URL(string: trimmed) else {
+                            bootErrorAlert = "Please enter a valid http:// or https:// image URL."
+                            return
+                        }
+                        Task {
+                            do {
+                                let created = try await downloader.downloadCustomURL(
+                                    url,
+                                    vmName: customDownloadVMName,
+                                    distroTag: customDownloadDistroTag,
+                                    into: vmStore,
+                                    ramMiB: Int(effectiveRamMiB),
+                                    cpuCount: selectedProfile.cpuCount,
+                                    diskGiB: galleryDiskGiB,
+                                    generateCidata: customDownloadCidata,
+                                    username: cidataUsername,
+                                    password: cidataPassword
+                                )
+                                jitClient.refreshFileStatus()
+                                bootWarning = "Downloaded custom image into '\(created.name)'. Tap Boot!"
+                                customDownloadURLText = ""
+                                customDownloadVMName = ""
+                                showDownloadGallery = false
+                            } catch is CancellationError {
+                                bootWarning = "Custom image download canceled."
+                            } catch {
+                                bootErrorAlert = "Custom download failed: \(error.localizedDescription)"
+                            }
+                        }
+                    } label: {
+                        Label("Download Custom Image", systemImage: "link.badge.plus")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(downloader.isDownloading || customDownloadURLText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .navigationTitle("Distro & Firmware Gallery")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        showDownloadGallery = false
+                    }
+                }
+            }
         }
     }
 
