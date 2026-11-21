@@ -415,6 +415,9 @@ if command -v apt-get >/dev/null 2>&1; then
     apt-get install -y --no-install-recommends \
         lxqt-core openbox sddm xorg xserver-xorg-video-fbdev qterminal pcmanfm-qt \
         lxqt-themes breeze-icon-theme dbus-x11 scrot
+    if [ "$DISTRO" = "ubuntu" ]; then
+        apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" 2>/dev/null || true
+    fi
     systemctl set-default graphical.target >/dev/null 2>&1 || true
     systemctl enable sddm >/dev/null 2>&1 || true
 elif command -v dnf >/dev/null 2>&1; then
@@ -469,24 +472,56 @@ printf '[henge-desktop] LXQt installed! Reboot now with: sudo reboot\n'
 EOF
 chmod 0755 "$BIN_DIR/henge-install-desktop"
 
-# 10. Write Xorg 10-fbdev.conf ONLY when /dev/dri/card0 KMS is absent
-if [ "$HAS_DRM" -eq 0 ] && [ -d /etc/X11 ]; then
+# 10. Install boot-time Xorg GPU auto-selector so switching between 2D UEFI GOP
+#     and VirtIO-GPU KMS never leaves a stale 10-fbdev.conf causing a black screen
+cat <<'EOF' > "$SBIN_DIR/henge-xorg-autodetect"
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Keep /etc/X11/xorg.conf.d/10-fbdev.conf synchronized with /dev/dri/card0.
+set -eu
+[ -d /etc/X11 ] || exit 0
+if [ -e /dev/dri/card0 ]; then
+    rm -f /etc/X11/xorg.conf.d/10-fbdev.conf
+elif [ -e /dev/fb0 ]; then
     mkdir -p /etc/X11/xorg.conf.d
-    if [ ! -f /etc/X11/xorg.conf.d/10-fbdev.conf ]; then
-        cat <<'EOF' > /etc/X11/xorg.conf.d/10-fbdev.conf
+    cat <<'XEOF' > /etc/X11/xorg.conf.d/10-fbdev.conf
 Section "Device"
     Identifier "EFIFB"
     Driver "fbdev"
     Option "fbdev" "/dev/fb0"
 EndSection
+XEOF
+fi
 EOF
-        printf '[henge-install] Installed /etc/X11/xorg.conf.d/10-fbdev.conf (no /dev/dri/card0 present).\n'
-    fi
-elif [ "$HAS_DRM" -eq 1 ] && [ -f /etc/X11/xorg.conf.d/10-fbdev.conf ]; then
-    rm -f /etc/X11/xorg.conf.d/10-fbdev.conf
-    printf '[henge-install] Removed stale 10-fbdev.conf (/dev/dri/card0 KMS active).\n'
-else
-    printf '[henge-install] Skipping 10-fbdev.conf (/dev/dri/card0 present or X11 absent).\n'
+chmod 0755 "$SBIN_DIR/henge-xorg-autodetect"
+"$SBIN_DIR/henge-xorg-autodetect" || true
+
+if [ "$INIT_SYS" = "systemd" ]; then
+    mkdir -p /etc/systemd/system/multi-user.target.wants
+    cat <<EOF > /etc/systemd/system/henge-xorg-autodetect.service
+[Unit]
+Description=HengeLinux Xorg GPU Backend Auto-Detector
+After=systemd-udev-settle.service local-fs.target
+Before=display-manager.service sddm.service lightdm.service gdm.service
+
+[Service]
+Type=oneshot
+ExecStart=${SBIN_DIR}/henge-xorg-autodetect
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    ln -sf /etc/systemd/system/henge-xorg-autodetect.service /etc/systemd/system/multi-user.target.wants/henge-xorg-autodetect.service
+    printf '[henge-install] Installed systemd henge-xorg-autodetect.service.\n'
+elif [ "$INIT_SYS" = "openrc" ] && [ -d /etc/local.d ]; then
+    cat <<EOF > /etc/local.d/henge-xorg-autodetect.start
+#!/bin/sh
+exec ${SBIN_DIR}/henge-xorg-autodetect
+EOF
+    chmod 0755 /etc/local.d/henge-xorg-autodetect.start
+    rc-update add local default >/dev/null 2>&1 || true
+    printf '[henge-install] Installed OpenRC henge-xorg-autodetect.start.\n'
 fi
 
 printf '[henge-install] Done (distro=%s, init=%s). Install LXQt anytime with: sudo henge-install-desktop\n' "$DISTRO_ID" "$INIT_SYS"

@@ -252,6 +252,81 @@ static int serve_henge(Conn *c, Request *r) {
 - (void)_hengeUnlockedTick {
     @autoreleasepool {""",
     )
+    patch_file(
+        fb_metal_m,
+        "if (!texture) {",
+        """        if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
+
+        os_unfair_lock_lock(&lock);
+        CAMetalLayer *curLayer = layer;
+        if (!curLayer || !device || !pipeline || !queue) {
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
+
+        CGSize dsize = curLayer.drawableSize;
+        if (dsize.width < 4 || dsize.height < 4) {
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
+
+        uint64_t hval = quick_frame_hash(px, w, h, stride);
+        BOOL sizeChanged = !CGSizeEqualToSize(dsize, lastDrawableSize);
+        if (hval == lastHash && !sizeChanged && texW == w && texH == h) {
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
+
+        if (!texture || texW != w || texH != h) {
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                          width:w
+                                                                                         height:h
+                                                                                      mipmapped:NO];
+            td.usage = MTLTextureUsageShaderRead;
+            texture = [device newTextureWithDescriptor:td];
+            texW = w;
+            texH = h;
+        }""",
+        """        if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
+        if (!px || w < 4 || h < 4 || w > 8192 || h > 8192 || stride < w * 4u) return;
+
+        os_unfair_lock_lock(&lock);
+        CAMetalLayer *curLayer = layer;
+        if (!curLayer || !device || !pipeline || !queue) {
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
+
+        CGSize dsize = curLayer.drawableSize;
+        if (dsize.width < 4 || dsize.height < 4) {
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
+
+        uint64_t hval = quick_frame_hash(px, w, h, stride);
+        BOOL sizeChanged = !CGSizeEqualToSize(dsize, lastDrawableSize);
+        if (hval == lastHash && !sizeChanged && texW == w && texH == h) {
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
+
+        if (!texture || texW != w || texH != h) {
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                          width:w
+                                                                                         height:h
+                                                                                      mipmapped:NO];
+            td.usage = MTLTextureUsageShaderRead;
+            texture = [device newTextureWithDescriptor:td];
+            if (!texture) {
+                texW = 0;
+                texH = 0;
+                os_unfair_lock_unlock(&lock);
+                return;
+            }
+            texW = w;
+            texH = h;
+        }""",
+    )
 
     # 3. host/audio_mac.c: pause audio playback/capture callbacks when backgrounded
     audio_mac_c = upstream / "host/audio_mac.c"
@@ -1150,6 +1225,95 @@ void hv_winvm_set_virtio_gpu_size(uint32_t width, uint32_t height);""",
     hv_winvirt_set_virtio_gpu(c->enable_virtio_gpu);
     if (hv_winvirt_create(&board, &m, cpus, ncpus, ram_bytes, c->prealloc_ram, c->code_fd, c->vars_fd,
                           d0_ptr, d1_ptr, mac, c->enable_sound) != 0) {""",
+    )
+    patch_file(
+        winvm_c,
+        "cpu0_running",
+        """static _Atomic int stop_requested;""",
+        """static _Atomic int stop_requested;
+static _Atomic int cpu0_running;""",
+    )
+    patch_file(
+        winvm_c,
+        "atomic_store_explicit(&cpu0_running, 0, memory_order_release);",
+        """static void *cpu0_thread(void *unused) {
+    (void)unused;
+    int r = hv_winvm_run_cpu0();
+    atomic_store(&stop_requested, 1);
+    join_secondaries();
+    if (exit_cb) exit_cb(r);
+    return NULL;
+}
+
+void hv_winvm_start(int spawn_cpu0, void (*on_exit)(int reason)) {
+    exit_cb = on_exit;
+    spawn_secondaries();
+    pthread_t kt;
+    pthread_create(&kt, NULL, kicker_thread, NULL);
+    pthread_detach(kt);
+    if (spawn_cpu0) {
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 8u << 20);
+        pthread_t ct;
+        pthread_create(&ct, &attr, cpu0_thread, NULL);
+        pthread_detach(ct);
+        pthread_attr_destroy(&attr);
+    }
+}
+
+void hv_winvm_stop(void) {
+    atomic_store(&stop_requested, 1);
+    hv_audio_shutdown();
+    for (int i = 0; i < ncpus; i++) cpus[i].halted = 3;
+    hv_machine_kick_all(&m);
+    for (int i = 0; i < ncpus; i++) hv_cpu_wake(&cpus[i]);
+    hv_winvm_flush_disks();
+}""",
+        """static void *cpu0_thread(void *unused) {
+    (void)unused;
+    int r = hv_winvm_run_cpu0();
+    int was_requested = atomic_exchange(&stop_requested, 1);
+    join_secondaries();
+    atomic_store_explicit(&cpu0_running, 0, memory_order_release);
+    if (!was_requested && exit_cb) exit_cb(r);
+    return NULL;
+}
+
+void hv_winvm_start(int spawn_cpu0, void (*on_exit)(int reason)) {
+    exit_cb = on_exit;
+    spawn_secondaries();
+    pthread_t kt;
+    pthread_create(&kt, NULL, kicker_thread, NULL);
+    pthread_detach(kt);
+    if (spawn_cpu0) {
+        atomic_store_explicit(&cpu0_running, 1, memory_order_release);
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 8u << 20);
+        pthread_t ct;
+        if (pthread_create(&ct, &attr, cpu0_thread, NULL) == 0) {
+            pthread_detach(ct);
+        } else {
+            atomic_store_explicit(&cpu0_running, 0, memory_order_release);
+        }
+        pthread_attr_destroy(&attr);
+    }
+}
+
+void hv_winvm_stop(void) {
+    atomic_store(&stop_requested, 1);
+    hv_audio_shutdown();
+    for (int i = 0; i < ncpus; i++) cpus[i].halted = 3;
+    hv_machine_kick_all(&m);
+    for (int i = 0; i < ncpus; i++) hv_cpu_wake(&cpus[i]);
+    for (int i = 0; i < 250 && atomic_load_explicit(&cpu0_running, memory_order_acquire); i++) {
+        hv_machine_kick_all(&m);
+        for (int c = 0; c < ncpus; c++) hv_cpu_wake(&cpus[c]);
+        usleep(2000);
+    }
+    hv_winvm_flush_disks();
+}""",
     )
     patch_file(
         winvm_c,

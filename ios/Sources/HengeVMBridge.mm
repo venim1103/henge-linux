@@ -788,6 +788,8 @@ static void henge_on_vm_exit(int reason) {
     _vmCreated = NO;
     _activeRamMiB = 0;
     _activeCpuCount = 4;
+    _lastDisplayWidth = 1280U;
+    _lastDisplayHeight = 800U;
     hengelinux_reset_guest_hid_bridge_ready();
     if (_guestRam != nullptr && _guestRamBytes > 0) {
         henge_free_ledger_exempt_ram(_guestRam, _guestRamBytes);

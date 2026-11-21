@@ -185,7 +185,7 @@ struct HengeLinuxApp: App {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Create") {
                                 do {
-                                    let defaultGpu = ["debian", "ubuntu", "fedora", "opensuse"].contains(newVMDistroTag) ? 2 : 0
+                                    let defaultGpu = ["debian", "fedora", "opensuse"].contains(newVMDistroTag) ? 2 : 0
                                     let created = try vmStore.createMachine(
                                         name: newVMName,
                                         distroTag: newVMDistroTag,

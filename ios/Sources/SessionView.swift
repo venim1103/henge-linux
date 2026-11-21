@@ -924,13 +924,23 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
 
     private func syncMetalDrawableSize() {
         guard let metalLayer else { return }
+        guard bounds.width >= 4 && bounds.height >= 4 else { return }
         let scale = window?.screen.scale ?? traitCollection.displayScale
         let effectiveScale = scale > 0 ? scale : 2.0
-        metalLayer.contentsScale = effectiveScale
-        metalLayer.drawableSize = CGSize(
-            width: max(bounds.width * effectiveScale, 1),
-            height: max(bounds.height * effectiveScale, 1)
+        let targetSize = CGSize(
+            width: (bounds.width * effectiveScale).rounded(),
+            height: (bounds.height * effectiveScale).rounded()
         )
+        guard targetSize.width >= 4 && targetSize.height >= 4 else { return }
+        if metalLayer.contentsScale != effectiveScale || metalLayer.drawableSize != targetSize {
+            // Serialize drawableSize mutations against HvFbMetalPresenter's background
+            // nextDrawable() / commit loop to prevent CoreAnimation/Metal crashes during
+            // rapid keyboard or Trackpad Split Deck toggles.
+            hengelinux_render_lock()
+            metalLayer.contentsScale = effectiveScale
+            metalLayer.drawableSize = targetSize
+            hengelinux_render_unlock()
+        }
         if allowGuestResize {
             scheduleGuestDisplayResize()
         }
@@ -943,19 +953,32 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
             let scale = win.screen.scale > 0 ? win.screen.scale : self.traitCollection.displayScale
             let effectiveScale = scale > 0 ? scale : 2.0
             let kmsScale = min(effectiveScale, 2.0)
-            // Compute the guest virtual monitor geometry from the stable window safe area
-            // (excluding transient overlays such as Trackpad Split Deck, modifier strip,
-            // and software keyboard) so toggling overlays scales via Metal without firing
-            // disruptive VirtIO-GPU hotplug modesets.
+            // Compute the guest virtual monitor geometry from the stable window safe area.
+            // In iPhone portrait orientation, keep standard 1280x800 desktop landscape
+            // (matching 2D UEFI GOP) so opening Trackpad/Keyboard fills the full width
+            // instead of pillarboxing a narrow portrait strip. In landscape (rotated iPhone,
+            // iPad, external monitor), match the landscape safe-area aspect ratio.
             let safeBounds = win.bounds.inset(by: win.safeAreaInsets)
             let topBarOverhead: CGFloat = 44
             let targetW = max(safeBounds.width, 1)
             let targetH = max(safeBounds.height - topBarOverhead, 1)
-            let pxW = Int(targetW * kmsScale) & ~1
-            let pxH = Int(targetH * kmsScale) & ~1
-            guard pxW >= 320 && pxH >= 240 else { return }
-            let clampedW = min(pxW, 4096)
-            let clampedH = min(pxH, 4096)
+            let clampedW: Int
+            let clampedH: Int
+            if targetH > targetW {
+                clampedW = 1280
+                clampedH = 800
+            } else {
+                var pxW = Int(targetW * kmsScale) & ~1
+                var pxH = Int(targetH * kmsScale) & ~1
+                if pxW > 1920 {
+                    let ratio = 1920.0 / Double(pxW)
+                    pxW = 1920
+                    pxH = Int(Double(pxH) * ratio) & ~1
+                }
+                guard pxW >= 320 && pxH >= 240 else { return }
+                clampedW = min(pxW, 1920)
+                clampedH = min(pxH, 1200)
+            }
             if self.lastSentGuestWidth > 0 &&
                abs(self.lastSentGuestWidth - clampedW) < 32 &&
                abs(self.lastSentGuestHeight - clampedH) < 32 {

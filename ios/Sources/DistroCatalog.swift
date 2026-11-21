@@ -48,25 +48,25 @@ struct DistroCatalogItem: Identifiable, Hashable, Sendable {
         DistroCatalogItem(
             id: "ubuntu-2404-lts",
             name: "Ubuntu 24.04 LTS (Noble) ARM64",
-            subtitle: "Official Cloud QCOW2 · VirtIO-GPU KMS · bash + trimmed daemons",
+            subtitle: "Official Cloud QCOW2 · 2D UEFI GOP (works out-of-box) · bash + trimmed daemons",
             distroTag: "ubuntu",
             downloadURL: URL(string: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img")!,
             fileName: "ubuntu-24.04-server-cloudimg-arm64.img",
             approxSizeLabel: "~620 MiB",
             recommendedDiskGiB: 16,
-            recommendedGpuBackend: 2,
+            recommendedGpuBackend: 0,
             needsCidata: true
         ),
         DistroCatalogItem(
             id: "ubuntu-2604-lts",
             name: "Ubuntu 26.04 LTS (Resolute) ARM64",
-            subtitle: "Official Cloud QCOW2 · Newer kernel · VirtIO-GPU KMS + bash",
+            subtitle: "Official Cloud QCOW2 · Newer kernel · 2D UEFI GOP + bash",
             distroTag: "ubuntu",
             downloadURL: URL(string: "https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img")!,
             fileName: "ubuntu-26.04-server-cloudimg-arm64.img",
             approxSizeLabel: "~900 MiB",
             recommendedDiskGiB: 16,
-            recommendedGpuBackend: 2,
+            recommendedGpuBackend: 0,
             needsCidata: true
         ),
         DistroCatalogItem(
@@ -285,7 +285,7 @@ final class DistroDownloadManager: NSObject, ObservableObject, URLSessionDownloa
             distroTag: distroTag,
             ramMiB: ramMiB,
             cpuCount: cpuCount,
-            gpuBackend: ["debian", "ubuntu", "fedora", "opensuse"].contains(distroTag) ? 2 : 0,
+            gpuBackend: ["debian", "fedora", "opensuse"].contains(distroTag) ? 2 : 0,
             targetDiskSizeGiB: max(diskGiB, 8)
         )
 
