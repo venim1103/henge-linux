@@ -563,7 +563,14 @@ static void console_ring_append_bytes_locked(const char *data, size_t len) {
 
 static void *console_capture_reader_thread(void *opaque) {
     (void)opaque;
+    static const char kAgPrefix[] = "=== AttributeGraph:";
+    const size_t kAgPrefixLen = sizeof(kAgPrefix) - 1U;
     char buf[2048];
+    char filtered[2068];
+    char pending[sizeof(kAgPrefix)];
+    size_t match_pos = 0U;
+    bool dropping_line = false;
+
     while (true) {
         int fd = atomic_load_explicit(&g_console_pipe_read_fd, memory_order_acquire);
         if (fd < 0) {
@@ -583,9 +590,43 @@ static void *console_capture_reader_thread(void *opaque) {
             ssize_t ignored = write(g_console_orig_stderr_fd, buf, (size_t)n);
             (void)ignored;
         }
-        pthread_mutex_lock(&g_console_mutex);
-        console_ring_append_bytes_locked(buf, (size_t)n);
-        pthread_mutex_unlock(&g_console_mutex);
+
+        /* Strip noisy host SwiftUI/UIKit AttributeGraph stderr cycles so they
+         * never flood the guest ttyAMA0 ring buffer or trigger UI feedback loops. */
+        size_t out_len = 0U;
+        for (ssize_t i = 0; i < n; ++i) {
+            char ch = buf[i];
+            if (dropping_line) {
+                if (ch == '\n') {
+                    dropping_line = false;
+                }
+                continue;
+            }
+            if (ch == kAgPrefix[match_pos]) {
+                pending[match_pos++] = ch;
+                if (match_pos == kAgPrefixLen) {
+                    match_pos = 0U;
+                    dropping_line = true;
+                }
+                continue;
+            }
+            if (match_pos > 0U) {
+                memcpy(filtered + out_len, pending, match_pos);
+                out_len += match_pos;
+                match_pos = 0U;
+                if (ch == kAgPrefix[0]) {
+                    pending[match_pos++] = ch;
+                    continue;
+                }
+            }
+            filtered[out_len++] = ch;
+        }
+
+        if (out_len > 0U) {
+            pthread_mutex_lock(&g_console_mutex);
+            console_ring_append_bytes_locked(filtered, out_len);
+            pthread_mutex_unlock(&g_console_mutex);
+        }
     }
     return NULL;
 }

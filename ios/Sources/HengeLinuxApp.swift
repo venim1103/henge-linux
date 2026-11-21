@@ -1334,35 +1334,16 @@ struct DebugConsoleSheetView: View {
 
                 Divider()
 
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(logText.isEmpty ? "Waiting for UEFI / PL011 serial (ttyAMA0) or HengeVM engine output..." : logText)
-                                .font(.system(size: 11, weight: .regular, design: .monospaced))
-                                .foregroundStyle(logText.isEmpty ? Color.secondary : Color.green)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
-                                .textSelection(.enabled)
-
-                            Color.clear
-                                .frame(height: 1)
-                                .id("console-bottom")
-                        }
-                    }
-                    .background(Color.black)
-                    .onChange(of: logText) { _, _ in
-                        if autoScroll {
-                            withAnimation(.easeOut(duration: 0.12)) {
-                                proxy.scrollTo("console-bottom", anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onAppear {
-                        refreshLogs(force: true)
-                        if autoScroll {
-                            proxy.scrollTo("console-bottom", anchor: .bottom)
-                        }
-                    }
+                MonospaceLogTextView(
+                    text: logText,
+                    placeholder: "Waiting for UEFI / PL011 serial (ttyAMA0) or HengeVM engine output...",
+                    fontSize: 11,
+                    autoScroll: autoScroll
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+                .onAppear {
+                    refreshLogs(force: true)
                 }
             }
             .navigationTitle("Serial & Debug Logs")

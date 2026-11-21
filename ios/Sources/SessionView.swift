@@ -57,36 +57,45 @@ struct SessionView: View {
                     .background(Color(white: 0.12))
             }
 
-            if activeTab == .display {
-                MetalFramebufferRepresentable(
-                    lifecycle: lifecycle,
-                    focusKeyboard: $focusSoftwareKeyboard,
-                    suppressSoftwareKeyboard: !focusSoftwareKeyboard,
-                    layoutTrigger: "\(posture)-\(showModifierBar)-\(focusSoftwareKeyboard)-\(Int(keyboardHeight))",
-                    pendingPasteID: pendingPaste?.id,
-                    pendingPasteText: pendingPaste?.text,
-                    onPasteConsumed: {
-                        pendingPaste = nil
-                    },
-                    onCharacterTyped: {
-                        releaseActiveModifiers()
-                    }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black)
-
-                if case .clamshell = posture {
-                    clamshellInputDeck
-                        .containerRelativeFrame(.vertical) { height, _ in
-                            clamshellDeckHeight(forContainerHeight: height)
+            ZStack {
+                VStack(spacing: 0) {
+                    MetalFramebufferRepresentable(
+                        lifecycle: lifecycle,
+                        focusKeyboard: $focusSoftwareKeyboard,
+                        suppressSoftwareKeyboard: !focusSoftwareKeyboard || activeTab != .display,
+                        allowGuestResize: !isSoftwareKeyboardVisible && activeTab == .display,
+                        layoutTrigger: "\(posture)-\(showModifierBar)-\(activeTab == .display)",
+                        pendingPasteID: pendingPaste?.id,
+                        pendingPasteText: pendingPaste?.text,
+                        onPasteConsumed: {
+                            pendingPaste = nil
+                        },
+                        onCharacterTyped: {
+                            releaseActiveModifiers()
                         }
-                } else if showModifierBar {
-                    compactModifierStrip
-                }
-            } else {
-                InteractiveSerialTerminalView()
+                    )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black)
+
+                    if case .clamshell = posture {
+                        clamshellInputDeck
+                            .containerRelativeFrame(.vertical) { height, _ in
+                                clamshellDeckHeight(forContainerHeight: height)
+                            }
+                    } else if showModifierBar {
+                        compactModifierStrip
+                    }
+                }
+                .opacity(activeTab == .display ? 1 : 0)
+                .allowsHitTesting(activeTab == .display)
+
+                if activeTab == .terminal {
+                    InteractiveSerialTerminalView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.black)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .padding(.bottom, keyboardHeight)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -99,19 +108,28 @@ struct SessionView: View {
             updateKeyboardHeight(from: note)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardHeight = 0
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
-            keyboardHeight = 0
-        }
-        .onChange(of: focusSoftwareKeyboard) { _, show in
-            if !show {
+            if keyboardHeight != 0 {
                 keyboardHeight = 0
             }
         }
-        .onChange(of: activeTab) { _, _ in
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            if keyboardHeight != 0 {
+                keyboardHeight = 0
+            }
+        }
+        .onChange(of: focusSoftwareKeyboard) { _, show in
+            if !show && keyboardHeight != 0 {
+                keyboardHeight = 0
+            }
+        }
+        .onChange(of: activeTab) { _, tab in
             pendingPaste = nil
-            keyboardHeight = 0
+            if tab != .display && focusSoftwareKeyboard {
+                focusSoftwareKeyboard = false
+            }
+            if keyboardHeight != 0 {
+                keyboardHeight = 0
+            }
         }
         .onDisappear {
             pendingPaste = nil
@@ -136,10 +154,14 @@ struct SessionView: View {
         let screenHeight = keyWindow?.bounds.height ?? windowScene?.screen.bounds.height ?? 0
         let bottomInset = keyWindow?.safeAreaInsets.bottom ?? 0
         guard screenHeight > 0 else { return }
+        let nextHeight: CGFloat
         if endFrame.minY >= screenHeight - 1 || endFrame.height <= 0 {
-            keyboardHeight = 0
+            nextHeight = 0
         } else {
-            keyboardHeight = max(0, screenHeight - endFrame.minY - bottomInset)
+            nextHeight = max(0, screenHeight - endFrame.minY - bottomInset)
+        }
+        if abs(keyboardHeight - nextHeight) > 0.5 {
+            keyboardHeight = nextHeight
         }
     }
 
@@ -716,11 +738,22 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
     var suppressSoftwareKeyboard: Bool = true {
         didSet {
             guard oldValue != suppressSoftwareKeyboard else { return }
-            syncResponderState()
+            scheduleSyncResponderState()
+        }
+    }
+    var allowGuestResize: Bool = true {
+        didSet {
+            if allowGuestResize && !oldValue {
+                scheduleGuestDisplayResize()
+            }
         }
     }
     private let softwareKeyboardProxy = SoftwareKeyboardInputProxyView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
     private var isProgrammaticResponderChange = false
+    private var responderSyncScheduled = false
+    private var pendingGuestResizeWorkItem: DispatchWorkItem?
+    private var lastSentGuestWidth: Int = 0
+    private var lastSentGuestHeight: Int = 0
     private var editMenuInteraction: UIEditMenuInteraction?
     private var pendingKeystrokes: [(usage: UInt8, shift: Bool)] = []
     private var isDrainingKeystrokes = false
@@ -735,6 +768,16 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
 
     override var canBecomeFirstResponder: Bool {
         true
+    }
+
+    private func scheduleSyncResponderState() {
+        guard !responderSyncScheduled else { return }
+        responderSyncScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.responderSyncScheduled = false
+            self.syncResponderState()
+        }
     }
 
     private func syncResponderState() {
@@ -840,6 +883,9 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
             DispatchQueue.main.async { [weak self] in
                 self?.syncResponderState()
             }
+        } else {
+            pendingGuestResizeWorkItem?.cancel()
+            pendingGuestResizeWorkItem = nil
         }
     }
 
@@ -878,15 +924,37 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
             width: max(bounds.width * effectiveScale, 1),
             height: max(bounds.height * effectiveScale, 1)
         )
-        let kmsScale = min(effectiveScale, 2.0)
-        let pxW = Int(bounds.width * kmsScale) & ~1
-        let pxH = Int(bounds.height * kmsScale) & ~1
-        if pxW >= 320 && pxH >= 240 {
+        if allowGuestResize {
+            scheduleGuestDisplayResize()
+        }
+    }
+
+    private func scheduleGuestDisplayResize() {
+        pendingGuestResizeWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.allowGuestResize, self.window != nil else { return }
+            let scale = self.window?.screen.scale ?? self.traitCollection.displayScale
+            let effectiveScale = scale > 0 ? scale : 2.0
+            let kmsScale = min(effectiveScale, 2.0)
+            let pxW = Int(self.bounds.width * kmsScale) & ~1
+            let pxH = Int(self.bounds.height * kmsScale) & ~1
+            guard pxW >= 320 && pxH >= 240 else { return }
+            let clampedW = min(pxW, 4096)
+            let clampedH = min(pxH, 4096)
+            if self.lastSentGuestWidth > 0 &&
+               abs(self.lastSentGuestWidth - clampedW) < 32 &&
+               abs(self.lastSentGuestHeight - clampedH) < 32 {
+                return
+            }
+            self.lastSentGuestWidth = clampedW
+            self.lastSentGuestHeight = clampedH
             HengeVMBridge.shared.updateDisplaySize(
-                width: UInt32(min(pxW, 4096)),
-                height: UInt32(min(pxH, 4096))
+                width: UInt32(clampedW),
+                height: UInt32(clampedH)
             )
         }
+        pendingGuestResizeWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     // MARK: - Hardware Keyboard (UIResponder presses)
@@ -1254,6 +1322,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     @ObservedObject var lifecycle: MetalLifecycleGuard
     @Binding var focusKeyboard: Bool
     var suppressSoftwareKeyboard: Bool
+    var allowGuestResize: Bool = true
     var layoutTrigger: String = ""
     var pendingPasteID: UUID?
     var pendingPasteText: String?
@@ -1267,6 +1336,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     func makeUIView(context: Context) -> MetalDisplaySurfaceView {
         let view = MetalDisplaySurfaceView(frame: .zero)
         view.suppressSoftwareKeyboard = suppressSoftwareKeyboard
+        view.allowGuestResize = allowGuestResize
         view.onFocusChanged = { isFocused in
             DispatchQueue.main.async {
                 if !isFocused && focusKeyboard {
@@ -1288,13 +1358,12 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     func updateUIView(_ uiView: MetalDisplaySurfaceView, context: Context) {
         _ = lifecycle.isPaused
         uiView.onCharacterTyped = onCharacterTyped
+        uiView.allowGuestResize = allowGuestResize
         uiView.suppressSoftwareKeyboard = suppressSoftwareKeyboard
         if context.coordinator.lastLayoutTrigger != layoutTrigger {
             context.coordinator.lastLayoutTrigger = layoutTrigger
-            uiView.setNeedsLayout()
             DispatchQueue.main.async {
                 uiView.setNeedsLayout()
-                uiView.layoutIfNeeded()
             }
         }
         if let metalLayer = uiView.metalLayer {
@@ -1318,6 +1387,52 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     }
 }
 
+/// Read-only UIKit monospace log viewer (`UITextView`) used by both
+/// `InteractiveSerialTerminalView` and `DebugConsoleSheetView` to avoid
+/// SwiftUI `ScrollViewReader` + `.textSelection(.enabled)` AttributeGraph cycles.
+struct MonospaceLogTextView: UIViewRepresentable {
+    let text: String
+    let placeholder: String
+    let fontSize: CGFloat
+    let autoScroll: Bool
+
+    final class Coordinator {
+        var lastText: String = ""
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let tv = UITextView(frame: .zero)
+        tv.isEditable = false
+        tv.isSelectable = true
+        tv.backgroundColor = .black
+        tv.indicatorStyle = .white
+        tv.alwaysBounceVertical = true
+        tv.textContainerInset = UIEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        tv.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        tv.textColor = text.isEmpty ? .secondaryLabel : .systemGreen
+        tv.text = text.isEmpty ? placeholder : text
+        context.coordinator.lastText = text
+        return tv
+    }
+
+    func updateUIView(_ uiView: UITextView, context: Context) {
+        guard context.coordinator.lastText != text else { return }
+        context.coordinator.lastText = text
+        uiView.textColor = text.isEmpty ? .secondaryLabel : .systemGreen
+        uiView.text = text.isEmpty ? placeholder : text
+        if autoScroll && !text.isEmpty {
+            let nsLen = (uiView.text as NSString).length
+            if nsLen > 0 {
+                uiView.scrollRangeToVisible(NSRange(location: nsLen - 1, length: 1))
+            }
+        }
+    }
+}
+
 /// Interactive PL011 (`ttyAMA0`) serial console tab embedded in `SessionView`.
 private struct InteractiveSerialTerminalView: View {
     @State private var outputText: String = ""
@@ -1330,33 +1445,16 @@ private struct InteractiveSerialTerminalView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(outputText.isEmpty ? "Connected to PL011 UART (ttyAMA0)..." : outputText)
-                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .foregroundStyle(outputText.isEmpty ? Color.secondary : Color.green)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
-                            .textSelection(.enabled)
-
-                        Color.clear
-                            .frame(height: 1)
-                            .id("serial-term-bottom")
-                    }
-                }
-                .background(Color.black)
-                .onChange(of: outputText) { _, _ in
-                    if autoScroll {
-                        proxy.scrollTo("serial-term-bottom", anchor: .bottom)
-                    }
-                }
-                .onAppear {
-                    refreshOutput(force: true)
-                    if autoScroll {
-                        proxy.scrollTo("serial-term-bottom", anchor: .bottom)
-                    }
-                }
+            MonospaceLogTextView(
+                text: outputText,
+                placeholder: "Connected to PL011 UART (ttyAMA0)...",
+                fontSize: 12,
+                autoScroll: autoScroll
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+            .onAppear {
+                refreshOutput(force: true)
             }
 
             Divider()

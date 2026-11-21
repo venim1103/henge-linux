@@ -501,6 +501,7 @@ static void test_console_log_capture(void) {
     hengelinux_clear_console_log();
 
     hengelinux_console_append_line("[test] console marker line 1");
+    fprintf(stderr, "=== AttributeGraph: cycle detected through attribute 1136664 ===\n");
     fprintf(stderr, "[test] stderr serial line 2\n");
     fflush(stderr);
 
@@ -513,6 +514,7 @@ static void test_console_log_capture(void) {
     HENGE_CHECK(n > 0U);
     HENGE_CHECK(strstr(buf, "[test] console marker line 1") != NULL);
     HENGE_CHECK(strstr(buf, "[test] stderr serial line 2") != NULL);
+    HENGE_CHECK(strstr(buf, "AttributeGraph") == NULL);
 
     hengelinux_reset_guest_hid_bridge_ready();
     HENGE_CHECK(!hengelinux_is_guest_hid_bridge_ready());
