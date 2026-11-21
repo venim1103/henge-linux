@@ -957,10 +957,9 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
             let effectiveScale = scale > 0 ? scale : 2.0
             let kmsScale = min(effectiveScale, 2.0)
             // Compute the guest virtual monitor geometry from the stable window safe area.
-            // In iPhone portrait orientation, keep standard 1280x800 desktop landscape
-            // (matching 2D UEFI GOP) so opening Trackpad/Keyboard fills the full width
-            // instead of pillarboxing a narrow portrait strip. In landscape (rotated iPhone,
-            // iPad, external monitor), match the landscape safe-area aspect ratio.
+            // In iPhone portrait orientation, use 1024x768 (4:3, matching 2D UEFI GOP)
+            // so opening Trackpad + Keyboard fills the full viewport height & width cleanly.
+            // In landscape (rotated iPhone, iPad, external monitor), match the landscape aspect ratio.
             let safeBounds = win.bounds.inset(by: win.safeAreaInsets)
             let topBarOverhead: CGFloat = 44
             let targetW = max(safeBounds.width, 1)
@@ -968,8 +967,8 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
             let clampedW: Int
             let clampedH: Int
             if targetH > targetW {
-                clampedW = 1280
-                clampedH = 800
+                clampedW = 1024
+                clampedH = 768
             } else {
                 var pxW = Int(targetW * kmsScale) & ~1
                 var pxH = Int(targetH * kmsScale) & ~1

@@ -265,7 +265,12 @@ uint32_t henge_recommended_guest_ram_mib(size_t jit_pool_bytes) {
         return 1664U;
     }
     const uint64_t headroom = 576ULL * 1024ULL * 1024ULL;
-    const uint64_t reserve = (uint64_t)jit_pool_bytes + headroom;
+    /* When the persistent RX/RW JIT pool is already allocated, its footprint is
+     * already accounted for in os_proc_available_memory(); do not subtract twice. */
+    const uint64_t pending_jit = atomic_load_explicit(&g_pool_live, memory_order_acquire)
+        ? 0ULL
+        : (uint64_t)jit_pool_bytes;
+    const uint64_t reserve = pending_jit + headroom;
     if (avail <= reserve + (uint64_t)HENGE_MIN_GUEST_RAM_MIB * 1024ULL * 1024ULL) {
         return HENGE_MIN_GUEST_RAM_MIB;
     }
@@ -717,6 +722,22 @@ void *henge_alloc_ledger_exempt_ram(size_t size, bool *out_ledger_exempt) {
             VM_PROT_READ | VM_PROT_WRITE,
             VM_INHERIT_NONE
         );
+        if (map_kr != KERN_SUCCESS && align_mask > (vm_address_t)(HENGE_HOST_PAGE_SIZE - 1ULL)) {
+            mapped_addr = 0;
+            map_kr = vm_map(
+                mach_task_self(),
+                &mapped_addr,
+                (vm_size_t)size,
+                (vm_address_t)(HENGE_HOST_PAGE_SIZE - 1ULL),
+                VM_FLAGS_ANYWHERE,
+                mem_entry,
+                0,
+                FALSE,
+                VM_PROT_READ | VM_PROT_WRITE,
+                VM_PROT_READ | VM_PROT_WRITE,
+                VM_INHERIT_NONE
+            );
+        }
         mach_port_deallocate(mach_task_self(), mem_entry);
         if (map_kr == KERN_SUCCESS && mapped_addr != 0) {
             if (out_ledger_exempt != NULL) {

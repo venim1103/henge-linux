@@ -87,6 +87,7 @@ struct HengeLinuxApp: App {
     @AppStorage("autoSyncClipboard") private var autoSyncClipboard: Bool = false
     @State private var lastPushedClipboard: String = ""
     @State private var lastPasteboardChangeCount: Int = -1
+    @State private var memoryRefreshTick: Int = 0
 
     private let bridgePollTimer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
@@ -106,6 +107,10 @@ struct HengeLinuxApp: App {
                             isRunning = false
                             bootWarning = nil
                             jitClient.prepareForReboot()
+                            memoryRefreshTick &+= 1
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                memoryRefreshTick &+= 1
+                            }
                         }
                     )
                 } else {
@@ -336,6 +341,10 @@ struct HengeLinuxApp: App {
                     isRunning = false
                     safariURL = nil
                     jitClient.prepareForReboot()
+                    memoryRefreshTick &+= 1
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        memoryRefreshTick &+= 1
+                    }
                     return
                 }
                 if let pending = HengeVMBridge.shared.takePendingOpenURL(),
@@ -371,6 +380,7 @@ struct HengeLinuxApp: App {
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
                 jitClient.refreshFileStatus()
+                memoryRefreshTick &+= 1
                 guard isRunning, autoSyncClipboard else { return }
                 let pb = UIPasteboard.general
                 guard pb.changeCount != lastPasteboardChangeCount, pb.hasStrings else {
@@ -637,6 +647,11 @@ struct HengeLinuxApp: App {
                         ForEach(GpuDisplayBackend.allCases) { backend in
                             Text(backend.rawValue).tag(backend)
                         }
+                    }
+                    if vmStore.selectedMachine.distroTag == "ubuntu" && jitClient.gpuBackend != .gop2D {
+                        Text("Ubuntu Cloud omits virtio-gpu.ko by default. Run Guest Tools install.sh (or install linux-modules-extra) inside Ubuntu before using VirtIO-GPU KMS.")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
                     }
                     Picker("JIT Strategy", selection: $jitClient.jitStrategy) {
                         ForEach(JitStrategyOverride.allCases) { strategy in
@@ -1213,10 +1228,12 @@ struct HengeLinuxApp: App {
     }
 
     private var safeRecommendedRamMiB: UInt32 {
-        henge_recommended_guest_ram_mib(henge_recommended_jit_pool_bytes())
+        _ = memoryRefreshTick
+        return henge_recommended_guest_ram_mib(henge_recommended_jit_pool_bytes())
     }
 
     private var ramAdvisoryText: String {
+        _ = memoryRefreshTick
         let availBytes = henge_available_memory_bytes()
         let rec = safeRecommendedRamMiB
         if availBytes > 0 {
@@ -1232,9 +1249,11 @@ struct HengeLinuxApp: App {
     }
 
     private var sliderMaxRamMiB: Int {
+        _ = memoryRefreshTick
         let availMiB = Int(henge_available_memory_bytes() / (1024 * 1024))
         let physicalMiB = Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024))
-        let upper = availMiB > 0 ? max(availMiB, 2048) : max(physicalMiB, 4096)
+        let baseUpper = availMiB > 0 ? max(availMiB, 3072) : max(physicalMiB, 4096)
+        let upper = max(baseUpper, Int(effectiveRamMiB))
         return min(upper, Int(HENGE_MAX_GUEST_RAM_MIB))
     }
 

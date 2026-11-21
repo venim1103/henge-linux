@@ -382,13 +382,23 @@ if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] && [ -x /bin/bash ]; th
     esac
 fi
 
-# 8. Trim heavy Ubuntu cloud background daemons that compete for emulated CPU
+# 8. Trim heavy Ubuntu cloud background daemons and install virtio-gpu kernel module if absent
 if [ "$DISTRO_ID" = "ubuntu" ] && [ "$INIT_SYS" = "systemd" ] && command -v systemctl >/dev/null 2>&1; then
     systemctl disable --now \
         snapd.service snapd.socket snapd.seeded.service \
         unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer \
         multipathd.service multipathd.socket ModemManager.service >/dev/null 2>&1 || true
     printf '[henge-install] Disabled heavy Ubuntu cloud background daemons.\n'
+fi
+if [ "$DISTRO_ID" = "ubuntu" ] && [ "$SKIP_NETWORK" -eq 0 ] && command -v apt-get >/dev/null 2>&1; then
+    if ! modinfo virtio_gpu >/dev/null 2>&1; then
+        printf '[henge-install] Installing Ubuntu linux-modules-extra-%s for VirtIO-GPU KMS...\n' "$(uname -r)"
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+        if DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" >/dev/null 2>&1; then
+            update-initramfs -u >/dev/null 2>&1 || true
+            printf '[henge-install] Installed linux-modules-extra-%s (VirtIO-GPU ready on next boot).\n' "$(uname -r)"
+        fi
+    fi
 fi
 
 # 9. Install distro-aware henge-install-desktop helper (one-command LXQt + SDDM setup)
@@ -416,7 +426,9 @@ if command -v apt-get >/dev/null 2>&1; then
         lxqt-core openbox sddm xorg xserver-xorg-video-fbdev qterminal pcmanfm-qt \
         lxqt-themes breeze-icon-theme dbus-x11 scrot
     if [ "$DISTRO" = "ubuntu" ]; then
-        apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" 2>/dev/null || true
+        if apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" 2>/dev/null; then
+            update-initramfs -u >/dev/null 2>&1 || true
+        fi
     fi
     systemctl set-default graphical.target >/dev/null 2>&1 || true
     systemctl enable sddm >/dev/null 2>&1 || true

@@ -492,6 +492,41 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
         atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
         os_unfair_lock_unlock(&lock);""",
     )
+    patch_file(
+        fb_metal_m,
+        "void hv_fb_metal_destroy(",
+        """void hv_fb_metal_set_layer(HvFbDisplay *fb, void *ca_metal_layer) {
+    HvFbMetalPresenter *p = ensure_presenter(fb);
+    if (!p) return;
+    [p setTargetLayer:(__bridge CAMetalLayer *)ca_metal_layer];
+}""",
+        """void hv_fb_metal_set_layer(HvFbDisplay *fb, void *ca_metal_layer) {
+    if (!fb) return;
+    if (!ca_metal_layer && !fb->metal) return;
+    HvFbMetalPresenter *p = ensure_presenter(fb);
+    if (!p) return;
+    [p setTargetLayer:(__bridge CAMetalLayer *)ca_metal_layer];
+}
+
+void hv_fb_metal_destroy(HvFbDisplay *fb) {
+    if (!fb) return;
+    hengelinux_render_lock();
+    pthread_mutex_lock(&fb->mu);
+    HvFbMetalPresenter *p = (__bridge_transfer HvFbMetalPresenter *)fb->metal;
+    fb->metal = NULL;
+    pthread_mutex_unlock(&fb->mu);
+    if (p) {
+        [p setTargetLayer:nil];
+        os_unfair_lock_lock(&p->lock);
+        p->texture = nil;
+        p->texW = 0;
+        p->texH = 0;
+        p->fb = NULL;
+        os_unfair_lock_unlock(&p->lock);
+    }
+    hengelinux_render_unlock();
+}""",
+    )
 
     # 3. host/audio_mac.c: pause audio playback/capture callbacks when backgrounded
     audio_mac_c = upstream / "host/audio_mac.c"
@@ -966,9 +1001,10 @@ HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int a
     )
     patch_file(
         winvirt_h,
-        "hv_winvirt_set_virtio_gpu_size",
+        "hv_winvirt_destroy",
         "void hv_winvirt_power_button(HvWinVirt *b);",
         """void hv_winvirt_power_button(HvWinVirt *b);
+void hv_winvirt_destroy(HvWinVirt *b);
 void hv_winvirt_set_device_flags(int enable_xhci, int enable_virtio_input, int enable_acpi_spcr, int disk1_as_virtio_blk);
 void hv_winvirt_set_disk1_blk_size(uint32_t blk_size);
 void hv_winvirt_set_virtio_gpu(int enable);
@@ -1232,7 +1268,7 @@ static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, Hv
     if (henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_GOP_2D, 128u, &cfg) != 0) return NULL;
     HengeVirtioGpuDevice *gpu = henge_virtio_gpu_create(&cfg);
     if (!gpu) return NULL;
-    henge_virtio_gpu_set_display_mode(gpu, 0u, 1280u, 800u, true);
+    henge_virtio_gpu_set_display_mode(gpu, 0u, 1024u, 768u, true);
 
     HvVirtioGpuPci *g = calloc(1, sizeof *g);
     if (!g) {
@@ -1250,8 +1286,63 @@ static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, Hv
     uint32_t num_scanouts = 1u;
     memcpy(g->vio.config + 8, &num_scanouts, 4);
     hv_pcie_attach(bus, &g->vio.pci);
-    fprintf(stderr, "winvm: virtio-gpu 2D KMS (0x1af4:0x1050, EDID 1280x800) attached on PCIe\\n");
+    fprintf(stderr, "winvm: virtio-gpu 2D KMS (0x1af4:0x1050, EDID 1024x768) attached on PCIe\\n");
     return g;
+}
+
+void hv_pl011_detach(HvPl011 *u);
+
+void hv_winvirt_destroy(HvWinVirt *b) {
+    if (!b) return;
+    if (b->vgpu) {
+        hengelinux_render_lock();
+        if (b->fb) {
+            hv_fb_display_set_host_buffer(b->fb, NULL, 0u, 0u, 0u, 0u);
+        }
+        henge_virtio_gpu_destroy(b->vgpu->gpu);
+        free(b->vgpu);
+        b->vgpu = NULL;
+        hengelinux_render_unlock();
+    }
+    if (b->fb) {
+        hv_fb_metal_destroy(b->fb);
+        pthread_mutex_destroy(&b->fb->mu);
+        free(b->fb);
+        b->fb = NULL;
+    }
+    if (b->uart) {
+        hv_pl011_detach(b->uart);
+        free(b->uart);
+        b->uart = NULL;
+    }
+    if (b->flash0) {
+        hv_pflash_close(b->flash0);
+        b->flash0 = NULL;
+    }
+    if (b->flash1) {
+        hv_pflash_close(b->flash1);
+        b->flash1 = NULL;
+    }
+    free(b->dtb); b->dtb = NULL; b->dtb_size = 0;
+    free(b->gic); b->gic = NULL;
+    free(b->its); b->its = NULL;
+    free(b->rtc); b->rtc = NULL;
+    free(b->gpio); b->gpio = NULL;
+    free(b->fw_cfg); b->fw_cfg = NULL;
+    free(b->pcie); b->pcie = NULL;
+    free(b->net); b->net = NULL;
+    free(b->nvme0); b->nvme0 = NULL;
+    free(b->nvme1); b->nvme1 = NULL;
+    free(b->usb); b->usb = NULL;
+    free(b->hda); b->hda = NULL;
+    free(b->snd); b->snd = NULL;
+    free(b->vinput_kbd); b->vinput_kbd = NULL;
+    free(b->vinput_tab); b->vinput_tab = NULL;
+    free(b->vblk1); b->vblk1 = NULL;
+    b->ram = NULL;
+    b->ram_size = 0;
+    b->m = NULL;
+    b->cpu = NULL;
 }
 
 static int g_wv_enable_xhci = 1;
@@ -1393,14 +1484,34 @@ void hv_winvm_set_virtio_gpu_size(uint32_t width, uint32_t height);""",
     )
     patch_file(
         winvm_c,
-        "cpu0_running",
+        "vm_initialized",
         """static _Atomic int stop_requested;""",
         """static _Atomic int stop_requested;
-static _Atomic int cpu0_running;""",
+static _Atomic int cpu0_running;
+static _Atomic int vm_initialized;
+static pthread_t kicker_tid;
+static int kicker_started;""",
     )
     patch_file(
         winvm_c,
-        "atomic_store_explicit(&cpu0_running, 0, memory_order_release);",
+        "atomic_store_explicit(&vm_initialized, 1, memory_order_release);",
+        """    os_unfair_lock_lock(&display_lock);
+    if (display_layer_set && board.fb) hv_fb_metal_set_layer(board.fb, (void *)display_layer);
+    atomic_store_explicit(&display_fb, board.fb, memory_order_release);
+    os_unfair_lock_unlock(&display_lock);
+
+    return 0;""",
+        """    os_unfair_lock_lock(&display_lock);
+    if (display_layer_set && board.fb) hv_fb_metal_set_layer(board.fb, (void *)display_layer);
+    atomic_store_explicit(&display_fb, board.fb, memory_order_release);
+    os_unfair_lock_unlock(&display_lock);
+
+    atomic_store_explicit(&vm_initialized, 1, memory_order_release);
+    return 0;""",
+    )
+    patch_file(
+        winvm_c,
+        "hv_winvirt_destroy(&board);",
         """static void *cpu0_thread(void *unused) {
     (void)unused;
     int r = hv_winvm_run_cpu0();
@@ -1448,9 +1559,11 @@ void hv_winvm_stop(void) {
 void hv_winvm_start(int spawn_cpu0, void (*on_exit)(int reason)) {
     exit_cb = on_exit;
     spawn_secondaries();
-    pthread_t kt;
-    pthread_create(&kt, NULL, kicker_thread, NULL);
-    pthread_detach(kt);
+    if (pthread_create(&kicker_tid, NULL, kicker_thread, NULL) == 0) {
+        kicker_started = 1;
+    } else {
+        kicker_started = 0;
+    }
     if (spawn_cpu0) {
         atomic_store_explicit(&cpu0_running, 1, memory_order_release);
         pthread_attr_t attr;
@@ -1477,7 +1590,26 @@ void hv_winvm_stop(void) {
         for (int c = 0; c < ncpus; c++) hv_cpu_wake(&cpus[c]);
         usleep(2000);
     }
+    if (kicker_started) {
+        pthread_join(kicker_tid, NULL);
+        kicker_started = 0;
+    }
     hv_winvm_flush_disks();
+    if (atomic_exchange_explicit(&vm_initialized, 0, memory_order_acq_rel)) {
+        os_unfair_lock_lock(&display_lock);
+        atomic_store_explicit(&display_fb, NULL, memory_order_release);
+        os_unfair_lock_unlock(&display_lock);
+        if (net_on) {
+            hv_net_detach();
+            net_on = 0;
+        }
+        hv_winvirt_destroy(&board);
+        hv_machine_free(&m);
+        hv_disk_close(&disk0);
+        hv_disk_close(&disk1);
+        memset(cpus, 0, sizeof cpus);
+        memset(&board, 0, sizeof board);
+    }
 }""",
     )
     patch_file(
@@ -1622,6 +1754,13 @@ void hv_winvm_send_ctrl_alt_del(void) {
     uint32_t vgpu_stride;
     uint32_t vgpu_fourcc;
     int vgpu_active;""",
+    )
+    patch_file(
+        fb_display_h,
+        "hv_fb_metal_destroy",
+        "void hv_fb_metal_set_layer(HvFbDisplay *fb, void *ca_metal_layer);",
+        """void hv_fb_metal_set_layer(HvFbDisplay *fb, void *ca_metal_layer);
+void hv_fb_metal_destroy(HvFbDisplay *fb);""",
     )
     patch_file(
         fb_display_h,
@@ -2025,7 +2164,179 @@ HvPl011 *hv_pl011_create(HvMachine *m, HvGic *gic, uint64_t pa, int intid) {
     pthread_mutex_unlock(&g_pl011_mu);
     hv_machine_add_mmio(m, pa, 0x1000, u, pl011_read, pl011_write, "pl011");
     return u;
+}
+
+void hv_pl011_detach(HvPl011 *u) {
+    pthread_mutex_lock(&g_pl011_mu);
+    if (!u || g_pl011_sw_owner == u) {
+        g_pl011_sw_owner = NULL;
+        g_pl011_sw_head = 0;
+        g_pl011_sw_count = 0;
+    }
+    pthread_mutex_unlock(&g_pl011_mu);
 }""",
+    )
+
+    # 10. core/machine.c & host/net_slirp.{h,c}: complete memory & thread teardown on VM stop
+    machine_c = upstream / "core/machine.c"
+    patch_file(
+        machine_c,
+        "free(m->ram[i].whint);",
+        """void hv_machine_free(HvMachine *m) {
+    hv_jit_region_close(&m->jit);
+    for (int i = 0; i < m->nram; i++) {
+        free(m->ram[i].code_pages);
+        free(m->ram[i].page_gen);
+    }
+    free(m->blocks);
+    for (int i = 0; i < HV_MAX_CPUS; i++) {
+        free(m->percpu[i].ijc);
+        free(m->percpu[i].ucode);
+        free(m->percpu[i].cid_chunks);
+        for (int k = 0; k < HV_STASHES; k++) {
+            free(m->percpu[i].stash[k].slot);
+            free(m->percpu[i].stash[k].ent);
+        }
+    }
+    free(m->slots);
+    free(m->slot_site);
+    free(m->slot_stub);
+    free(m->slot_cond);
+    free(m->slot_xa);
+    free(m->slot_xpa);
+    free(m->xchained);
+}""",
+        """void hv_machine_free(HvMachine *m) {
+    if (!m) return;
+    hv_jit_region_close(&m->jit);
+    for (int i = 0; i < m->nram; i++) {
+        free(m->ram[i].code_pages);
+        free(m->ram[i].page_gen);
+        free(m->ram[i].whint);
+    }
+    free(m->blocks);
+    for (int i = 0; i < HV_MAX_CPUS; i++) {
+        free(m->percpu[i].ijc);
+        free(m->percpu[i].ucode);
+        free(m->percpu[i].cid_chunks);
+        for (int k = 0; k < HV_STASHES; k++) {
+            free(m->percpu[i].stash[k].slot);
+            free(m->percpu[i].stash[k].ent);
+        }
+    }
+    free(m->slots);
+    free(m->slot_site);
+    free(m->slot_stub);
+    free(m->slot_cond);
+    free(m->slot_xa);
+    free(m->slot_xpa);
+    free(m->xchained);
+    memset(m, 0, sizeof *m);
+}""",
+    )
+
+    net_slirp_h = upstream / "host/net_slirp.h"
+    patch_file(
+        net_slirp_h,
+        "hv_net_detach",
+        "int hv_net_attach(HvMachine *m, HvVirtioNet *n);",
+        """int hv_net_attach(HvMachine *m, HvVirtioNet *n);
+void hv_net_detach(void);""",
+    )
+
+    net_slirp_c = upstream / "host/net_slirp.c"
+    patch_file(
+        net_slirp_c,
+        "net_started;",
+        "static int wake_pipe[2];",
+        """static int wake_pipe[2] = {-1, -1};
+static int net_stop;
+static pthread_t net_tid;
+static int net_started;""",
+    )
+    patch_file(
+        net_slirp_c,
+        "!__atomic_load_n(&net_stop, __ATOMIC_ACQUIRE)",
+        """static void *net_thread(void *unused) {
+    (void)unused;
+    for (;;) {""",
+        """static void *net_thread(void *unused) {
+    (void)unused;
+    while (!__atomic_load_n(&net_stop, __ATOMIC_ACQUIRE)) {""",
+    )
+    patch_file(
+        net_slirp_c,
+        "void hv_net_detach(void)",
+        """int hv_net_attach(HvMachine *m, HvVirtioNet *n) {
+    machine = m;
+    pthread_mutex_init(&to_guest.mu, NULL);
+    pthread_mutex_init(&to_host.mu, NULL);
+    if (pipe(wake_pipe) != 0) return -1;""",
+        """void hv_net_detach(void) {
+    if (!net_started) return;
+    __atomic_store_n(&net_stop, 1, __ATOMIC_RELEASE);
+    if (wake_pipe[1] >= 0) {
+        char c = 0;
+        (void)!write(wake_pipe[1], &c, 1);
+    }
+    pthread_join(net_tid, NULL);
+    net_started = 0;
+    if (net) {
+        net->transmit = NULL;
+        net = NULL;
+    }
+    machine = NULL;
+    if (wake_pipe[0] >= 0) { close(wake_pipe[0]); wake_pipe[0] = -1; }
+    if (wake_pipe[1] >= 0) { close(wake_pipe[1]); wake_pipe[1] = -1; }
+    pthread_mutex_lock(&to_guest.mu);
+    while (to_guest.head != to_guest.tail) {
+        Frame f = to_guest.f[to_guest.head++ % QUEUE];
+        free(f.data);
+    }
+    to_guest.head = to_guest.tail = 0;
+    pthread_mutex_unlock(&to_guest.mu);
+    pthread_mutex_lock(&to_host.mu);
+    while (to_host.head != to_host.tail) {
+        Frame f = to_host.f[to_host.head++ % QUEUE];
+        free(f.data);
+    }
+    to_host.head = to_host.tail = 0;
+    pthread_mutex_unlock(&to_host.mu);
+    if (slirp) {
+        slirp_cleanup(slirp);
+        slirp = NULL;
+    }
+    memset(timers, 0, sizeof timers);
+    pthread_mutex_lock(&fwd_mu);
+    npending_fwds = 0;
+    nactive_fwds = 0;
+    pthread_mutex_unlock(&fwd_mu);
+}
+
+int hv_net_attach(HvMachine *m, HvVirtioNet *n) {
+    hv_net_detach();
+    __atomic_store_n(&net_stop, 0, __ATOMIC_RELEASE);
+    to_guest.head = to_guest.tail = 0;
+    to_host.head = to_host.tail = 0;
+    memset(timers, 0, sizeof timers);
+    machine = m;
+    pthread_mutex_init(&to_guest.mu, NULL);
+    pthread_mutex_init(&to_host.mu, NULL);
+    if (pipe(wake_pipe) != 0) return -1;""",
+    )
+    patch_file(
+        net_slirp_c,
+        "net_started = 1;",
+        """    pthread_t t;
+    pthread_create(&t, NULL, net_thread, NULL);
+    return 0;""",
+        """    if (pthread_create(&net_tid, NULL, net_thread, NULL) == 0) {
+        net_started = 1;
+    } else {
+        net_started = 0;
+        return -1;
+    }
+    return 0;""",
     )
 
     return 0
