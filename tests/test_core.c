@@ -443,6 +443,20 @@ static void test_virtio_gpu_backends(void) {
     HENGE_CHECK(scan_px[20] == 0x33U && scan_px[21] == 0x22U && scan_px[22] == 0x11U && scan_px[23] == 0xFFU);
     HENGE_CHECK(scan_px[40] == 0xCCU && scan_px[41] == 0xBBU && scan_px[42] == 0xAAU && scan_px[43] == 0xEEU);
 
+    /* Sub-rect SET_SCANOUT (4x2 on 4x4 resource) must crop scanout frame without overwriting GET_DISPLAY_INFO. */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_SET_SCANOUT, 0U, 20U, 0U, 4U, 2U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_get_display_info(gpu, 0U, &disp_w, &disp_h, &disp_en) == 0);
+    HENGE_CHECK(disp_w == 1280U && disp_h == 800U && disp_en);
+    HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == 0);
+    HENGE_CHECK(scan_px != NULL && scan_w == 4U && scan_h == 2U && scan_stride == 16U);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        gpu, HENGE_VIRTIO_GPU_CMD_SET_SCANOUT, 0U, 20U, 0U, 4U, 4U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == 0);
+    HENGE_CHECK(scan_px != NULL && scan_w == 4U && scan_h == 4U && scan_stride == 16U);
+
     /* Verify 2D hardware cursor overlay compositing (UPDATE_CURSOR + MOVE_CURSOR + hide). */
     HENGE_CHECK(henge_virtio_gpu_process_ctrl(
         gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 0U, 21U, 0U, 2U, 2U,

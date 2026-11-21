@@ -139,8 +139,10 @@ static void convert_row_to_bgra8(uint32_t format, uint8_t *row, uint32_t pixel_c
 
 typedef struct {
     bool     enabled;
-    uint32_t width;
-    uint32_t height;
+    uint32_t width;      /* Preferred display width reported by GET_DISPLAY_INFO / GET_EDID */
+    uint32_t height;     /* Preferred display height reported by GET_DISPLAY_INFO / GET_EDID */
+    uint32_t scanout_w;  /* Active SET_SCANOUT rect width (0 = use resource width) */
+    uint32_t scanout_h;  /* Active SET_SCANOUT rect height (0 = use resource height) */
     uint32_t resource_id;
     uint32_t cursor_resource_id;
     uint32_t cursor_x;
@@ -303,6 +305,8 @@ void henge_virtio_gpu_reset(HengeVirtioGpuDevice *dev) {
     memset(dev->contexts, 0, sizeof(dev->contexts));
     for (size_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
         dev->scanouts[s].resource_id = 0U;
+        dev->scanouts[s].scanout_w = 0U;
+        dev->scanouts[s].scanout_h = 0U;
         dev->scanouts[s].cursor_resource_id = 0U;
         dev->scanouts[s].cursor_x = 0U;
         dev->scanouts[s].cursor_y = 0U;
@@ -797,14 +801,16 @@ int henge_virtio_gpu_get_scanout_frame(const HengeVirtioGpuDevice *dev,
             frame_ptr = sc->composited_pixels;
         }
     }
+    uint32_t frame_w = (sc->scanout_w > 0U && sc->scanout_w <= res->width) ? sc->scanout_w : res->width;
+    uint32_t frame_h = (sc->scanout_h > 0U && sc->scanout_h <= res->height) ? sc->scanout_h : res->height;
     if (out_pixels != NULL) {
         *out_pixels = frame_ptr;
     }
     if (out_width != NULL) {
-        *out_width = res->width;
+        *out_width = frame_w;
     }
     if (out_height != NULL) {
-        *out_height = res->height;
+        *out_height = frame_h;
     }
     if (out_stride != NULL) {
         *out_stride = res->stride;
@@ -970,6 +976,8 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
             for (size_t s = 0; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
                 if (dev->scanouts[s].resource_id == resource_id) {
                     dev->scanouts[s].resource_id = 0U;
+                    dev->scanouts[s].scanout_w = 0U;
+                    dev->scanouts[s].scanout_h = 0U;
                     dev->scanouts[s].composite_dirty = true;
                 }
                 if (dev->scanouts[s].cursor_resource_id == resource_id) {
@@ -1079,11 +1087,9 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
                 break;
             }
             dev->scanouts[scanout_id].resource_id = resource_id;
+            dev->scanouts[scanout_id].scanout_w = (resource_id != 0U) ? width : 0U;
+            dev->scanouts[scanout_id].scanout_h = (resource_id != 0U) ? height : 0U;
             dev->scanouts[scanout_id].composite_dirty = true;
-            if (width > 0U && height > 0U) {
-                dev->scanouts[scanout_id].width = width;
-                dev->scanouts[scanout_id].height = height;
-            }
             break;
         }
 

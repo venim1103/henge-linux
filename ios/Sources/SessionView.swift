@@ -63,7 +63,7 @@ struct SessionView: View {
                         lifecycle: lifecycle,
                         focusKeyboard: $focusSoftwareKeyboard,
                         suppressSoftwareKeyboard: !focusSoftwareKeyboard || activeTab != .display,
-                        allowGuestResize: !isSoftwareKeyboardVisible && activeTab == .display,
+                        allowGuestResize: !isSoftwareKeyboardVisible && !isClamshellPosture && activeTab == .display,
                         layoutTrigger: "\(posture)-\(showModifierBar)-\(activeTab == .display)",
                         pendingPasteID: pendingPaste?.id,
                         pendingPasteText: pendingPaste?.text,
@@ -309,6 +309,13 @@ struct SessionView: View {
 
     private var isSoftwareKeyboardVisible: Bool {
         keyboardHeight > 0 || focusSoftwareKeyboard
+    }
+
+    private var isClamshellPosture: Bool {
+        if case .clamshell = posture {
+            return true
+        }
+        return false
     }
 
     private func clamshellDeckHeight(forContainerHeight totalHeight: CGFloat) -> CGFloat {
@@ -932,12 +939,20 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
     private func scheduleGuestDisplayResize() {
         pendingGuestResizeWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.allowGuestResize, self.window != nil else { return }
-            let scale = self.window?.screen.scale ?? self.traitCollection.displayScale
+            guard let self, self.allowGuestResize, let win = self.window else { return }
+            let scale = win.screen.scale > 0 ? win.screen.scale : self.traitCollection.displayScale
             let effectiveScale = scale > 0 ? scale : 2.0
             let kmsScale = min(effectiveScale, 2.0)
-            let pxW = Int(self.bounds.width * kmsScale) & ~1
-            let pxH = Int(self.bounds.height * kmsScale) & ~1
+            // Compute the guest virtual monitor geometry from the stable window safe area
+            // (excluding transient overlays such as Trackpad Split Deck, modifier strip,
+            // and software keyboard) so toggling overlays scales via Metal without firing
+            // disruptive VirtIO-GPU hotplug modesets.
+            let safeBounds = win.bounds.inset(by: win.safeAreaInsets)
+            let topBarOverhead: CGFloat = 44
+            let targetW = max(safeBounds.width, 1)
+            let targetH = max(safeBounds.height - topBarOverhead, 1)
+            let pxW = Int(targetW * kmsScale) & ~1
+            let pxH = Int(targetH * kmsScale) & ~1
             guard pxW >= 320 && pxH >= 240 else { return }
             let clampedW = min(pxW, 4096)
             let clampedH = min(pxH, 4096)
