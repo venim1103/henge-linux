@@ -195,7 +195,45 @@ static int serve_henge(Conn *c, Request *r) {
         print(f"[patch] {fb_metal_m}: header already applied")
     patch_file(
         fb_metal_m,
-        "uint32_t row_bytes = w * 4u;",
+        "inFlightSem;",
+        """    _Atomic(uint64_t) framesPresented;
+    uint64_t lastHash;
+    CGSize lastDrawableSize;
+}""",
+        """    _Atomic(uint64_t) framesPresented;
+    uint64_t lastHashEven;
+    uint64_t lastHashOdd;
+    uint32_t hashParity;
+    dispatch_semaphore_t inFlightSem;
+    CGSize lastDrawableSize;
+}""",
+    )
+    patch_file(
+        fb_metal_m,
+        "inFlightSem = dispatch_semaphore_create(2);",
+        """        fb = display;
+        lock = OS_UNFAIR_LOCK_INIT;
+        device = MTLCreateSystemDefaultDevice();""",
+        """        fb = display;
+        lock = OS_UNFAIR_LOCK_INIT;
+        inFlightSem = dispatch_semaphore_create(2);
+        device = MTLCreateSystemDefaultDevice();""",
+    )
+    patch_file(
+        fb_metal_m,
+        "lastHashEven = 0;",
+        """    layer = newLayer;
+    lastHash = 0;
+    lastDrawableSize = CGSizeZero;""",
+        """    layer = newLayer;
+    lastHashEven = 0;
+    lastHashOdd = 0;
+    hashParity = 0;
+    lastDrawableSize = CGSizeZero;""",
+    )
+    patch_file(
+        fb_metal_m,
+        "quick_frame_hash_parity(",
         """static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride) {
     uint64_t hash = ((uint64_t)w << 32) ^ h ^ stride;
     uint32_t step_y = h > 128 ? h / 128 : 1;
@@ -209,30 +247,46 @@ static int serve_henge(Conn *c, Request *r) {
     }
     return hash ? hash : 1;
 }""",
-        """static uint64_t quick_frame_hash(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride) {
-    uint64_t hash = ((uint64_t)w << 32) ^ h ^ stride;
+        """/* 4-way unrolled alternating-parity hash: covers every row within 2 ticks (33 ms)
+ * while eliminating serial multiply latency and halving per-tick RAM bandwidth. */
+static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t h, uint32_t stride, uint32_t parity) {
+    uint64_t h0 = ((uint64_t)w << 32) ^ h ^ stride ^ ((uint64_t)parity << 63);
+    uint64_t h1 = 0x517cc1b727220a95ull ^ stride;
+    uint64_t h2 = 0x9e3779b97f4a7c15ull ^ w;
+    uint64_t h3 = 0xbf58476d1ce4e5b9ull ^ h;
     uint32_t row_bytes = w * 4u;
+    uint32_t step_y = (h > 64u) ? 2u : 1u;
+    uint32_t start_y = (step_y == 2u) ? (parity & 1u) : 0u;
     if ((((uintptr_t)px & 7u) == 0u) && ((stride & 7u) == 0u)) {
         uint32_t qwords = row_bytes >> 3;
+        uint32_t q4 = qwords & ~3u;
         BOOL has_tail32 = (row_bytes & 4u) != 0u;
-        for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t y = start_y; y < h; y += step_y) {
             const uint64_t *row = (const uint64_t *)(const void *)(px + (size_t)y * stride);
-            for (uint32_t x = 0; x < qwords; x++) {
-                hash = (hash ^ row[x]) * 0x9e3779b97f4a7c15ull;
+            uint32_t x = 0;
+            for (; x < q4; x += 4u) {
+                h0 = (h0 ^ row[x + 0u]) * 0x9e3779b97f4a7c15ull;
+                h1 = (h1 ^ row[x + 1u]) * 0xbf58476d1ce4e5b9ull;
+                h2 = (h2 ^ row[x + 2u]) * 0x94d049bb133111ebull;
+                h3 = (h3 ^ row[x + 3u]) * 0x517cc1b727220a95ull;
+            }
+            for (; x < qwords; x++) {
+                h0 = (h0 ^ row[x]) * 0x9e3779b97f4a7c15ull;
             }
             if (has_tail32) {
                 const uint32_t *tail = (const uint32_t *)(const void *)(row + qwords);
-                hash = (hash ^ (uint64_t)(*tail)) * 0x9e3779b97f4a7c15ull;
+                h1 = (h1 ^ (uint64_t)(*tail)) * 0xbf58476d1ce4e5b9ull;
             }
         }
     } else {
-        for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t y = start_y; y < h; y += step_y) {
             const uint8_t *row = px + (size_t)y * stride;
             for (uint32_t x = 0; x < row_bytes; x++) {
-                hash = (hash ^ (uint64_t)row[x]) * 0x9e3779b97f4a7c15ull;
+                h0 = (h0 ^ (uint64_t)row[x]) * 0x9e3779b97f4a7c15ull;
             }
         }
     }
+    uint64_t hash = h0 ^ (h1 >> 1) ^ (h2 << 1) ^ (h3 >> 3);
     return hash ? hash : 1;
 }""",
     )
@@ -244,7 +298,11 @@ static int serve_henge(Conn *c, Request *r) {
         """- (void)tick {
     hengelinux_render_lock();
     if (!hengelinux_is_render_paused()) {
-        [self _hengeUnlockedTick];
+        @try {
+            [self _hengeUnlockedTick];
+        } @catch (NSException *ex) {
+            (void)ex;
+        }
     }
     hengelinux_render_unlock();
 }
@@ -254,7 +312,7 @@ static int serve_henge(Conn *c, Request *r) {
     )
     patch_file(
         fb_metal_m,
-        "if (!texture) {",
+        "addCompletedHandler:",
         """        if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
 
         os_unfair_lock_lock(&lock);
@@ -286,7 +344,48 @@ static int serve_henge(Conn *c, Request *r) {
             texture = [device newTextureWithDescriptor:td];
             texW = w;
             texH = h;
-        }""",
+        }
+
+        [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+                   mipmapLevel:0
+                     withBytes:px
+                   bytesPerRow:stride];
+
+        id<CAMetalDrawable> drawable = [curLayer nextDrawable];
+        if (!drawable) {
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
+
+        float dstAspect = (float)(dsize.width / dsize.height);
+        float srcAspect = (float)w / (float)h;
+        float scale[2] = {1.0f, 1.0f};
+        if (dstAspect > srcAspect) {
+            scale[0] = srcAspect / dstAspect;
+        } else {
+            scale[1] = dstAspect / srcAspect;
+        }
+
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = drawable.texture;
+        rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+        rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+        [enc setRenderPipelineState:pipeline];
+        [enc setVertexBytes:scale length:sizeof(scale) atIndex:0];
+        [enc setFragmentTexture:texture atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        [enc endEncoding];
+        [cb presentDrawable:drawable];
+        [cb commit];
+
+        lastHash = hval;
+        lastDrawableSize = dsize;
+        atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
+        os_unfair_lock_unlock(&lock);""",
         """        if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
         if (!px || w < 4 || h < 4 || w > 8192 || h > 8192 || stride < w * 4u) return;
 
@@ -303,9 +402,20 @@ static int serve_henge(Conn *c, Request *r) {
             return;
         }
 
-        uint64_t hval = quick_frame_hash(px, w, h, stride);
+        uint32_t parity = hashParity & 1u;
+        hashParity++;
+        uint64_t hval = quick_frame_hash_parity(px, w, h, stride, parity);
+        uint64_t prevHash = parity ? lastHashOdd : lastHashEven;
         BOOL sizeChanged = !CGSizeEqualToSize(dsize, lastDrawableSize);
-        if (hval == lastHash && !sizeChanged && texW == w && texH == h) {
+        if (hval == prevHash && !sizeChanged && texW == w && texH == h) {
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
+
+        /* Non-blocking GPU backpressure: cap in-flight command buffers at 2 so
+         * rapid guest redraws never saturate CoreAnimation or stall the UI. */
+        dispatch_semaphore_t sem = inFlightSem;
+        if (sem && dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW) != 0) {
             os_unfair_lock_unlock(&lock);
             return;
         }
@@ -320,12 +430,67 @@ static int serve_henge(Conn *c, Request *r) {
             if (!texture) {
                 texW = 0;
                 texH = 0;
+                if (sem) dispatch_semaphore_signal(sem);
                 os_unfair_lock_unlock(&lock);
                 return;
             }
             texW = w;
             texH = h;
-        }""",
+        }
+
+        id<CAMetalDrawable> drawable = [curLayer nextDrawable];
+        if (!drawable || !drawable.texture || drawable.texture.width < 4 || drawable.texture.height < 4) {
+            if (sem) dispatch_semaphore_signal(sem);
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
+
+        [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+                   mipmapLevel:0
+                     withBytes:px
+                   bytesPerRow:stride];
+
+        CGSize actualSize = CGSizeMake((CGFloat)drawable.texture.width, (CGFloat)drawable.texture.height);
+        float dstAspect = (float)(actualSize.width / actualSize.height);
+        float srcAspect = (float)w / (float)h;
+        float scale[2] = {1.0f, 1.0f};
+        if (dstAspect > srcAspect) {
+            scale[0] = srcAspect / dstAspect;
+        } else {
+            scale[1] = dstAspect / srcAspect;
+        }
+
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = drawable.texture;
+        rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+        rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        id<MTLRenderCommandEncoder> enc = cb ? [cb renderCommandEncoderWithDescriptor:rp] : nil;
+        if (!cb || !enc) {
+            if (sem) dispatch_semaphore_signal(sem);
+            os_unfair_lock_unlock(&lock);
+            return;
+        }
+        [enc setRenderPipelineState:pipeline];
+        [enc setVertexBytes:scale length:sizeof(scale) atIndex:0];
+        [enc setFragmentTexture:texture atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        [enc endEncoding];
+        if (sem) {
+            [cb addCompletedHandler:^(__unused id<MTLCommandBuffer> buf) {
+                dispatch_semaphore_signal(sem);
+            }];
+        }
+        [cb presentDrawable:drawable];
+        [cb commit];
+
+        if (parity) lastHashOdd = hval;
+        else lastHashEven = hval;
+        lastDrawableSize = dsize;
+        atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
+        os_unfair_lock_unlock(&lock);""",
     )
 
     # 3. host/audio_mac.c: pause audio playback/capture callbacks when backgrounded
@@ -1595,6 +1760,272 @@ void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uin
             }
             break;
         }""",
+    )
+
+    # 9. devices/pl011.c: thread-safe 4096-byte RX ring buffer so concurrent
+    #    Main-Thread HID/serial injection and vCPU MMIO reads never race or drop key-up frames.
+    pl011_c = upstream / "devices/pl011.c"
+    patch_file(
+        pl011_c,
+        "g_pl011_mu",
+        """#include "pl011.h"
+
+#include <stdio.h>
+#include <stdlib.h>""",
+        """#include "pl011.h"
+
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define HV_PL011_SW_RX_SIZE 4096
+static pthread_mutex_t g_pl011_mu = PTHREAD_MUTEX_INITIALIZER;
+static HvPl011 *g_pl011_sw_owner = NULL;
+static uint8_t g_pl011_sw_rx[HV_PL011_SW_RX_SIZE];
+static int g_pl011_sw_head = 0;
+static int g_pl011_sw_count = 0;""",
+    )
+    patch_file(
+        pl011_c,
+        "hv_pl011_sw_pop_locked",
+        """static void update(HvPl011 *u) {
+    hv_gicv3_set_irq(u->gic, u->intid, (u->ris & u->imsc) != 0);
+}
+
+static void default_output(void *opaque, uint8_t c) {
+    (void)opaque;
+    fputc(c, stdout);
+    if (c == '\\n') fflush(stdout);
+}
+
+static uint64_t pl011_read(void *opaque, uint64_t off, unsigned size) {""",
+        """static void default_output(void *opaque, uint8_t c) {
+    (void)opaque;
+    fputc(c, stdout);
+    if (c == '\\n') fflush(stdout);
+}
+
+static uint32_t hv_pl011_sw_pop_locked(HvPl011 *u) {
+    uint32_t c = 0;
+    if (u == g_pl011_sw_owner) {
+        if (g_pl011_sw_count > 0) {
+            c = g_pl011_sw_rx[g_pl011_sw_head];
+            g_pl011_sw_head = (g_pl011_sw_head + 1) % HV_PL011_SW_RX_SIZE;
+            g_pl011_sw_count--;
+        }
+        if (g_pl011_sw_count == 0) u->ris &= ~(INT_RX | INT_RT);
+        return c;
+    }
+    if (u->rx_count) {
+        c = u->rx[u->rx_head];
+        u->rx_head = (u->rx_head + 1) % (int)sizeof u->rx;
+        u->rx_count--;
+    }
+    if (!u->rx_count) u->ris &= ~(INT_RX | INT_RT);
+    return c;
+}
+
+static uint64_t pl011_read(void *opaque, uint64_t off, unsigned size) {""",
+    )
+    patch_file(
+        pl011_c,
+        "g_pl011_sw_owner = u;",
+        """static uint64_t pl011_read(void *opaque, uint64_t off, unsigned size) {
+    (void)size;
+    HvPl011 *u = opaque;
+    switch (off) {
+    case 0x00: { /* DR */
+        uint32_t c = 0;
+        if (u->rx_count) {
+            c = u->rx[u->rx_head];
+            u->rx_head = (u->rx_head + 1) % (int)sizeof u->rx;
+            u->rx_count--;
+        }
+        if (!u->rx_count) u->ris &= ~(INT_RX | INT_RT);
+        update(u);
+        return c;
+    }
+    case 0x04: return 0;                                   /* RSR */
+    case 0x18: return FLAG_TXFE | (u->rx_count ? 0 : FLAG_RXFE) | (u->rx_count == (int)sizeof u->rx ? FLAG_RXFF : 0);
+    case 0x24: return u->ibrd;
+    case 0x28: return u->fbrd;
+    case 0x2c: return u->lcr;
+    case 0x30: return u->cr;
+    case 0x34: return u->ifls;
+    case 0x38: return u->imsc;
+    case 0x3c: return u->ris;
+    case 0x40: return u->ris & u->imsc;
+    case 0x48: return u->dmacr;
+    default:
+        if (off >= 0xfe0 && off < 0x1000) return pl011_id[(off - 0xfe0) >> 2];
+        return 0;
+    }
+}
+
+static void pl011_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
+    (void)size;
+    HvPl011 *u = opaque;
+    switch (off) {
+    case 0x00:
+        u->output(u->output_opaque, (uint8_t)v);
+        u->ris |= INT_TX; /* the FIFO drained at once */
+        break;
+    case 0x04: break;
+    case 0x24: u->ibrd = (uint32_t)v & 0xffff; break;
+    case 0x28: u->fbrd = (uint32_t)v & 0x3f; break;
+    case 0x2c: u->lcr = (uint32_t)v & 0xff; break;
+    case 0x30: u->cr = (uint32_t)v & 0xffff; break;
+    case 0x34: u->ifls = (uint32_t)v & 0x3f; break;
+    case 0x38: u->imsc = (uint32_t)v & 0x7ff; break;
+    case 0x44: u->ris &= ~(uint32_t)v; break;              /* ICR */
+    case 0x48: u->dmacr = (uint32_t)v & 7; break;
+    default: break;
+    }
+    update(u);
+}
+
+int hv_pl011_receive(HvPl011 *u, uint8_t c) {
+    if (u->rx_count == (int)sizeof u->rx) return 0;
+    u->rx[(u->rx_head + u->rx_count) % (int)sizeof u->rx] = c;
+    u->rx_count++;
+    u->ris |= INT_RX | INT_RT;
+    update(u);
+    return 1;
+}
+
+HvPl011 *hv_pl011_create(HvMachine *m, HvGic *gic, uint64_t pa, int intid) {
+    HvPl011 *u = calloc(1, sizeof *u);
+    u->gic = gic;
+    u->intid = intid;
+    u->cr = 0x300;  /* TXE, RXE: QEMU's reset value */
+    u->ifls = 0x12;
+    u->ris = INT_TX;
+    u->output = default_output;
+    hv_machine_add_mmio(m, pa, 0x1000, u, pl011_read, pl011_write, "pl011");
+    return u;
+}""",
+        """static uint64_t pl011_read(void *opaque, uint64_t off, unsigned size) {
+    (void)size;
+    HvPl011 *u = opaque;
+    switch (off) {
+    case 0x00: { /* DR */
+        pthread_mutex_lock(&g_pl011_mu);
+        uint32_t c = hv_pl011_sw_pop_locked(u);
+        int irq = (u->ris & u->imsc) != 0;
+        HvGic *gic = u->gic;
+        int intid = u->intid;
+        pthread_mutex_unlock(&g_pl011_mu);
+        hv_gicv3_set_irq(gic, intid, irq);
+        return c;
+    }
+    case 0x04: return 0;                                   /* RSR */
+    case 0x18: {
+        pthread_mutex_lock(&g_pl011_mu);
+        int cnt = (u == g_pl011_sw_owner) ? g_pl011_sw_count : u->rx_count;
+        int cap = (u == g_pl011_sw_owner) ? HV_PL011_SW_RX_SIZE : (int)sizeof u->rx;
+        pthread_mutex_unlock(&g_pl011_mu);
+        return FLAG_TXFE | (cnt ? 0 : FLAG_RXFE) | (cnt == cap ? FLAG_RXFF : 0);
+    }
+    case 0x24: return u->ibrd;
+    case 0x28: return u->fbrd;
+    case 0x2c: return u->lcr;
+    case 0x30: return u->cr;
+    case 0x34: return u->ifls;
+    case 0x38: {
+        pthread_mutex_lock(&g_pl011_mu);
+        uint64_t r = u->imsc;
+        pthread_mutex_unlock(&g_pl011_mu);
+        return r;
+    }
+    case 0x3c: {
+        pthread_mutex_lock(&g_pl011_mu);
+        uint64_t r = u->ris;
+        pthread_mutex_unlock(&g_pl011_mu);
+        return r;
+    }
+    case 0x40: {
+        pthread_mutex_lock(&g_pl011_mu);
+        uint64_t r = u->ris & u->imsc;
+        pthread_mutex_unlock(&g_pl011_mu);
+        return r;
+    }
+    case 0x48: return u->dmacr;
+    default:
+        if (off >= 0xfe0 && off < 0x1000) return pl011_id[(off - 0xfe0) >> 2];
+        return 0;
+    }
+}
+
+static void pl011_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
+    (void)size;
+    HvPl011 *u = opaque;
+    if (off == 0x00) {
+        u->output(u->output_opaque, (uint8_t)v);
+    }
+    pthread_mutex_lock(&g_pl011_mu);
+    switch (off) {
+    case 0x00:
+        u->ris |= INT_TX; /* the FIFO drained at once */
+        break;
+    case 0x04: break;
+    case 0x24: u->ibrd = (uint32_t)v & 0xffff; break;
+    case 0x28: u->fbrd = (uint32_t)v & 0x3f; break;
+    case 0x2c: u->lcr = (uint32_t)v & 0xff; break;
+    case 0x30: u->cr = (uint32_t)v & 0xffff; break;
+    case 0x34: u->ifls = (uint32_t)v & 0x3f; break;
+    case 0x38: u->imsc = (uint32_t)v & 0x7ff; break;
+    case 0x44: u->ris &= ~(uint32_t)v; break;              /* ICR */
+    case 0x48: u->dmacr = (uint32_t)v & 7; break;
+    default: break;
+    }
+    int irq = (u->ris & u->imsc) != 0;
+    HvGic *gic = u->gic;
+    int intid = u->intid;
+    pthread_mutex_unlock(&g_pl011_mu);
+    hv_gicv3_set_irq(gic, intid, irq);
+}
+
+int hv_pl011_receive(HvPl011 *u, uint8_t c) {
+    if (!u) return 0;
+    pthread_mutex_lock(&g_pl011_mu);
+    int ok = 0;
+    if (u == g_pl011_sw_owner) {
+        if (g_pl011_sw_count < HV_PL011_SW_RX_SIZE) {
+            g_pl011_sw_rx[(g_pl011_sw_head + g_pl011_sw_count) % HV_PL011_SW_RX_SIZE] = c;
+            g_pl011_sw_count++;
+            u->ris |= INT_RX | INT_RT;
+            ok = 1;
+        }
+    } else if (u->rx_count < (int)sizeof u->rx) {
+        u->rx[(u->rx_head + u->rx_count) % (int)sizeof u->rx] = c;
+        u->rx_count++;
+        u->ris |= INT_RX | INT_RT;
+        ok = 1;
+    }
+    int irq = (u->ris & u->imsc) != 0;
+    HvGic *gic = u->gic;
+    int intid = u->intid;
+    pthread_mutex_unlock(&g_pl011_mu);
+    if (ok) hv_gicv3_set_irq(gic, intid, irq);
+    return ok;
+}
+
+HvPl011 *hv_pl011_create(HvMachine *m, HvGic *gic, uint64_t pa, int intid) {
+    HvPl011 *u = calloc(1, sizeof *u);
+    u->gic = gic;
+    u->intid = intid;
+    u->cr = 0x300;  /* TXE, RXE: QEMU's reset value */
+    u->ifls = 0x12;
+    u->ris = INT_TX;
+    u->output = default_output;
+    pthread_mutex_lock(&g_pl011_mu);
+    g_pl011_sw_owner = u;
+    g_pl011_sw_head = 0;
+    g_pl011_sw_count = 0;
+    pthread_mutex_unlock(&g_pl011_mu);
+    hv_machine_add_mmio(m, pa, 0x1000, u, pl011_read, pl011_write, "pl011");
+    return u;
+}""",
     )
 
     return 0

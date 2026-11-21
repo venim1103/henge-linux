@@ -1039,7 +1039,15 @@ static void henge_forward_hid_to_pl011_osc_tty1(HvPl011 *uart, uint8_t usage, ui
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_running) {
         HvWinVirt *board = hv_winvm_board();
-        if (board != nullptr && board->uart != nullptr && hengelinux_is_guest_hid_bridge_ready()) {
+        bool virtioTabReady = false;
+#if defined(HENGE_WINVM_HAS_V2_FLAGS)
+        if (board != nullptr && board->vinput_tab != nullptr && (board->vinput_tab->vio.status & 4u) != 0u) {
+            virtioTabReady = true;
+        }
+#endif
+        /* Prefer VirtIO-Input tablet directly whenever the guest driver is active
+         * so high-rate trackpad motion never floods the PL011 serial FIFO. */
+        if (!virtioTabReady && board != nullptr && board->uart != nullptr && hengelinux_is_guest_hid_bridge_ready()) {
             double cx = (xNorm < 0.0) ? 0.0 : ((xNorm > 1.0) ? 1.0 : xNorm);
             double cy = (yNorm < 0.0) ? 0.0 : ((yNorm > 1.0) ? 1.0 : yNorm);
             int absX = static_cast<int>(cx * 32767.0 + 0.5);

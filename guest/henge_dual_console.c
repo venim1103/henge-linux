@@ -199,7 +199,27 @@ typedef struct {
     int ptr_fd;
     unsigned int prev_buttons;
     time_t last_open_attempt;
+    bool held_keys[256];
+    bool any_key_held;
 } UinputState;
+
+static void release_all_held_keys(UinputState *u) {
+    if (!u->any_key_held || u->kbd_fd < 0) {
+        return;
+    }
+    bool released = false;
+    for (unsigned int code = 1U; code < 256U; ++code) {
+        if (u->held_keys[code]) {
+            u->held_keys[code] = false;
+            emit_ev(u->kbd_fd, EV_KEY, (uint16_t)code, 0);
+            released = true;
+        }
+    }
+    if (released) {
+        emit_ev(u->kbd_fd, EV_SYN, SYN_REPORT, 0);
+    }
+    u->any_key_held = false;
+}
 
 static void ensure_uinput_open(UinputState *u) {
     if (u->kbd_fd >= 0 && u->ptr_fd >= 0) {
@@ -249,7 +269,9 @@ static void handle_hid_frame(UinputState *u, int master_fd, const char *body, bo
         return;
     }
     if (on_tty1) {
-        /* On tty1 text console, bash receives tty1-scoped bytes; skip uinput injection. */
+        /* On tty1 text console, bash receives tty1-scoped bytes; release any
+         * previously held uinput keys so VT switches never leave a key stuck. */
+        release_all_held_keys(u);
         return;
     }
     ensure_uinput_open(u);
@@ -285,6 +307,12 @@ static void handle_hid_frame(UinputState *u, int master_fd, const char *body, bo
         if (sscanf(body + 2, "%x %d", &usage, &pressed) == 2 && u->kbd_fd >= 0) {
             uint16_t code = hid_usage_to_evdev(usage);
             if (code != 0U) {
+                if (code < 256U) {
+                    u->held_keys[code] = (pressed != 0);
+                    if (pressed != 0) {
+                        u->any_key_held = true;
+                    }
+                }
                 emit_ev(u->kbd_fd, EV_KEY, code, pressed ? 1 : 0);
                 emit_ev(u->kbd_fd, EV_SYN, SYN_REPORT, 0);
             }
@@ -390,7 +418,10 @@ int main(void) {
         (void)tcsetattr(STDIN_FILENO, TCSANOW, &raw);
     }
 
-    UinputState uinput = {-1, -1, 0U, 0};
+    UinputState uinput;
+    memset(&uinput, 0, sizeof(uinput));
+    uinput.kbd_fd = -1;
+    uinput.ptr_fd = -1;
     ensure_uinput_open(&uinput);
 
     /* Announce V2 OSC 9999 bridge (T = tty1-only text; raw serial always reaches bash). */
@@ -526,6 +557,7 @@ int main(void) {
         (void)tcsetattr(STDIN_FILENO, TCSADRAIN, &old_attrs);
     }
     if (uinput.kbd_fd >= 0) {
+        release_all_held_keys(&uinput);
         (void)ioctl(uinput.kbd_fd, UI_DEV_DESTROY);
         close(uinput.kbd_fd);
     }

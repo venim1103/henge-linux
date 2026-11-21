@@ -763,6 +763,7 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
     private var lastSentGuestHeight: Int = 0
     private var editMenuInteraction: UIEditMenuInteraction?
     private var pendingKeystrokes: [(usage: UInt8, shift: Bool)] = []
+    private var activeSoftwareKeyUsage: UInt8?
     private var isDrainingKeystrokes = false
 
     override class var layerClass: AnyClass {
@@ -899,6 +900,10 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
     override func resignFirstResponder() -> Bool {
         pendingKeystrokes.removeAll()
         isDrainingKeystrokes = false
+        if let held = activeSoftwareKeyUsage {
+            activeSoftwareKeyUsage = nil
+            HengeVMBridge.shared.sendHidKeyUsage(held, pressed: false)
+        }
         for mod: UInt8 in 0xE0...0xE7 {
             HengeVMBridge.shared.sendHidKeyUsage(mod, pressed: false)
         }
@@ -933,13 +938,11 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
         )
         guard targetSize.width >= 4 && targetSize.height >= 4 else { return }
         if metalLayer.contentsScale != effectiveScale || metalLayer.drawableSize != targetSize {
-            // Serialize drawableSize mutations against HvFbMetalPresenter's background
-            // nextDrawable() / commit loop to prevent CoreAnimation/Metal crashes during
-            // rapid keyboard or Trackpad Split Deck toggles.
-            hengelinux_render_lock()
+            // Never take hengelinux_render_lock() on the Main Thread: HvFbMetalPresenter
+            // holds that lock across CAMetalLayer.nextDrawable(), which waits on
+            // CoreAnimation/Main Thread and causes lock contention / UI stalls.
             metalLayer.contentsScale = effectiveScale
             metalLayer.drawableSize = targetSize
-            hengelinux_render_unlock()
         }
         if allowGuestResize {
             scheduleGuestDisplayResize()
@@ -1051,8 +1054,12 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
         if next.shift {
             HengeVMBridge.shared.sendHidKeyUsage(0xE1, pressed: true)
         }
+        activeSoftwareKeyUsage = next.usage
         HengeVMBridge.shared.sendHidKeyUsage(next.usage, pressed: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.014) { [weak self] in
+            if self?.activeSoftwareKeyUsage == next.usage {
+                self?.activeSoftwareKeyUsage = nil
+            }
             HengeVMBridge.shared.sendHidKeyUsage(next.usage, pressed: false)
             if next.shift {
                 HengeVMBridge.shared.sendHidKeyUsage(0xE1, pressed: false)
