@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.3)'
+        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.4)'
         required: true
-        default: 'v0.2.3'
+        default: 'v0.2.4'
         type: string
 
 concurrency:
@@ -229,17 +229,16 @@ jobs:
           Built from commit \`${SHORT_SHA}\` on ${BUILD_DATE}. Full-system ARM64 (\`aarch64\`) multi-distro Linux virtualization on non-jailbroken iOS 18.0 – iOS 27+ devices without \`Hypervisor.framework\`.
 
           ### Highlights
-          - **2D VirtIO-GPU KMS Handoff & Hardware Cursor Overlay:** Added \`henge_virtio_gpu_reset()\` on VirtIO \`status=0\` reset (fixing black screens during UEFI-to-Linux handoff while preserving \`ramfb\` fallback) and alpha-blended \`cursorq\` (\`UPDATE_CURSOR\` / \`MOVE_CURSOR\`) compositing onto scanout 0 so the mouse pointer renders cleanly in Xorg \`modesetting\` and Wayland.
-          - **Keyboard Dismiss, Compact Keyboard+Mouse Layout & Holdable Mouse Controls:** Replaced SwiftUI automatic keyboard safe-area tracking with explicit \`keyboardHeight\` padding + a dedicated \`SoftwareKeyboardInputProxyView\` so hiding the software keyboard immediately restores the full canvas; added compact Split Deck sizing when keyboard + trackpad are open together, holdable **Left / Right Click** buttons for trackpad dragging, 1-finger press-and-hold left-drag on the Display canvas, and 2-finger long-press context menu.
-          - **No Doubled Keystrokes & Working \`Ctrl+Alt+F1\`–\`F12\` VT Switching:** Routed Arch \`henge_dual_console\` HID exclusively over PL011/\`OSC 9999\` (eliminating doubled characters on \`tty1\` and \`tty2\`), emitted synchronous key-down + \`60 ms\` sticky modifier release on special keys, and pulsed \`Ctrl+Alt+F1..F12\` chords onto \`virtio-input\` so VT switching works reliably across distros.
-          - **Always-Active \`ttyAMA0\` Serial Terminal on VT2+ (V2 Bridge):** Upgraded \`henge-dual-console\` / \`henge-guest-agent\` to \`HENGE_HID_READY_V2\` (\`OSC 9999;T\` tty1-scoped text) so the **\`ttyAMA0\` Serial Terminal** tab continues accepting root commands even while LXQt/SDDM is active on \`vt2\`.
-          - **Apple Silicon Inline Timer Fast-Path:** Validated Darwin \`COMMPAGE_TIMEBASE_TYPE == 3\` (\`S3_4_C15_C10_6\`) and \`type == 2\` (\`CNTVCTSS_EL0\`) in \`translate_counter()\` so iPhones stay on fast inline \`CNTVCT_EL0\` JIT emission instead of falling back to \`hv_counter()\`.
+          - **In-App Distro & Firmware Downloader + Distro-Aware \`CIDATA\`:** Stream official ARM64 images (**Arch Linux**, **Debian 13**, **Ubuntu 24.04 / 26.04 LTS**, **Alpine 3.23**, **Fedora 43**, **openSUSE Tumbleweed**) and shared UEFI firmware (\`code.fd\` / \`vars.fd\`) directly inside HengeLinux with zero-RAM buffering, custom URL downloads, and distro-aware \`CIDATA\` provisioning (\`/bin/bash\`, auto-grow root, Ubuntu daemon trimming).
+          - **APFS Sparse Disk Expansion & Universal LXQt Desktop Setup:** Expand virtual disks up to 128 GiB in-app (**Expand Virtual Disk...**) with automatic boot-time partition/filesystem resizing (\`henge-grow-root\`); install LXQt + Openbox + SDDM on any supported distro via \`sudo henge-install-desktop\`, backed by boot-time \`henge-xorg-autodetect\` (switching seamlessly between 2D UEFI GOP and VirtIO-GPU KMS) and automatic Ubuntu \`linux-modules-extra\` installation.
+          - **Lag-Free Metal Presentation & Reliable Input:** Replaced SwiftUI \`ScrollViewReader\` log views with \`MonospaceLogTextView\` (\`UITextView\`) and filtered \`AttributeGraph\` stderr noise from \`ttyAMA0\`; added a mutex-protected 4 KiB PL011 RX ring, direct \`virtio-input\` tablet pointer routing, stuck-key auto-release, 4-way unrolled alternating-parity \`fb_metal.m\` hashing with 2-in-flight GPU semaphore pacing, \`1024×768\` (4:3) portrait VirtIO-GPU scaling, and decoupled \`SET_SCANOUT\` rects to eliminate tab/trackpad/keyboard blanking and lag.
+          - **Full VM Memory/Thread Teardown & Accurate Jetsam Headroom:** \`hv_winvm_stop()\` now joins \`kicker_thread\`/\`net_thread\` and frees \`HvMachine\` (\`ram[].whint\`), \`HvPflash\` (128 MiB), \`HvFbMetalPresenter\`, \`HvVirtioGpuPci\`, \`HvPl011\`, \`libslirp\`, and disk handles—eliminating post-stop Jetsam RAM drops and adding a 16 KiB \`vm_map\` fallback for \`LEDGER_NO_FOOTPRINT\` guest RAM.
 
           ### Quick Setup (iOS 18.0+)
           1. Download and sign **\`HengeLinux-unsigned.ipa\`** with **SideStore** or **AltStore**.
-          2. Download **\`code.fd\`**, **\`vars.fd\`**, and either **\`archlinux.hvsparse\`** or any official ARM64 cloud \`.qcow2\` / Live \`.iso\`, then import via **Import Guest Files...** inside HengeLinux.
+          2. Inside HengeLinux, tap **Download Distros & Firmware...** to stream \`code.fd\`, \`vars.fd\`, and **Arch / Debian / Ubuntu / Fedora / Alpine / openSUSE** directly on-device (or import local \`.hvsparse\` / \`.qcow2\` / \`.iso\` files via **Import Guest Files...**).
           3. Enable **LocalDevVPN** and tap **Enable JIT via StikDebug** inside HengeLinux (on iOS 26+ TXM, stock \`universal.js\` or \`henge-jit.js\` works out of the box).
-          4. Tap **Boot**. See [\`docs/SETUP.md\`](https://github.com/venim1103/henge-linux/blob/${RELEASE_TAG}/docs/SETUP.md) for full instructions."
+          4. Tap **Boot**. Run \`curl -fsSL http://10.0.2.4/.henge/guest-tools/install.sh | sudo sh && sudo henge-install-desktop\` inside any cloud distro for one-command LXQt + SDDM. See [\`docs/SETUP.md\`](https://github.com/venim1103/henge-linux/blob/${RELEASE_TAG}/docs/SETUP.md) for full instructions."
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" \
