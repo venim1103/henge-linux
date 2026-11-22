@@ -762,3 +762,86 @@ void hengelinux_clear_console_log(void) {
     atomic_fetch_add_explicit(&g_console_total_bytes, 1ULL, memory_order_release);
     pthread_mutex_unlock(&g_console_mutex);
 }
+
+#define HENGE_SERIAL_RING_BYTES 131072U
+
+static pthread_mutex_t g_serial_mutex = PTHREAD_MUTEX_INITIALIZER;
+static uint8_t g_serial_ring[HENGE_SERIAL_RING_BYTES];
+static uint64_t g_serial_total = 0ULL;
+static atomic_uint_fast64_t g_serial_atomic_total = 0ULL;
+
+void hengelinux_serial_append_byte(uint8_t byte) {
+    pthread_mutex_lock(&g_serial_mutex);
+    g_serial_ring[(size_t)(g_serial_total % (uint64_t)HENGE_SERIAL_RING_BYTES)] = byte;
+    g_serial_total++;
+    atomic_store_explicit(&g_serial_atomic_total, g_serial_total, memory_order_release);
+    pthread_mutex_unlock(&g_serial_mutex);
+}
+
+void hengelinux_serial_append_bytes(const uint8_t *data, size_t len) {
+    if (data == NULL || len == 0U) {
+        return;
+    }
+    pthread_mutex_lock(&g_serial_mutex);
+    const uint8_t *src = data;
+    size_t remaining = len;
+    if (remaining > HENGE_SERIAL_RING_BYTES) {
+        src += (remaining - HENGE_SERIAL_RING_BYTES);
+        g_serial_total += (uint64_t)(remaining - HENGE_SERIAL_RING_BYTES);
+        remaining = HENGE_SERIAL_RING_BYTES;
+    }
+    size_t head = (size_t)(g_serial_total % (uint64_t)HENGE_SERIAL_RING_BYTES);
+    size_t first = HENGE_SERIAL_RING_BYTES - head;
+    if (first > remaining) {
+        first = remaining;
+    }
+    memcpy(g_serial_ring + head, src, first);
+    if (remaining > first) {
+        memcpy(g_serial_ring, src + first, remaining - first);
+    }
+    g_serial_total += (uint64_t)remaining;
+    atomic_store_explicit(&g_serial_atomic_total, g_serial_total, memory_order_release);
+    pthread_mutex_unlock(&g_serial_mutex);
+}
+
+uint64_t hengelinux_serial_total_bytes(void) {
+    return atomic_load_explicit(&g_serial_atomic_total, memory_order_acquire);
+}
+
+size_t hengelinux_serial_copy_from(uint64_t *cursor, uint8_t *out_buf, size_t out_cap) {
+    if (cursor == NULL || out_buf == NULL || out_cap == 0U) {
+        return 0U;
+    }
+    pthread_mutex_lock(&g_serial_mutex);
+    uint64_t total = g_serial_total;
+    uint64_t oldest = (total > (uint64_t)HENGE_SERIAL_RING_BYTES)
+        ? (total - (uint64_t)HENGE_SERIAL_RING_BYTES)
+        : 0ULL;
+    uint64_t pos = *cursor;
+    if (pos > total || pos < oldest) {
+        pos = oldest;
+    }
+    uint64_t avail = total - pos;
+    size_t to_copy = (avail < (uint64_t)out_cap) ? (size_t)avail : out_cap;
+    if (to_copy > 0U) {
+        size_t start = (size_t)(pos % (uint64_t)HENGE_SERIAL_RING_BYTES);
+        size_t first = HENGE_SERIAL_RING_BYTES - start;
+        if (first > to_copy) {
+            first = to_copy;
+        }
+        memcpy(out_buf, g_serial_ring + start, first);
+        if (to_copy > first) {
+            memcpy(out_buf + first, g_serial_ring, to_copy - first);
+        }
+    }
+    *cursor = pos + (uint64_t)to_copy;
+    pthread_mutex_unlock(&g_serial_mutex);
+    return to_copy;
+}
+
+void hengelinux_serial_clear(void) {
+    pthread_mutex_lock(&g_serial_mutex);
+    g_serial_total = 0ULL;
+    atomic_store_explicit(&g_serial_atomic_total, 0ULL, memory_order_release);
+    pthread_mutex_unlock(&g_serial_mutex);
+}

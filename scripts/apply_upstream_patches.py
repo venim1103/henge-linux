@@ -1912,6 +1912,7 @@ void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uin
 #include <stdio.h>
 #include <stdlib.h>""",
         """#include "pl011.h"
+#include "henge_platform.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -2099,6 +2100,7 @@ static void pl011_write(void *opaque, uint64_t off, uint64_t v, unsigned size) {
     (void)size;
     HvPl011 *u = opaque;
     if (off == 0x00) {
+        hengelinux_serial_append_byte((uint8_t)v);
         u->output(u->output_opaque, (uint8_t)v);
     }
     pthread_mutex_lock(&g_pl011_mu);

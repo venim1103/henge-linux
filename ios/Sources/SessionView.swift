@@ -33,6 +33,7 @@ struct SessionView: View {
     @State private var showModifierBar: Bool = true
     @State private var showDebugConsole: Bool = false
     @State private var focusSoftwareKeyboard: Bool = false
+    @State private var focusTerminalKeyboard: Bool = false
     @State private var pendingPaste: PasteRequest?
     @State private var shiftActive: Bool = false
     @State private var ctrlActive: Bool = false
@@ -89,11 +90,17 @@ struct SessionView: View {
                 .opacity(activeTab == .display ? 1 : 0)
                 .allowsHitTesting(activeTab == .display)
 
-                if activeTab == .terminal {
-                    InteractiveSerialTerminalView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color.black)
-                }
+                InteractiveSerialTerminalView(
+                    isActiveTab: activeTab == .terminal,
+                    focusKeyboard: $focusTerminalKeyboard,
+                    onOpenLogs: {
+                        showDebugConsole = true
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+                .opacity(activeTab == .terminal ? 1 : 0)
+                .allowsHitTesting(activeTab == .terminal)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -118,7 +125,12 @@ struct SessionView: View {
             }
         }
         .onChange(of: focusSoftwareKeyboard) { _, show in
-            if !show && keyboardHeight != 0 {
+            if !show && !focusTerminalKeyboard && keyboardHeight != 0 {
+                keyboardHeight = 0
+            }
+        }
+        .onChange(of: focusTerminalKeyboard) { _, show in
+            if !show && !focusSoftwareKeyboard && keyboardHeight != 0 {
                 keyboardHeight = 0
             }
         }
@@ -126,6 +138,9 @@ struct SessionView: View {
             pendingPaste = nil
             if tab != .display && focusSoftwareKeyboard {
                 focusSoftwareKeyboard = false
+            }
+            if tab != .terminal && focusTerminalKeyboard {
+                focusTerminalKeyboard = false
             }
             if keyboardHeight != 0 {
                 keyboardHeight = 0
@@ -211,16 +226,21 @@ struct SessionView: View {
             .controlSize(.mini)
             .accessibilityLabel("Debug & Telemetry Logs")
 
-            if activeTab == .display {
-                Button {
+            Button {
+                if activeTab == .display {
                     focusSoftwareKeyboard.toggle()
-                } label: {
-                    Image(systemName: focusSoftwareKeyboard ? "keyboard.fill" : "keyboard")
+                } else {
+                    focusTerminalKeyboard.toggle()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
-                .accessibilityLabel("Toggle Keyboard")
+            } label: {
+                let kbdOn = (activeTab == .display) ? focusSoftwareKeyboard : focusTerminalKeyboard
+                Image(systemName: kbdOn ? "keyboard.fill" : "keyboard")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .accessibilityLabel("Toggle Keyboard")
 
+            if activeTab == .display {
                 Button {
                     showModifierBar.toggle()
                 } label: {
@@ -233,6 +253,7 @@ struct SessionView: View {
 
             Button(role: .destructive) {
                 focusSoftwareKeyboard = false
+                focusTerminalKeyboard = false
                 releaseActiveModifiers()
                 HengeVMBridge.shared.stopGuest()
                 onStopSession()
@@ -1431,9 +1452,9 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     }
 }
 
-/// Read-only UIKit monospace log viewer (`UITextView`) used by both
-/// `InteractiveSerialTerminalView` and `DebugConsoleSheetView` to avoid
-/// SwiftUI `ScrollViewReader` + `.textSelection(.enabled)` AttributeGraph cycles.
+/// Read-only UIKit monospace log viewer (`UITextView` on TextKit 1) used by
+/// `DebugConsoleSheetView` to avoid SwiftUI `ScrollViewReader` AttributeGraph
+/// cycles and TextKit 2 viewport scroll jumps during live log streaming.
 struct MonospaceLogTextView: UIViewRepresentable {
     let text: String
     let placeholder: String
@@ -1449,12 +1470,13 @@ struct MonospaceLogTextView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> UITextView {
-        let tv = UITextView(frame: .zero)
+        let tv = UITextView(usingTextLayoutManager: false)
         tv.isEditable = false
         tv.isSelectable = true
         tv.backgroundColor = .black
         tv.indicatorStyle = .white
         tv.alwaysBounceVertical = true
+        tv.layoutManager.allowsNonContiguousLayout = false
         tv.textContainerInset = UIEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
         tv.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         tv.textColor = text.isEmpty ? .secondaryLabel : .systemGreen
@@ -1465,73 +1487,122 @@ struct MonospaceLogTextView: UIViewRepresentable {
 
     func updateUIView(_ uiView: UITextView, context: Context) {
         guard context.coordinator.lastText != text else { return }
+        let previousOffset = uiView.contentOffset
         context.coordinator.lastText = text
         uiView.textColor = text.isEmpty ? .secondaryLabel : .systemGreen
         uiView.text = text.isEmpty ? placeholder : text
-        if autoScroll && !text.isEmpty {
-            let nsLen = (uiView.text as NSString).length
-            if nsLen > 0 {
-                uiView.scrollRangeToVisible(NSRange(location: nsLen - 1, length: 1))
-            }
+        if autoScroll && !text.isEmpty && !uiView.isDragging && !uiView.isTracking {
+            uiView.layoutManager.ensureLayout(for: uiView.textContainer)
+            let bottomY = max(
+                -uiView.adjustedContentInset.top,
+                uiView.contentSize.height - uiView.bounds.height + uiView.adjustedContentInset.bottom
+            )
+            uiView.setContentOffset(CGPoint(x: 0, y: bottomY), animated: false)
+        } else if !autoScroll {
+            uiView.setContentOffset(previousOffset, animated: false)
         }
     }
 }
 
-/// Interactive PL011 (`ttyAMA0`) serial console tab embedded in `SessionView`.
+/// Interactive VT100/ANSI PL011 (`ttyAMA0`) terminal tab embedded in `SessionView`.
 private struct InteractiveSerialTerminalView: View {
-    @State private var outputText: String = ""
-    @State private var inputLine: String = ""
-    @State private var lastObservedBytes: UInt64 = UInt64.max
-    @State private var autoScroll: Bool = true
-    @State private var showRawAnsi: Bool = false
+    let isActiveTab: Bool
+    @Binding var focusKeyboard: Bool
+    let onOpenLogs: () -> Void
 
-    private let pollTimer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
+    @State private var stickyCtrl: Bool = false
+    @State private var stickyAlt: Bool = false
+    @State private var fontSize: CGFloat = 12
+    @State private var gridCols: Int = 80
+    @State private var gridRows: Int = 24
+    @State private var pendingCommand: SerialTerminalCommand?
 
     var body: some View {
         VStack(spacing: 0) {
-            MonospaceLogTextView(
-                text: outputText,
-                placeholder: "Connected to PL011 UART (ttyAMA0)...",
-                fontSize: 12,
-                autoScroll: autoScroll
+            SerialTerminalRepresentable(
+                isActiveTab: isActiveTab,
+                focusKeyboard: $focusKeyboard,
+                stickyCtrl: $stickyCtrl,
+                stickyAlt: $stickyAlt,
+                fontSize: fontSize,
+                pendingCommand: pendingCommand,
+                onCommandConsumed: {
+                    pendingCommand = nil
+                },
+                onGridSizeChanged: { cols, rows in
+                    gridCols = cols
+                    gridRows = rows
+                }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black)
-            .onAppear {
-                refreshOutput(force: true)
-            }
 
             Divider()
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    serialByteButton("Ctrl-C", byte: 0x03)
-                    serialByteButton("Ctrl-D", byte: 0x04)
-                    serialByteButton("Ctrl-Z", byte: 0x1A)
-                    serialByteButton("Esc", byte: 0x1B)
-                    serialByteButton("Tab", byte: 0x09)
-                    serialSeqButton("↑", seq: "\u{1B}[A")
-                    serialSeqButton("↓", seq: "\u{1B}[B")
+                    termByteButton("Esc", byte: 0x1B)
+                    termByteButton("Tab", byte: 0x09)
+                    termModifierButton("Ctrl", isOn: $stickyCtrl)
+                    termModifierButton("Alt", isOn: $stickyAlt)
+                    termByteButton("^C", byte: 0x03)
+                    termByteButton("^D", byte: 0x04)
+                    termByteButton("^Z", byte: 0x1A)
+                    termArrowButton("↑", dir: "A")
+                    termArrowButton("↓", dir: "B")
+                    termArrowButton("←", dir: "D")
+                    termArrowButton("→", dir: "C")
+                    termSeqButton("Home", seq: "\u{1B}[H")
+                    termSeqButton("End", seq: "\u{1B}[F")
+                    termSeqButton("PgUp", seq: "\u{1B}[5~")
+                    termSeqButton("PgDn", seq: "\u{1B}[6~")
+
                     Button("Paste") {
                         if let clip = UIPasteboard.general.string, !clip.isEmpty {
-                            HengeVMBridge.shared.sendSerialText(clip)
+                            pendingCommand = .paste(UUID(), clip)
                         }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
                     .font(.caption.monospaced())
 
-                    Button(showRawAnsi ? "Clean" : "Raw") {
-                        showRawAnsi.toggle()
-                        refreshOutput(force: true)
+                    Button("Copy") {
+                        pendingCommand = .copyScreen(UUID())
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .font(.caption.monospaced())
+
+                    Button("stty \(gridCols)×\(gridRows)") {
+                        pendingCommand = .sendSequence(UUID(), "stty rows \(gridRows) cols \(gridCols)\r")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .font(.caption.monospaced())
+
+                    Button("A-") {
+                        fontSize = max(9, fontSize - 1)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .font(.caption.monospaced())
+
+                    Button("A+") {
+                        fontSize = min(20, fontSize + 1)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
                     .font(.caption.monospaced())
 
                     Button("Clear") {
-                        HengeVMBridge.shared.clearConsoleLog()
-                        refreshOutput(force: true)
+                        pendingCommand = .clear(UUID())
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .font(.caption.monospaced())
+
+                    Button("Logs") {
+                        onOpenLogs()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
@@ -1540,66 +1611,44 @@ private struct InteractiveSerialTerminalView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
             }
-            .background(Color(white: 0.10))
-
-            HStack(spacing: 8) {
-                TextField("Send command to ttyAMA0...", text: $inputLine)
-                    .font(.system(size: 13, design: .monospaced))
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled(true)
-                    .textFieldStyle(.roundedBorder)
-                    .submitLabel(.send)
-                    .onSubmit {
-                        sendCurrentInput()
-                    }
-
-                Button("Send") {
-                    sendCurrentInput()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color(white: 0.14))
-        }
-        .onReceive(pollTimer) { _ in
-            refreshOutput(force: false)
+            .background(Color(white: 0.11))
         }
     }
 
-    private func sendCurrentInput() {
-        let payload = inputLine + "\r"
-        inputLine = ""
-        HengeVMBridge.shared.sendSerialText(payload)
-    }
-
-    private func serialByteButton(_ title: String, byte: UInt8) -> some View {
+    private func termModifierButton(_ title: String, isOn: Binding<Bool>) -> some View {
         Button(title) {
-            HengeVMBridge.shared.sendSerialControlByte(byte)
+            isOn.wrappedValue.toggle()
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .font(.caption.monospaced())
+        .tint(isOn.wrappedValue ? .blue : .secondary)
+    }
+
+    private func termByteButton(_ title: String, byte: UInt8) -> some View {
+        Button(title) {
+            pendingCommand = .sendByte(UUID(), byte)
         }
         .buttonStyle(.bordered)
         .controlSize(.mini)
         .font(.caption.monospaced())
     }
 
-    private func serialSeqButton(_ title: String, seq: String) -> some View {
+    private func termSeqButton(_ title: String, seq: String) -> some View {
         Button(title) {
-            HengeVMBridge.shared.sendSerialText(seq)
+            pendingCommand = .sendSequence(UUID(), seq)
         }
         .buttonStyle(.bordered)
         .controlSize(.mini)
         .font(.caption.monospaced())
     }
 
-    private func refreshOutput(force: Bool) {
-        let bridge = HengeVMBridge.shared
-        let total = bridge.consoleTotalBytes
-        guard force || total != lastObservedBytes else {
-            return
+    private func termArrowButton(_ title: String, dir: Character) -> some View {
+        Button(title) {
+            pendingCommand = .sendArrow(UUID(), dir)
         }
-        lastObservedBytes = total
-        let raw = bridge.copyConsoleLog()
-        outputText = showRawAnsi ? raw : DebugConsoleSheetView.sanitizeTerminalOutput(raw)
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .font(.caption.monospaced())
     }
 }

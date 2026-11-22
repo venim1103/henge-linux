@@ -155,6 +155,31 @@ static void henge_on_vm_exit(int reason) {
     return hengelinux_console_total_bytes();
 }
 
+- (uint64_t)serialTotalBytes {
+    return hengelinux_serial_total_bytes();
+}
+
+- (NSData *)readSerialDataFromCursor:(uint64_t *)cursor maxBytes:(NSUInteger)maxBytes {
+    if (cursor == nullptr || maxBytes == 0) {
+        return [NSData data];
+    }
+    NSUInteger capped = (maxBytes > 65536U) ? 65536U : maxBytes;
+    auto *buf = static_cast<uint8_t *>(std::malloc(capped));
+    if (buf == nullptr) {
+        return [NSData data];
+    }
+    size_t n = hengelinux_serial_copy_from(cursor, buf, capped);
+    if (n == 0U) {
+        std::free(buf);
+        return [NSData data];
+    }
+    return [NSData dataWithBytesNoCopy:buf length:n freeWhenDone:YES];
+}
+
+- (void)clearSerialBuffer {
+    hengelinux_serial_clear();
+}
+
 - (NSString *)bootLogFilePath {
     if (_bootLogPathStr.empty()) {
         return @"";
@@ -730,6 +755,7 @@ static void henge_on_vm_exit(int reason) {
         hv_winvm_set_virtio_gpu_size(_lastDisplayWidth, _lastDisplayHeight);
     }
 #endif
+    hengelinux_serial_clear();
     hengelinux_console_append_line("[bridge] Calling hv_winvm_start(1, henge_on_vm_exit)...");
     hv_winvm_start(1, henge_on_vm_exit);
     hengelinux_console_append_line("[bridge] hv_winvm_start returned; vCPUs running");
@@ -1125,6 +1151,24 @@ static void henge_forward_hid_to_pl011_osc_tty1(HvPl011 *uart, uint8_t usage, ui
     }
 #else
     (void)text;
+#endif
+}
+
+- (void)sendSerialData:(NSData *)data {
+#if HENGE_HAS_UPSTREAM_ENGINE
+    if (!_running || data.length == 0) {
+        return;
+    }
+    HvWinVirt *board = hv_winvm_board();
+    if (board == nullptr || board->uart == nullptr) {
+        return;
+    }
+    const auto *bytes = static_cast<const uint8_t *>(data.bytes);
+    for (NSUInteger i = 0; i < data.length; ++i) {
+        hv_pl011_receive(board->uart, bytes[i]);
+    }
+#else
+    (void)data;
 #endif
 }
 

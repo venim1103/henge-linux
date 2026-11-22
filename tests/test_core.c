@@ -548,6 +548,50 @@ static void test_console_log_capture(void) {
 
     hengelinux_clear_console_log();
     remove(log_path);
+
+    /* Verify dedicated incremental pure guest serial ring (cursor, wraparound, clear). */
+    hengelinux_serial_clear();
+    HENGE_CHECK(hengelinux_serial_total_bytes() == 0ULL);
+    const uint8_t s1[] = "\x1b[32mhello\r\n";
+    hengelinux_serial_append_bytes(s1, sizeof(s1) - 1U);
+    hengelinux_serial_append_byte((uint8_t)'!');
+    HENGE_CHECK(hengelinux_serial_total_bytes() == (uint64_t)(sizeof(s1)));
+    uint64_t cur = 0ULL;
+    uint8_t out[64] = {0};
+    size_t got = hengelinux_serial_copy_from(&cur, out, 5U);
+    HENGE_CHECK(got == 5U && cur == 5ULL && memcmp(out, s1, 5U) == 0);
+    got = hengelinux_serial_copy_from(&cur, out, sizeof(out));
+    HENGE_CHECK(got == sizeof(s1) - 5U && cur == (uint64_t)sizeof(s1));
+    HENGE_CHECK(out[got - 1U] == (uint8_t)'!');
+    /* Second read at tail returns 0 bytes. */
+    HENGE_CHECK(hengelinux_serial_copy_from(&cur, out, sizeof(out)) == 0U);
+    /* Ring overflow past 128 KiB advances stale cursor to oldest retained bytes. */
+    uint8_t chunk[4096];
+    memset(chunk, 'A', sizeof(chunk));
+    for (int i = 0; i < 40; ++i) {
+        hengelinux_serial_append_bytes(chunk, sizeof(chunk));
+    }
+    uint8_t tail_mark[] = "TAIL";
+    hengelinux_serial_append_bytes(tail_mark, 4U);
+    uint64_t stale_cur = 0ULL;
+    size_t total_drained = 0U;
+    uint8_t last4[4] = {0};
+    uint8_t drain[4096];
+    for (;;) {
+        size_t d = hengelinux_serial_copy_from(&stale_cur, drain, sizeof(drain));
+        if (d == 0U) break;
+        total_drained += d;
+        if (d >= 4U) {
+            memcpy(last4, drain + d - 4U, 4U);
+        } else {
+            memmove(last4, last4 + d, 4U - d);
+            memcpy(last4 + (4U - d), drain, d);
+        }
+    }
+    HENGE_CHECK(total_drained == 131072U);
+    HENGE_CHECK(memcmp(last4, "TAIL", 4U) == 0);
+    hengelinux_serial_clear();
+    HENGE_CHECK(hengelinux_serial_total_bytes() == 0ULL);
 }
 
 static void write_be32(uint8_t *p, uint32_t v) {

@@ -26,12 +26,17 @@ NS_SWIFT_UI_ACTOR
 @property (nonatomic, readonly, copy) NSString *statusText;
 @property (nonatomic, readonly) uint64_t framesPresented;
 @property (nonatomic, readonly) uint64_t consoleTotalBytes;
+@property (nonatomic, readonly) uint64_t serialTotalBytes;
 @property (nonatomic, readonly, copy) NSString *bootLogFilePath;
 
 /// Read or clear captured PL011 serial (`ttyAMA0`) + HengeVM engine diagnostic logs.
 - (NSString *)copyConsoleLog;
 - (void)clearConsoleLog;
 - (NSString *)diagnosticSnapshot;
+
+/// Incrementally read or clear the pure guest PL011 (`ttyAMA0`) byte stream for the VT100 terminal.
+- (NSData *)readSerialDataFromCursor:(uint64_t *)cursor maxBytes:(NSUInteger)maxBytes;
+- (void)clearSerialBuffer;
 
 /// Attach or detach the `MetalDisplaySurfaceView` `CAMetalLayer` for UEFI GOP / framebuffer output.
 - (void)attachDisplayLayer:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(attachDisplayLayer(_:));
@@ -81,8 +86,9 @@ NS_SWIFT_UI_ACTOR
 - (BOOL)saveBackgroundSnapshot;
 - (BOOL)hasSavedBackgroundSnapshotAtMachineDir:(NSString *)machineDirPath;
 
-/// Send raw text or control bytes directly to the guest PL011 UART (`ttyAMA0`).
+/// Send raw text, raw bytes, or control bytes directly to the guest PL011 UART (`ttyAMA0`).
 - (void)sendSerialText:(NSString *)text;
+- (void)sendSerialData:(NSData *)data;
 - (void)sendSerialControlByte:(uint8_t)byte;
 
 /// Forward USB HID keyboard usage codes (`0x29` Esc, `0x2B` Tab, `0xE0` Ctrl, etc.).

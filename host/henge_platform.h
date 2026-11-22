@@ -89,6 +89,17 @@ size_t hengelinux_copy_console_log(char *out_buf, size_t out_cap);
 void hengelinux_clear_console_log(void);
 
 /*
+ * Dedicated pure guest PL011 UART (ttyAMA0) byte stream ring (128 KiB),
+ * separate from host stdout/stderr diagnostic logs, supporting incremental
+ * cursor-based reads for the interactive VT100/ANSI terminal emulator.
+ */
+void hengelinux_serial_append_byte(uint8_t byte);
+void hengelinux_serial_append_bytes(const uint8_t *data, size_t len);
+uint64_t hengelinux_serial_total_bytes(void);
+size_t hengelinux_serial_copy_from(uint64_t *cursor, uint8_t *out_buf, size_t out_cap);
+void hengelinux_serial_clear(void);
+
+/*
  * Guest OSC 9999 HID bridge handshake state. Flips true only after the Linux
  * guest's native henge-dual-console binary emits "HENGE_HID_READY" (V1) or
  * "HENGE_HID_READY_V2" (V2: OSC 9999;T tty1-scoped text + always-active
