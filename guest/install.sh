@@ -536,6 +536,56 @@ EOF
     printf '[henge-install] Installed OpenRC henge-xorg-autodetect.start.\n'
 fi
 
+# 11. Install automatic ttyAMA0 xterm-256color & DSR geometry sync helper (henge-resize)
+cat <<'EOF' > "$BIN_DIR/henge-resize"
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Query the connected VT100/xterm terminal size via DSR (ESC[6n) and apply stty rows/cols.
+[ -t 0 ] && [ -t 1 ] || exit 0
+OLD_STTY="$(stty -g 2>/dev/null || true)"
+[ -n "$OLD_STTY" ] || exit 0
+trap 'stty "$OLD_STTY" 2>/dev/null || true' EXIT INT TERM
+stty raw -echo min 0 time 2 2>/dev/null || exit 0
+printf '\0337\033[999;999H\033[6n\0338'
+RESP=""
+N=0
+while [ "$N" -lt 24 ]; do
+    CH="$(dd bs=1 count=1 2>/dev/null || true)"
+    [ -n "$CH" ] || break
+    RESP="${RESP}${CH}"
+    [ "$CH" = "R" ] && break
+    N=$((N + 1))
+done
+stty "$OLD_STTY" 2>/dev/null || true
+trap - EXIT INT TERM
+# Parse ESC[rows;colsR
+STRIPPED="${RESP#*[}"
+ROWS="${STRIPPED%%;*}"
+REST="${STRIPPED#*;}"
+COLS="${REST%%R*}"
+case "$ROWS:$COLS" in
+    *[!0-9:]*) exit 0 ;;
+esac
+if [ -n "$ROWS" ] && [ -n "$COLS" ] && [ "$ROWS" -ge 6 ] && [ "$COLS" -ge 20 ]; then
+    stty rows "$ROWS" cols "$COLS" 2>/dev/null || true
+fi
+EOF
+chmod 0755 "$BIN_DIR/henge-resize"
+
+cat <<EOF > /etc/profile.d/henge-serial-term.sh
+# Upgrade PL011 ttyAMA0 from vt220 to xterm-256color and sync rows/cols automatically.
+case "\$(tty 2>/dev/null || true)" in
+    /dev/ttyAMA*)
+        export TERM=xterm-256color
+        if [ -x "${BIN_DIR}/henge-resize" ]; then
+            "${BIN_DIR}/henge-resize" >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+EOF
+chmod 0644 /etc/profile.d/henge-serial-term.sh
+printf '[henge-install] Installed henge-resize and /etc/profile.d/henge-serial-term.sh (ttyAMA0 xterm-256color).\n'
+
 printf '[henge-install] Done (distro=%s, init=%s). Install LXQt anytime with: sudo henge-install-desktop\n' "$DISTRO_ID" "$INIT_SYS"
 printf '  Mount iOS Shared folder anytime with:\n'
 printf '  rclone mount :webdav: /mnt/ios-share --webdav-url http://%s/ --webdav-vendor other --daemon\n' "$GATEWAY"

@@ -1463,6 +1463,7 @@ struct MonospaceLogTextView: UIViewRepresentable {
 
     final class Coordinator {
         var lastText: String = ""
+        var lastAutoScroll: Bool = true
     }
 
     func makeCoordinator() -> Coordinator {
@@ -1482,15 +1483,21 @@ struct MonospaceLogTextView: UIViewRepresentable {
         tv.textColor = text.isEmpty ? .secondaryLabel : .systemGreen
         tv.text = text.isEmpty ? placeholder : text
         context.coordinator.lastText = text
+        context.coordinator.lastAutoScroll = autoScroll
         return tv
     }
 
     func updateUIView(_ uiView: UITextView, context: Context) {
-        guard context.coordinator.lastText != text else { return }
+        let textChanged = (context.coordinator.lastText != text)
+        let autoScrollEnabledNow = (!context.coordinator.lastAutoScroll && autoScroll)
+        context.coordinator.lastAutoScroll = autoScroll
+        guard textChanged || autoScrollEnabledNow else { return }
         let previousOffset = uiView.contentOffset
-        context.coordinator.lastText = text
-        uiView.textColor = text.isEmpty ? .secondaryLabel : .systemGreen
-        uiView.text = text.isEmpty ? placeholder : text
+        if textChanged {
+            context.coordinator.lastText = text
+            uiView.textColor = text.isEmpty ? .secondaryLabel : .systemGreen
+            uiView.text = text.isEmpty ? placeholder : text
+        }
         if autoScroll && !text.isEmpty && !uiView.isDragging && !uiView.isTracking {
             uiView.layoutManager.ensureLayout(for: uiView.textContainer)
             let bottomY = max(
@@ -1498,24 +1505,114 @@ struct MonospaceLogTextView: UIViewRepresentable {
                 uiView.contentSize.height - uiView.bounds.height + uiView.adjustedContentInset.bottom
             )
             uiView.setContentOffset(CGPoint(x: 0, y: bottomY), animated: false)
-        } else if !autoScroll {
+        } else if !autoScroll && textChanged {
             uiView.setContentOffset(previousOffset, animated: false)
         }
     }
 }
 
-/// Interactive VT100/ANSI PL011 (`ttyAMA0`) terminal tab embedded in `SessionView`.
+/// Hold-to-repeat serial terminal button that preserves horizontal ScrollView gestures.
+private struct TermRepeatKeyButton: View {
+    let label: String
+    let action: () -> Void
+
+    @State private var didHandlePress: Bool = false
+
+    var body: some View {
+        Button {
+            if !didHandlePress {
+                action()
+            }
+            didHandlePress = false
+        } label: {
+            Text(label)
+        }
+        .buttonStyle(TermRepeatKeyButtonStyle(didHandlePress: $didHandlePress, action: action))
+    }
+}
+
+private struct TermRepeatKeyButtonStyle: ButtonStyle {
+    @Binding var didHandlePress: Bool
+    let action: () -> Void
+
+    func makeBody(configuration: Configuration) -> some View {
+        TermRepeatKeyBody(configuration: configuration, didHandlePress: $didHandlePress, action: action)
+    }
+}
+
+private struct TermRepeatKeyBody: View {
+    let configuration: ButtonStyle.Configuration
+    @Binding var didHandlePress: Bool
+    let action: () -> Void
+
+    @State private var delayTask: DispatchWorkItem?
+    @State private var repeatTimer: Timer?
+
+    var body: some View {
+        configuration.label
+            .font(.caption.monospaced())
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(configuration.isPressed ? Color.accentColor.opacity(0.35) : Color(white: 0.22))
+            )
+            .foregroundStyle(.primary)
+            .onChange(of: configuration.isPressed) { _, pressed in
+                if pressed {
+                    didHandlePress = true
+                    action()
+                    startRepeat()
+                } else {
+                    stopRepeat()
+                }
+            }
+            .onDisappear {
+                stopRepeat()
+            }
+    }
+
+    private func startRepeat() {
+        stopRepeat()
+        let work = DispatchWorkItem {
+            let timer = Timer.scheduledTimer(withTimeInterval: 0.065, repeats: true) { _ in
+                Task { @MainActor in
+                    action()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            repeatTimer = timer
+        }
+        delayTask = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    private func stopRepeat() {
+        delayTask?.cancel()
+        delayTask = nil
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+    }
+}
+
+/// Interactive VT100/xterm-256color PL011 (`ttyAMA0`) terminal tab embedded in `SessionView`.
 private struct InteractiveSerialTerminalView: View {
     let isActiveTab: Bool
     @Binding var focusKeyboard: Bool
     let onOpenLogs: () -> Void
 
+    @AppStorage("serialTerminalFontSize") private var fontSize: Double = 10.5
     @State private var stickyCtrl: Bool = false
     @State private var stickyAlt: Bool = false
-    @State private var fontSize: CGFloat = 12
     @State private var gridCols: Int = 80
     @State private var gridRows: Int = 24
+    @State private var syncedCols: Int = 0
+    @State private var syncedRows: Int = 0
     @State private var pendingCommand: SerialTerminalCommand?
+
+    private var needsSizeSync: Bool {
+        syncedCols != gridCols || syncedRows != gridRows
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1524,7 +1621,7 @@ private struct InteractiveSerialTerminalView: View {
                 focusKeyboard: $focusKeyboard,
                 stickyCtrl: $stickyCtrl,
                 stickyAlt: $stickyAlt,
-                fontSize: fontSize,
+                fontSize: CGFloat(fontSize),
                 pendingCommand: pendingCommand,
                 onCommandConsumed: {
                     pendingCommand = nil
@@ -1545,17 +1642,36 @@ private struct InteractiveSerialTerminalView: View {
                     termByteButton("Tab", byte: 0x09)
                     termModifierButton("Ctrl", isOn: $stickyCtrl)
                     termModifierButton("Alt", isOn: $stickyAlt)
-                    termByteButton("^C", byte: 0x03)
-                    termByteButton("^D", byte: 0x04)
-                    termByteButton("^Z", byte: 0x1A)
+
+                    Button("Fit \(gridCols)×\(gridRows)") {
+                        syncedCols = gridCols
+                        syncedRows = gridRows
+                        pendingCommand = .sendSequence(
+                            UUID(),
+                            "export TERM=xterm-256color; stty rows \(gridRows) cols \(gridCols)\r"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .font(.caption.monospaced())
+                    .tint(needsSizeSync ? .orange : .green)
+
                     termArrowButton("↑", dir: "A")
                     termArrowButton("↓", dir: "B")
                     termArrowButton("←", dir: "D")
                     termArrowButton("→", dir: "C")
+                    termByteButton("^C", byte: 0x03)
+                    termByteButton("^D", byte: 0x04)
+                    termByteButton("^Z", byte: 0x1A)
+                    termSeqButton("Del", seq: "\u{1B}[3~")
                     termSeqButton("Home", seq: "\u{1B}[H")
                     termSeqButton("End", seq: "\u{1B}[F")
-                    termSeqButton("PgUp", seq: "\u{1B}[5~")
-                    termSeqButton("PgDn", seq: "\u{1B}[6~")
+                    TermRepeatKeyButton(label: "PgUp") {
+                        pendingCommand = .sendSequence(UUID(), "\u{1B}[5~")
+                    }
+                    TermRepeatKeyButton(label: "PgDn") {
+                        pendingCommand = .sendSequence(UUID(), "\u{1B}[6~")
+                    }
 
                     Button("Paste") {
                         if let clip = UIPasteboard.general.string, !clip.isEmpty {
@@ -1573,22 +1689,15 @@ private struct InteractiveSerialTerminalView: View {
                     .controlSize(.mini)
                     .font(.caption.monospaced())
 
-                    Button("stty \(gridCols)×\(gridRows)") {
-                        pendingCommand = .sendSequence(UUID(), "stty rows \(gridRows) cols \(gridCols)\r")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .font(.caption.monospaced())
-
                     Button("A-") {
-                        fontSize = max(9, fontSize - 1)
+                        fontSize = max(7.0, ((fontSize - 0.5) * 2.0).rounded() / 2.0)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
                     .font(.caption.monospaced())
 
                     Button("A+") {
-                        fontSize = min(20, fontSize + 1)
+                        fontSize = min(20.0, ((fontSize + 0.5) * 2.0).rounded() / 2.0)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
@@ -1644,11 +1753,8 @@ private struct InteractiveSerialTerminalView: View {
     }
 
     private func termArrowButton(_ title: String, dir: Character) -> some View {
-        Button(title) {
+        TermRepeatKeyButton(label: title) {
             pendingCommand = .sendArrow(UUID(), dir)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.mini)
-        .font(.caption.monospaced())
     }
 }

@@ -1313,10 +1313,18 @@ struct SafariSheetView: UIViewControllerRepresentable {
 
 /// Live PL011 (`ttyAMA0`) serial & `HengeVM` engine diagnostic console sheet.
 struct DebugConsoleSheetView: View {
+    private enum LogFilter: String, CaseIterable, Identifiable {
+        case all = "All"
+        case engine = "Engine"
+        case serial = "Guest Serial"
+        var id: String { rawValue }
+    }
+
     @Environment(\.dismiss) private var dismiss
     @State private var telemetryText: String = ""
     @State private var logText: String = ""
     @State private var lastObservedBytes: UInt64 = UInt64.max
+    @State private var filter: LogFilter = .all
     @State private var showRawEscapeCodes: Bool = false
     @State private var autoScroll: Bool = true
     @State private var copiedBanner: Bool = false
@@ -1331,6 +1339,16 @@ struct DebugConsoleSheetView: View {
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+
+                    Picker("Log Source", selection: $filter) {
+                        ForEach(LogFilter.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: filter) { _, _ in
+                        refreshLogs(force: true)
+                    }
 
                     HStack(spacing: 12) {
                         Toggle("Auto-Scroll", isOn: $autoScroll)
@@ -1408,11 +1426,29 @@ struct DebugConsoleSheetView: View {
         }
         lastObservedBytes = currentBytes
         let raw = bridge.copyConsoleLog()
-        logText = showRawEscapeCodes ? raw : Self.sanitizeTerminalOutput(raw)
+        let cleaned = showRawEscapeCodes ? raw : Self.sanitizeTerminalOutput(raw)
+        switch filter {
+        case .all:
+            logText = cleaned
+        case .engine:
+            logText = cleaned
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { line in
+                    line.hasPrefix("[bridge]") || line.hasPrefix("winvm:") || line.hasPrefix("hengevm:")
+                }
+                .joined(separator: "\n")
+        case .serial:
+            logText = cleaned
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { line in
+                    !(line.hasPrefix("[bridge]") || line.hasPrefix("winvm:") || line.hasPrefix("hengevm:"))
+                }
+                .joined(separator: "\n")
+        }
     }
 
     private static let csiEscapeRegex = try? NSRegularExpression(
-        pattern: "\\x1B\\[[0-9;?]*[ -/]*[@-~]",
+        pattern: "\\x1B\\[[0-9;?:<>=!]*[ -/]*[@-~]",
         options: []
     )
     private static let oscEscapeRegex = try? NSRegularExpression(
@@ -1421,9 +1457,7 @@ struct DebugConsoleSheetView: View {
     )
 
     static func sanitizeTerminalOutput(_ input: String) -> String {
-        var text = input
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
+        var text = input.replacingOccurrences(of: "\r\n", with: "\n")
         if let csiRegex = csiEscapeRegex {
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             text = csiRegex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
@@ -1432,6 +1466,13 @@ struct DebugConsoleSheetView: View {
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
             text = oscRegex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
         }
-        return text
+        // Collapse standalone carriage-return progress overwrites (e.g. apt/curl progress bars).
+        let collapsedLines = text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> Substring in
+            if let lastCR = line.lastIndex(of: "\r") {
+                return line[line.index(after: lastCR)...]
+            }
+            return line
+        }
+        return collapsedLines.joined(separator: "\n")
     }
 }
