@@ -183,6 +183,10 @@ final class VT100TerminalEmulator {
 
     /// Called when the guest queries terminal state (e.g. DSR `\x1b[6n`, `CSI 18 t`, `OSC 11 ; ?`).
     var onReply: ((Data) -> Void)?
+    /// Called when the guest queries terminal geometry (`ESC[999;999H` + `ESC[6n` or `CSI 18 t`).
+    var onSizeQueried: ((Int, Int) -> Void)?
+    /// Called when alternate screen mode toggles (`?1049h`/`l`, `?47h`/`l`).
+    var onAltScreenChanged: ((Bool) -> Void)?
 
     /// Tracks lines pushed into scrollback during a feed batch so the view
     /// can keep a scrolled-up viewport anchored at the same text.
@@ -756,12 +760,16 @@ final class VT100TerminalEmulator {
     }
 
     private func fullReset() {
+        let wasAlt = isUsingAlternateScreen
         isUsingAlternateScreen = false
         altGrid = nil
         grid = Array(repeating: Array(repeating: TermCell.blank, count: cols), count: rows)
         cursorX = 0
         cursorY = 0
         softReset()
+        if wasAlt {
+            onAltScreenChanged?(false)
+        }
     }
 
     private func resetSGR() {
@@ -789,6 +797,7 @@ final class VT100TerminalEmulator {
             pendingWrap = false
             scrollTop = 0
             scrollBottom = rows - 1
+            onAltScreenChanged?(true)
         }
     }
 
@@ -802,6 +811,7 @@ final class VT100TerminalEmulator {
             scrollTop = 0
             scrollBottom = rows - 1
             pendingWrap = false
+            onAltScreenChanged?(false)
         }
         if restoreCursorAfter {
             restoreCursor(from: primarySavedCursor)
@@ -1121,12 +1131,18 @@ final class VT100TerminalEmulator {
         case 0x74: // 't' XTWINOPS
             if params.first?.value == 18 {
                 emitReply("\u{1B}[8;\(rows);\(cols)t")
+                if !suppressReplies {
+                    onSizeQueried?(cols, rows)
+                }
             }
 
         case 0x6E: // 'n' DSR
             let code = params.first?.value ?? 0
             if code == 6 {
                 emitReply("\u{1B}[\(cursorY + 1);\(cursorX + 1)R")
+                if !suppressReplies && cursorY == rows - 1 && cursorX == cols - 1 {
+                    onSizeQueried?(cols, rows)
+                }
             } else if code == 5 {
                 emitReply("\u{1B}[0n")
             }
@@ -1231,6 +1247,8 @@ final class VT100TerminalEmulator {
 final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuInteractionDelegate {
     var onFocusChanged: ((Bool) -> Void)?
     var onGridSizeChanged: ((Int, Int) -> Void)?
+    var onGuestSizeSynced: ((Int, Int) -> Void)?
+    var onAltScreenChanged: ((Bool) -> Void)?
     var onStickyModifiersConsumed: (() -> Void)?
 
     var stickyCtrl: Bool = false
@@ -1313,6 +1331,12 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
 
         emulator.onReply = { data in
             HengeVMBridge.shared.sendSerialData(data)
+        }
+        emulator.onSizeQueried = { [weak self] cols, rows in
+            self?.onGuestSizeSynced?(cols, rows)
+        }
+        emulator.onAltScreenChanged = { [weak self] inAlt in
+            self?.onAltScreenChanged?(inAlt)
         }
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
@@ -1901,6 +1925,8 @@ struct SerialTerminalRepresentable: UIViewRepresentable {
     var pendingCommand: SerialTerminalCommand?
     var onCommandConsumed: () -> Void
     var onGridSizeChanged: (Int, Int) -> Void
+    var onGuestSizeSynced: (Int, Int) -> Void
+    var onAltScreenChanged: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -1929,6 +1955,16 @@ struct SerialTerminalRepresentable: UIViewRepresentable {
         view.onGridSizeChanged = { cols, rows in
             DispatchQueue.main.async {
                 onGridSizeChanged(cols, rows)
+            }
+        }
+        view.onGuestSizeSynced = { cols, rows in
+            DispatchQueue.main.async {
+                onGuestSizeSynced(cols, rows)
+            }
+        }
+        view.onAltScreenChanged = { inAlt in
+            DispatchQueue.main.async {
+                onAltScreenChanged(inAlt)
             }
         }
         return view

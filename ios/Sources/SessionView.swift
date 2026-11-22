@@ -1608,6 +1608,7 @@ private struct InteractiveSerialTerminalView: View {
     @State private var gridRows: Int = 24
     @State private var syncedCols: Int = 0
     @State private var syncedRows: Int = 0
+    @State private var inAlternateScreen: Bool = false
     @State private var pendingCommand: SerialTerminalCommand?
 
     private var needsSizeSync: Bool {
@@ -1629,6 +1630,13 @@ private struct InteractiveSerialTerminalView: View {
                 onGridSizeChanged: { cols, rows in
                     gridCols = cols
                     gridRows = rows
+                },
+                onGuestSizeSynced: { cols, rows in
+                    syncedCols = cols
+                    syncedRows = rows
+                },
+                onAltScreenChanged: { inAlt in
+                    inAlternateScreen = inAlt
                 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1648,13 +1656,14 @@ private struct InteractiveSerialTerminalView: View {
                         syncedRows = gridRows
                         pendingCommand = .sendSequence(
                             UUID(),
-                            "export TERM=xterm-256color; stty rows \(gridRows) cols \(gridCols)\r"
+                            "unset LINES COLUMNS; export TERM=xterm-256color; stty rows \(gridRows) cols \(gridCols)\r"
                         )
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
                     .font(.caption.monospaced())
-                    .tint(needsSizeSync ? .orange : .green)
+                    .tint(inAlternateScreen ? .secondary : (needsSizeSync ? .orange : .green))
+                    .disabled(inAlternateScreen)
 
                     termArrowButton("↑", dir: "A")
                     termArrowButton("↓", dir: "B")
