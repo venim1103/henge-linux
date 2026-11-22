@@ -1268,7 +1268,9 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
             if isActiveTab != oldValue {
                 if isActiveTab {
                     startPollingIfNeeded()
-                    drainSerial()
+                    // Catch up any output buffered while on Display tab without
+                    // firing stale DSR/DA replies into a live login prompt.
+                    drainSerial(suppressReplies: true)
                 } else {
                     stopPolling()
                     if isFirstResponder {
@@ -1388,7 +1390,7 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
         if window != nil {
             if isActiveTab {
                 startPollingIfNeeded()
-                drainSerial()
+                drainSerial(suppressReplies: true)
             }
             DispatchQueue.main.async { [weak self] in
                 self?.syncKeyboardResponder()
@@ -1414,7 +1416,7 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
         pollTimer = nil
     }
 
-    func drainSerial() {
+    func drainSerial(suppressReplies forceSuppress: Bool = false) {
         let bridge = HengeVMBridge.shared
         let total = bridge.serialTotalBytes
         if total < serialCursor {
@@ -1423,14 +1425,17 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
             emulator.clearAll()
             setNeedsDisplay()
         }
+        let initialBacklog = (total > serialCursor) ? (total - serialCursor) : 0
+        let maxChunks = forceSuppress ? 16 : 4
         var dirty = false
-        for _ in 0..<4 {
+        for _ in 0..<maxChunks {
+            let latestBefore = bridge.serialTotalBytes
+            let remainingBefore = (latestBefore > serialCursor) ? (latestBefore - serialCursor) : 0
             let chunk = bridge.readSerialData(fromCursor: &serialCursor, maxBytes: 16384)
             if chunk.isEmpty { break }
-            // Suppress replies during historical catch-up so stale boot-time
-            // DSR/DA queries never inject stray escape bytes into a live shell.
-            let latestTotal = bridge.serialTotalBytes
-            emulator.suppressReplies = (latestTotal > serialCursor) && (latestTotal - serialCursor > 1024)
+            // Suppress DSR/DA/OSC replies during tab catch-up or large historical
+            // bursts so stale boot-time probes never leak escape bytes into login:.
+            emulator.suppressReplies = forceSuppress || initialBacklog > 1024 || remainingBefore > 1024
             emulator.resetScrollbackDelta()
             emulator.feed(chunk)
             emulator.suppressReplies = false

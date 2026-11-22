@@ -480,6 +480,18 @@ XEOF
     printf '[henge-desktop] Configured /etc/X11/xorg.conf.d/10-fbdev.conf for UEFI GOP.\n'
 fi
 
+if [ -d /etc/udev/rules.d ] || command -v udevadm >/dev/null 2>&1; then
+    mkdir -p /etc/udev/rules.d
+    cat <<'UEOF' > /etc/udev/rules.d/72-henge-fbdev-seat.rules
+# Ensure systemd-logind marks seat0 CanGraphical=yes on UEFI GOP (/dev/fb0 without /dev/dri/card0)
+SUBSYSTEM=="graphics", KERNEL=="fb[0-9]*", TAG+="seat", TAG+="master-of-seat"
+UEOF
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=graphics >/dev/null 2>&1 || true
+    fi
+fi
+
 printf '[henge-desktop] LXQt installed! Reboot now with: sudo reboot\n'
 EOF
 chmod 0755 "$BIN_DIR/henge-install-desktop"
@@ -507,6 +519,20 @@ fi
 EOF
 chmod 0755 "$SBIN_DIR/henge-xorg-autodetect"
 "$SBIN_DIR/henge-xorg-autodetect" || true
+
+# Ensure systemd-logind marks seat0 CanGraphical=yes on UEFI GOP (/dev/fb0 without /dev/dri)
+if [ -d /etc/udev/rules.d ] || [ "$INIT_SYS" = "systemd" ]; then
+    mkdir -p /etc/udev/rules.d
+    cat <<'EOF' > /etc/udev/rules.d/72-henge-fbdev-seat.rules
+# Allow display managers (SDDM/LightDM) to start Xorg on fbdev-only 2D UEFI GOP boots
+SUBSYSTEM=="graphics", KERNEL=="fb[0-9]*", TAG+="seat", TAG+="master-of-seat"
+EOF
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=graphics >/dev/null 2>&1 || true
+    fi
+    printf '[henge-install] Installed /etc/udev/rules.d/72-henge-fbdev-seat.rules (CanGraphical=yes on UEFI GOP).\n'
+fi
 
 if [ "$INIT_SYS" = "systemd" ]; then
     mkdir -p /etc/systemd/system/multi-user.target.wants
