@@ -8,6 +8,7 @@ import UIKit
 struct SessionView: View {
     let profile: MachineProfile
     @ObservedObject var lifecycle: MetalLifecycleGuard
+    @ObservedObject var externalDisplay: ExternalDisplayManager
     @Binding var posture: DevicePosture
     let bootWarning: String?
     let onStopSession: () -> Void
@@ -29,6 +30,7 @@ struct SessionView: View {
         let text: String
     }
 
+    @AppStorage("oledScreenSaverAutoDimSeconds") private var autoDimSeconds: Int = 0
     @State private var activeTab: SessionTab = .display
     @State private var showModifierBar: Bool = true
     @State private var showDebugConsole: Bool = false
@@ -43,73 +45,121 @@ struct SessionView: View {
     @State private var cursorNormY: Double = 0.5
     @State private var heldMouseButtons: UInt8 = 0
     @State private var keyboardHeight: CGFloat = 0
+    @State private var isScreenSaverActive: Bool = false
+    @State private var savedScreenBrightness: CGFloat?
+    @State private var lastUserActivityAt: Date = Date()
+
+    private let idleCheckTimer = Timer.publish(every: 5.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(spacing: 0) {
-            topStatusBar
+        ZStack {
+            VStack(spacing: 0) {
+                topStatusBar
 
-            if let bootWarning {
-                Text(bootWarning)
-                    .font(.caption)
-                    .foregroundStyle(.yellow)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(white: 0.12))
-            }
+                if let bootWarning {
+                    Text(bootWarning)
+                        .font(.caption)
+                        .foregroundStyle(.yellow)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(white: 0.12))
+                }
 
-            ZStack {
-                VStack(spacing: 0) {
-                    MetalFramebufferRepresentable(
-                        lifecycle: lifecycle,
-                        focusKeyboard: $focusSoftwareKeyboard,
-                        suppressSoftwareKeyboard: !focusSoftwareKeyboard || activeTab != .display,
-                        allowGuestResize: !isSoftwareKeyboardVisible && !isClamshellPosture && activeTab == .display,
-                        layoutTrigger: "\(posture)-\(showModifierBar)-\(activeTab == .display)",
-                        pendingPasteID: pendingPaste?.id,
-                        pendingPasteText: pendingPaste?.text,
-                        onPasteConsumed: {
-                            pendingPaste = nil
-                        },
-                        onCharacterTyped: {
-                            releaseActiveModifiers()
+                ZStack {
+                    VStack(spacing: 0) {
+                        ZStack {
+                            MetalFramebufferRepresentable(
+                                lifecycle: lifecycle,
+                                focusKeyboard: $focusSoftwareKeyboard,
+                                suppressSoftwareKeyboard: !focusSoftwareKeyboard || activeTab != .display || isScreenSaverActive,
+                                allowGuestResize: !isSoftwareKeyboardVisible && !isClamshellPosture && activeTab == .display && !externalDisplay.isRenderingOnExternalDisplay,
+                                layoutTrigger: "\(posture)-\(showModifierBar)-\(activeTab == .display)-\(externalDisplay.isRenderingOnExternalDisplay)",
+                                pendingPasteID: pendingPaste?.id,
+                                pendingPasteText: pendingPaste?.text,
+                                onPasteConsumed: {
+                                    pendingPaste = nil
+                                },
+                                onCharacterTyped: {
+                                    releaseActiveModifiers()
+                                }
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color.black)
+                            .opacity(externalDisplay.isRenderingOnExternalDisplay ? 0.01 : 1)
+                            .allowsHitTesting(!externalDisplay.isRenderingOnExternalDisplay)
+
+                            if externalDisplay.isRenderingOnExternalDisplay {
+                                externalMonitorControlDeck
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        if !externalDisplay.isRenderingOnExternalDisplay {
+                            if case .clamshell = posture {
+                                clamshellInputDeck
+                                    .containerRelativeFrame(.vertical) { height, _ in
+                                        clamshellDeckHeight(forContainerHeight: height)
+                                    }
+                            } else if showModifierBar {
+                                compactModifierStrip
+                            }
+                        }
+                    }
+                    .opacity(activeTab == .display ? 1 : 0)
+                    .allowsHitTesting(activeTab == .display)
+
+                    InteractiveSerialTerminalView(
+                        isActiveTab: activeTab == .terminal,
+                        focusKeyboard: $focusTerminalKeyboard,
+                        onOpenLogs: {
+                            showDebugConsole = true
                         }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color.black)
-
-                    if case .clamshell = posture {
-                        clamshellInputDeck
-                            .containerRelativeFrame(.vertical) { height, _ in
-                                clamshellDeckHeight(forContainerHeight: height)
-                            }
-                    } else if showModifierBar {
-                        compactModifierStrip
-                    }
+                    .opacity(activeTab == .terminal ? 1 : 0)
+                    .allowsHitTesting(activeTab == .terminal)
                 }
-                .opacity(activeTab == .display ? 1 : 0)
-                .allowsHitTesting(activeTab == .display)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .padding(.bottom, keyboardHeight)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+            .background(Color.black.ignoresSafeArea())
+            .overlay(
+                TouchActivityObserverRepresentable {
+                    lastUserActivityAt = Date()
+                }
+            )
 
-                InteractiveSerialTerminalView(
-                    isActiveTab: activeTab == .terminal,
-                    focusKeyboard: $focusTerminalKeyboard,
-                    onOpenLogs: {
-                        showDebugConsole = true
+            if isScreenSaverActive {
+                OLEDScreenSaverOverlayView(
+                    externalMonitorLabel: externalDisplay.isRenderingOnExternalDisplay
+                        ? "External \(externalDisplay.activeResolutionLabel)"
+                        : nil,
+                    onWake: {
+                        deactivateScreenSaver()
                     }
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black)
-                .opacity(activeTab == .terminal ? 1 : 0)
-                .allowsHitTesting(activeTab == .terminal)
+                .transition(.opacity)
+                .zIndex(100)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.bottom, keyboardHeight)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(.keyboard, edges: .bottom)
-        .background(Color.black.ignoresSafeArea())
+        .statusBarHidden(isScreenSaverActive)
         .sheet(isPresented: $showDebugConsole) {
             DebugConsoleSheetView()
+        }
+        .onReceive(idleCheckTimer) { now in
+            guard autoDimSeconds > 0, !isScreenSaverActive else { return }
+            if now.timeIntervalSince(lastUserActivityAt) >= TimeInterval(autoDimSeconds) {
+                activateScreenSaver()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            if isScreenSaverActive {
+                deactivateScreenSaver()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             updateKeyboardHeight(from: note)
@@ -125,16 +175,19 @@ struct SessionView: View {
             }
         }
         .onChange(of: focusSoftwareKeyboard) { _, show in
+            lastUserActivityAt = Date()
             if !show && !focusTerminalKeyboard && keyboardHeight != 0 {
                 keyboardHeight = 0
             }
         }
         .onChange(of: focusTerminalKeyboard) { _, show in
+            lastUserActivityAt = Date()
             if !show && !focusSoftwareKeyboard && keyboardHeight != 0 {
                 keyboardHeight = 0
             }
         }
         .onChange(of: activeTab) { _, tab in
+            lastUserActivityAt = Date()
             pendingPaste = nil
             if tab != .display && focusSoftwareKeyboard {
                 focusSoftwareKeyboard = false
@@ -147,6 +200,9 @@ struct SessionView: View {
             }
         }
         .onDisappear {
+            if isScreenSaverActive {
+                deactivateScreenSaver()
+            }
             pendingPaste = nil
             keyboardHeight = 0
             releaseActiveModifiers()
@@ -157,14 +213,44 @@ struct SessionView: View {
         }
     }
 
+    private func activateScreenSaver() {
+        guard !isScreenSaverActive else { return }
+        focusSoftwareKeyboard = false
+        focusTerminalKeyboard = false
+        releaseActiveModifiers()
+        if let screen = ExternalDisplayManager.mainApplicationScreen() {
+            if savedScreenBrightness == nil {
+                savedScreenBrightness = screen.brightness
+            }
+            screen.brightness = 0.01
+        }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            isScreenSaverActive = true
+        }
+    }
+
+    private func deactivateScreenSaver() {
+        lastUserActivityAt = Date()
+        if let previous = savedScreenBrightness,
+           let screen = ExternalDisplayManager.mainApplicationScreen() {
+            screen.brightness = previous
+        }
+        savedScreenBrightness = nil
+        if isScreenSaverActive {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isScreenSaverActive = false
+            }
+        }
+    }
+
     private func updateKeyboardHeight(from notification: Notification) {
         guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
             return
         }
-        let windowScene = UIApplication.shared.connectedScenes
+        let appScenes = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
-            .first(where: { $0.activationState == .foregroundActive })
-            ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
+            .filter { $0.session.role == .windowApplication }
+        let windowScene = appScenes.first(where: { $0.activationState == .foregroundActive }) ?? appScenes.first
         let keyWindow = windowScene?.windows.first(where: \.isKeyWindow) ?? windowScene?.windows.first
         let screenHeight = keyWindow?.bounds.height ?? windowScene?.screen.bounds.height ?? 0
         let bottomInset = keyWindow?.safeAreaInsets.bottom ?? 0
@@ -211,11 +297,32 @@ struct SessionView: View {
             .pickerStyle(.segmented)
             .frame(width: 92)
 
-            if activeTab == .display {
+            if activeTab == .display && !externalDisplay.isRenderingOnExternalDisplay {
                 HingeSensorView(posture: $posture)
             }
 
+            if externalDisplay.isExternalDisplayConnected {
+                Button {
+                    externalDisplay.routeToExternalDisplay.toggle()
+                } label: {
+                    Image(systemName: externalDisplay.isRenderingOnExternalDisplay ? "tv.fill" : "iphone")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .tint(externalDisplay.isRenderingOnExternalDisplay ? .blue : .secondary)
+                .accessibilityLabel(externalDisplay.isRenderingOnExternalDisplay ? "Switch Display to iPhone" : "Route Display to External Monitor")
+            }
+
             Spacer(minLength: 4)
+
+            Button {
+                activateScreenSaver()
+            } label: {
+                Image(systemName: "moon.stars.fill")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .accessibilityLabel("OLED Screen Saver")
 
             Button {
                 showDebugConsole = true
@@ -252,6 +359,9 @@ struct SessionView: View {
             }
 
             Button(role: .destructive) {
+                if isScreenSaverActive {
+                    deactivateScreenSaver()
+                }
                 focusSoftwareKeyboard = false
                 focusTerminalKeyboard = false
                 releaseActiveModifiers()
@@ -347,6 +457,116 @@ struct SessionView: View {
             return min(cap, max(floorH, remaining * 0.36))
         }
         return max(220, totalHeight * 0.42)
+    }
+
+    private var externalMonitorControlDeck: some View {
+        let compact = isSoftwareKeyboardVisible
+        return VStack(spacing: compact ? 6 : 10) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 8, height: 8)
+                Text("External Monitor · \(externalDisplay.activeResolutionLabel)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                Menu {
+                    ForEach(ExternalDisplayResolutionPreset.allCases) { preset in
+                        Button {
+                            externalDisplay.resolutionPreset = preset
+                        } label: {
+                            if externalDisplay.resolutionPreset == preset {
+                                Label(preset.label, systemImage: "checkmark")
+                            } else {
+                                Text(preset.label)
+                            }
+                        }
+                    }
+                } label: {
+                    Label(externalDisplay.resolutionPreset.shortLabel, systemImage: "aspectratio")
+                        .font(.caption2.monospaced())
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, compact ? 6 : 10)
+
+            GeometryReader { _ in
+                RoundedRectangle(cornerRadius: compact ? 10 : 16, style: .continuous)
+                    .fill(Color(white: 0.13))
+                    .overlay(
+                        VStack(spacing: compact ? 2 : 6) {
+                            Image(systemName: "hand.draw")
+                                .font(compact ? .body : .title2)
+                                .foregroundStyle(.secondary)
+                            Text(compact ? "External Monitor Trackpad" : "External Monitor Control Deck")
+                                .font(compact ? .caption.weight(.medium) : .subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            if !compact {
+                                Text("Drag to move pointer · Tap click · Two-finger tap right-click · Two-finger scroll")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 20)
+                            }
+                        }
+                    )
+                    .contentShape(Rectangle())
+                    .overlay(
+                        TrackpadSurfaceRepresentable(
+                            onRelativeMove: { dx, dy in
+                                cursorNormX = min(max(cursorNormX + dx, 0), 1)
+                                cursorNormY = min(max(cursorNormY + dy, 0), 1)
+                                HengeVMBridge.shared.sendPointerNormX(
+                                    cursorNormX,
+                                    normY: cursorNormY,
+                                    buttons: heldMouseButtons,
+                                    wheel: 0
+                                )
+                            },
+                            onSingleTap: {
+                                pulseMouseButton(1)
+                            },
+                            onTwoFingerTap: {
+                                pulseMouseButton(2)
+                            },
+                            onTwoFingerScroll: { wheelStep in
+                                HengeVMBridge.shared.sendPointerNormX(
+                                    cursorNormX,
+                                    normY: cursorNormY,
+                                    buttons: heldMouseButtons,
+                                    wheel: wheelStep
+                                )
+                            }
+                        )
+                    )
+            }
+            .padding(.horizontal, 14)
+
+            HStack(spacing: 10) {
+                MouseHoldButton(label: "Left Click", buttonMask: 1, compact: compact) { pressed in
+                    setHeldMouseButton(1, pressed: pressed)
+                }
+                .frame(maxWidth: .infinity)
+
+                MouseHoldButton(label: "Right Click", buttonMask: 2, compact: compact) { pressed in
+                    setHeldMouseButton(2, pressed: pressed)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, showModifierBar ? 2 : (compact ? 6 : 12))
+
+            if showModifierBar {
+                compactModifierStrip
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(white: 0.06))
     }
 
     private var clamshellInputDeck: some View {
@@ -772,6 +992,8 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
     var allowGuestResize: Bool = true {
         didSet {
             if allowGuestResize && !oldValue {
+                lastSentGuestWidth = 0
+                lastSentGuestHeight = 0
                 scheduleGuestDisplayResize()
             }
         }
@@ -1415,7 +1637,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
         if let metalLayer = view.metalLayer {
             metalLayer.pixelFormat = .bgra8Unorm
             metalLayer.framebufferOnly = true
-            HengeVMBridge.shared.attachDisplayLayer(metalLayer)
+            ExternalDisplayManager.shared.registerLocalDisplayLayer(metalLayer)
         }
         return view
     }
@@ -1432,7 +1654,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
             }
         }
         if let metalLayer = uiView.metalLayer {
-            HengeVMBridge.shared.attachDisplayLayer(metalLayer)
+            ExternalDisplayManager.shared.registerLocalDisplayLayer(metalLayer)
         }
         if let pasteID = pendingPasteID,
            let pasteText = pendingPasteText,
@@ -1448,7 +1670,119 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: MetalDisplaySurfaceView, coordinator: Coordinator) {
-        HengeVMBridge.shared.detachDisplayLayer(ifMatching: uiView.metalLayer)
+        ExternalDisplayManager.shared.unregisterLocalDisplayLayer(uiView.metalLayer)
+    }
+}
+
+/// Passive touch observer (`hitTest` always returns `nil`) so auto-dim timers
+/// reset on every touch without intercepting any gestures or controls.
+private final class TouchActivityObserverView: UIView {
+    var onTouch: (() -> Void)?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if event?.type == .touches {
+            onTouch?()
+        }
+        return nil
+    }
+}
+
+private struct TouchActivityObserverRepresentable: UIViewRepresentable {
+    let onTouch: () -> Void
+
+    func makeUIView(context: Context) -> TouchActivityObserverView {
+        let view = TouchActivityObserverView(frame: .zero)
+        view.backgroundColor = .clear
+        view.onTouch = onTouch
+        return view
+    }
+
+    func updateUIView(_ uiView: TouchActivityObserverView, context: Context) {
+        uiView.onTouch = onTouch
+    }
+}
+
+/// Pure `#000000` OLED burn-in protection overlay with a drifting ultra-dim
+/// status readout that keeps iOS active (unthrottled) while protecting the panel.
+private struct OLEDScreenSaverOverlayView: View {
+    let externalMonitorLabel: String?
+    let onWake: () -> Void
+
+    @State private var driftIndex: Int = 0
+    @State private var now: Date = Date()
+    @State private var showWakeHintPulse: Bool = false
+
+    private let driftTimer = Timer.publish(every: 30.0, on: .main, in: .common).autoconnect()
+
+    private static let anchorPositions: [(x: CGFloat, y: CGFloat)] = [
+        (0.50, 0.30),
+        (0.32, 0.45),
+        (0.68, 0.58),
+        (0.35, 0.70),
+        (0.65, 0.36),
+        (0.50, 0.52),
+        (0.36, 0.28),
+        (0.64, 0.72),
+    ]
+
+    private var thermalLabel: String? {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return nil
+        case .fair: return "Thermal: Fair"
+        case .serious: return "Thermal: Serious"
+        case .critical: return "Thermal: Critical"
+        @unknown default: return nil
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let anchor = Self.anchorPositions[driftIndex % Self.anchorPositions.count]
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                VStack(spacing: 6) {
+                    Text(now, format: .dateTime.hour().minute())
+                        .font(.system(size: 30, weight: .ultraLight, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.24))
+
+                    Text(externalMonitorLabel ?? "HengeLinux VM Active")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(Color.white.opacity(0.20))
+
+                    if let thermal = thermalLabel {
+                        Text(thermal)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(Color.orange.opacity(0.45))
+                    }
+
+                    Text("Double-tap to wake")
+                        .font(.caption2)
+                        .foregroundStyle(Color.white.opacity(showWakeHintPulse ? 0.45 : 0.14))
+                        .padding(.top, 4)
+                }
+                .position(
+                    x: geo.size.width * anchor.x,
+                    y: geo.size.height * anchor.y
+                )
+                .animation(.easeInOut(duration: 1.2), value: driftIndex)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                onWake()
+            }
+            .onTapGesture(count: 1) {
+                showWakeHintPulse = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    showWakeHintPulse = false
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .onReceive(driftTimer) { tick in
+            now = tick
+            driftIndex = (driftIndex + 1) % Self.anchorPositions.count
+        }
     }
 }
 

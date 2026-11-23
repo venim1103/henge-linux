@@ -84,6 +84,12 @@ targets:
       properties:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleExternalDisplayNonInteractive:
+              - UISceneConfigurationName: ExternalDisplay
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).ExternalDisplaySceneDelegate
         HengeGitCommit: $(HENGE_GIT_COMMIT)
         HengeBuildChannel: $(HENGE_BUILD_CHANNEL)
         HengeBuildDate: $(HENGE_BUILD_DATE)

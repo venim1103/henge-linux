@@ -52,6 +52,8 @@ struct HengeLinuxApp: App {
     @StateObject private var jitClient = SelfDebugJITClient()
     @StateObject private var vmStore = VMStore()
     @StateObject private var downloader = DistroDownloadManager()
+    @ObservedObject private var externalDisplay = ExternalDisplayManager.shared
+    @AppStorage("oledScreenSaverAutoDimSeconds") private var oledAutoDimSeconds: Int = 0
     @State private var selectedStartTab: StartTab = .machines
     @State private var copiedBuildInfo: Bool = false
     @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
@@ -98,6 +100,7 @@ struct HengeLinuxApp: App {
                     SessionView(
                         profile: selectedProfile,
                         lifecycle: lifecycle,
+                        externalDisplay: externalDisplay,
                         posture: $posture,
                         bootWarning: bootWarning,
                         onStopSession: {
@@ -409,6 +412,10 @@ struct HengeLinuxApp: App {
                 jitClient.gpuBackend = GpuDisplayBackend.from(modeCode: vm.gpuBackend)
                 ramInputText = "\(effectiveRamMiB)"
             }
+            .onChange(of: isRunning) { _, running in
+                UIApplication.shared.isIdleTimerDisabled = running
+                externalDisplay.setVMRunning(running)
+            }
             .onOpenURL { url in
                 do {
                     let lower = url.lastPathComponent.lowercased()
@@ -652,6 +659,17 @@ struct HengeLinuxApp: App {
                         Text("Ubuntu Cloud omits virtio-gpu.ko by default. Run Guest Tools install.sh (or install linux-modules-extra) inside Ubuntu before using VirtIO-GPU KMS.")
                             .font(.caption2)
                             .foregroundStyle(.orange)
+                    }
+                    LabeledContent("External Monitor", value: externalDisplay.statusLabel)
+                    Picker("External Resolution", selection: $externalDisplay.resolutionPreset) {
+                        ForEach(ExternalDisplayResolutionPreset.allCases) { preset in
+                            Text(preset.label).tag(preset)
+                        }
+                    }
+                    Picker("OLED Screen Saver Auto-Dim", selection: $oledAutoDimSeconds) {
+                        ForEach(OLEDAutoDimOption.allCases) { opt in
+                            Text(opt.label).tag(opt.rawValue)
+                        }
                     }
                     Picker("JIT Strategy", selection: $jitClient.jitStrategy) {
                         ForEach(JitStrategyOverride.allCases) { strategy in
