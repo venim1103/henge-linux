@@ -82,6 +82,10 @@ struct SessionView: View {
                                 },
                                 onCharacterTyped: {
                                     releaseActiveModifiers()
+                                },
+                                onPointerMoved: { nx, ny in
+                                    cursorNormX = nx
+                                    cursorNormY = ny
                                 }
                             )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -572,77 +576,156 @@ struct SessionView: View {
 
     private var clamshellInputDeck: some View {
         let compact = isSoftwareKeyboardVisible
-        return VStack(spacing: compact ? 4 : 8) {
+        return VStack(spacing: compact ? 4 : 6) {
             if showModifierBar {
                 compactModifierStrip
             }
 
             GeometryReader { padGeo in
-                RoundedRectangle(cornerRadius: compact ? 10 : 14, style: .continuous)
-                    .fill(Color(white: 0.14))
-                    .overlay(
-                        VStack(spacing: compact ? 0 : 4) {
-                            if compact {
-                                Text("Trackpad")
-                                    .font(.caption2.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text("Multi-Touch Trackpad & HID Deck")
-                                    .font(.footnote.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                                Text("Relative drag · Tap click · Hold Left/Right to drag")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
+                let gap: CGFloat = compact ? 4 : 6
+                let w = max(padGeo.size.width, 60)
+                let h = max(padGeo.size.height, 48)
+                let colW = max((w - gap * 5) / 6, 10)
+                let doubleW = colW * 2 + gap
+                let rowH = max((h - gap * 2) / 3, 12)
+                let topH = rowH * 2 + gap
+
+                VStack(spacing: gap) {
+                    // Top 2 rows: [2x2 Left Keys] [2x2 Square Trackpad] [2x2 Arrow Cluster]
+                    HStack(spacing: gap) {
+                        VStack(spacing: gap) {
+                            HStack(spacing: gap) {
+                                deckHoldKey("Esc", usage: 0x29, width: colW, height: rowH, compact: compact)
+                                deckHoldKey("Tab", usage: 0x2B, width: colW, height: rowH, compact: compact)
+                            }
+                            HStack(spacing: gap) {
+                                deckCtrlToggle(width: colW, height: rowH, compact: compact)
+                                deckHoldKey("Bck", usage: 0x2A, width: colW, height: rowH, compact: compact)
                             }
                         }
-                    )
-                    .contentShape(Rectangle())
-                    .overlay(
-                        TrackpadSurfaceRepresentable(
-                            onRelativeMove: { dx, dy in
-                                cursorNormX = min(max(cursorNormX + dx, 0), 1)
-                                cursorNormY = min(max(cursorNormY + dy, 0), 1)
-                                HengeVMBridge.shared.sendPointerNormX(
-                                    cursorNormX,
-                                    normY: cursorNormY,
-                                    buttons: heldMouseButtons,
-                                    wheel: 0
+                        .frame(width: doubleW, height: topH)
+
+                        RoundedRectangle(cornerRadius: compact ? 8 : 12, style: .continuous)
+                            .fill(Color(white: 0.14))
+                            .overlay(
+                                VStack(spacing: compact ? 0 : 2) {
+                                    Text("Trackpad")
+                                        .font(compact ? .caption2.weight(.medium) : .footnote.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                    if !compact {
+                                        Text("Drag · Tap · 2F Scroll")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.75)
+                                    }
+                                }
+                                .padding(.horizontal, 4)
+                            )
+                            .contentShape(Rectangle())
+                            .overlay(
+                                TrackpadSurfaceRepresentable(
+                                    onRelativeMove: { dx, dy in
+                                        cursorNormX = min(max(cursorNormX + dx, 0), 1)
+                                        cursorNormY = min(max(cursorNormY + dy, 0), 1)
+                                        HengeVMBridge.shared.sendPointerNormX(
+                                            cursorNormX,
+                                            normY: cursorNormY,
+                                            buttons: heldMouseButtons,
+                                            wheel: 0
+                                        )
+                                    },
+                                    onSingleTap: {
+                                        pulseMouseButton(1)
+                                    },
+                                    onTwoFingerTap: {
+                                        pulseMouseButton(2)
+                                    },
+                                    onTwoFingerScroll: { wheelStep in
+                                        HengeVMBridge.shared.sendPointerNormX(
+                                            cursorNormX,
+                                            normY: cursorNormY,
+                                            buttons: heldMouseButtons,
+                                            wheel: wheelStep
+                                        )
+                                    }
                                 )
-                            },
-                            onSingleTap: {
-                                pulseMouseButton(1)
-                            },
-                            onTwoFingerTap: {
-                                pulseMouseButton(2)
-                            },
-                            onTwoFingerScroll: { wheelStep in
-                                HengeVMBridge.shared.sendPointerNormX(
-                                    cursorNormX,
-                                    normY: cursorNormY,
-                                    buttons: heldMouseButtons,
-                                    wheel: wheelStep
-                                )
+                            )
+                            .frame(width: doubleW, height: topH)
+
+                        VStack(spacing: gap) {
+                            HStack(spacing: gap) {
+                                deckHoldKey("↑", usage: 0x52, width: colW, height: rowH, compact: compact)
+                                deckHoldKey("↓", usage: 0x51, width: colW, height: rowH, compact: compact)
                             }
-                        )
-                    )
-            }
-            .padding(.horizontal, 14)
+                            HStack(spacing: gap) {
+                                deckHoldKey("←", usage: 0x50, width: colW, height: rowH, compact: compact)
+                                deckHoldKey("→", usage: 0x4F, width: colW, height: rowH, compact: compact)
+                            }
+                        }
+                        .frame(width: doubleW, height: topH)
+                    }
+                    .frame(width: w, height: topH)
 
-            HStack(spacing: 10) {
-                MouseHoldButton(label: "Left Click", buttonMask: 1, compact: compact) { pressed in
-                    setHeldMouseButton(1, pressed: pressed)
-                }
-                .frame(maxWidth: .infinity)
+                    // Bottom row: [Space (1x)] [L (2x)] [R (2x)] [Enter (1x)]
+                    HStack(spacing: gap) {
+                        deckHoldKey("␣", usage: 0x2C, width: colW, height: rowH, compact: compact)
 
-                MouseHoldButton(label: "Right Click", buttonMask: 2, compact: compact) { pressed in
-                    setHeldMouseButton(2, pressed: pressed)
+                        MouseHoldButton(label: "L", buttonMask: 1, compact: compact, fillContainer: true) { pressed in
+                            setHeldMouseButton(1, pressed: pressed)
+                        }
+                        .frame(width: doubleW, height: rowH)
+
+                        MouseHoldButton(label: "R", buttonMask: 2, compact: compact, fillContainer: true) { pressed in
+                            setHeldMouseButton(2, pressed: pressed)
+                        }
+                        .frame(width: doubleW, height: rowH)
+
+                        deckHoldKey("↵", usage: 0x28, width: colW, height: rowH, compact: compact)
+                    }
+                    .frame(width: w, height: rowH)
                 }
-                .frame(maxWidth: .infinity)
+                .frame(width: w, height: h)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, compact ? 4 : 10)
+            .padding(.horizontal, 10)
+            .padding(.bottom, compact ? 4 : 8)
         }
         .background(Color(white: 0.08))
+    }
+
+    private func deckHoldKey(_ label: String, usage: UInt8, width: CGFloat, height: CGFloat, compact: Bool) -> some View {
+        HidHoldKeyButton(
+            label: label,
+            usage: usage,
+            repeatable: true,
+            compact: compact,
+            fillContainer: true
+        ) {
+            releaseActiveModifiers()
+        }
+        .frame(width: width, height: height)
+    }
+
+    private func deckCtrlToggle(width: CGFloat, height: CGFloat, compact: Bool) -> some View {
+        Button {
+            ctrlActive.toggle()
+            if !showModifierBar {
+                HengeVMBridge.shared.sendHidKeyUsage(0xE0, pressed: ctrlActive)
+            }
+        } label: {
+            Text("Ctrl")
+                .font(compact ? .caption2.monospaced().weight(.medium) : .caption.monospaced().weight(.medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(ctrlActive ? Color.accentColor.opacity(0.55) : Color.secondary.opacity(0.22))
+                )
+                .foregroundStyle(ctrlActive ? .white : .primary)
+        }
+        .buttonStyle(.plain)
+        .frame(width: width, height: height)
     }
 
     private func setHeldMouseButton(_ mask: UInt8, pressed: Bool) {
@@ -691,6 +774,7 @@ private struct MouseHoldButton: View {
     let label: String
     let buttonMask: UInt8
     var compact: Bool = false
+    var fillContainer: Bool = false
     let onPressChanged: (Bool) -> Void
 
     @State private var isPressed: Bool = false
@@ -698,11 +782,11 @@ private struct MouseHoldButton: View {
 
     var body: some View {
         Text(label)
-            .font(compact ? .caption.weight(.medium) : .subheadline.weight(.medium))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, compact ? 5 : 8)
+            .font(compact ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity, maxHeight: fillContainer ? .infinity : nil)
+            .padding(.vertical, fillContainer ? 0 : (compact ? 5 : 8))
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: fillContainer ? 7 : 8, style: .continuous)
                     .fill(isPressed ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.24))
             )
             .foregroundStyle(isPressed ? .white : .primary)
@@ -750,6 +834,8 @@ private struct HidHoldKeyButton: View {
     let label: String
     let usage: UInt8
     let repeatable: Bool
+    var compact: Bool = false
+    var fillContainer: Bool = false
     let onRelease: () -> Void
 
     @State private var didHandlePress: Bool = false
@@ -770,6 +856,8 @@ private struct HidHoldKeyButton: View {
             HidHoldKeyButtonStyle(
                 usage: usage,
                 repeatable: repeatable,
+                compact: compact,
+                fillContainer: fillContainer,
                 didHandlePress: $didHandlePress,
                 onRelease: onRelease
             )
@@ -780,6 +868,8 @@ private struct HidHoldKeyButton: View {
 private struct HidHoldKeyButtonStyle: ButtonStyle {
     let usage: UInt8
     let repeatable: Bool
+    let compact: Bool
+    let fillContainer: Bool
     @Binding var didHandlePress: Bool
     let onRelease: () -> Void
 
@@ -788,6 +878,8 @@ private struct HidHoldKeyButtonStyle: ButtonStyle {
             configuration: configuration,
             usage: usage,
             repeatable: repeatable,
+            compact: compact,
+            fillContainer: fillContainer,
             didHandlePress: $didHandlePress,
             onRelease: onRelease
         )
@@ -798,6 +890,8 @@ private struct HidHoldKeyBody: View {
     let configuration: ButtonStyle.Configuration
     let usage: UInt8
     let repeatable: Bool
+    let compact: Bool
+    let fillContainer: Bool
     @Binding var didHandlePress: Bool
     let onRelease: () -> Void
 
@@ -810,11 +904,14 @@ private struct HidHoldKeyBody: View {
 
     var body: some View {
         configuration.label
-            .font(.caption.monospaced())
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .font(fillContainer ? (compact ? .caption2.monospaced().weight(.medium) : .caption.monospaced().weight(.medium)) : .caption.monospaced())
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .frame(maxWidth: fillContainer ? .infinity : nil, maxHeight: fillContainer ? .infinity : nil)
+            .padding(.horizontal, fillContainer ? 2 : 10)
+            .padding(.vertical, fillContainer ? 0 : 6)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: fillContainer ? 7 : 6, style: .continuous)
                     .fill(configuration.isPressed ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.22))
             )
             .foregroundStyle(configuration.isPressed ? .white : .primary)
@@ -1052,6 +1149,7 @@ final class HengeSoftwareKeyboardProxyView: UITextView {
 final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDelegate {
     var onFocusChanged: ((Bool) -> Void)?
     var onCharacterTyped: (() -> Void)?
+    var onPointerMoved: ((Double, Double) -> Void)?
     /// Controls whether the hidden `SoftwareKeyboardInputProxyView` is first
     /// responder (showing the iOS software keyboard). When `true` (suppressed),
     /// the proxy resigns so UIKit collapses the keyboard safe area to 0, while
@@ -1457,10 +1555,26 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
     // MARK: - Direct Canvas Touch / Pointer Gestures
 
     private func normalizedPoint(_ pt: CGPoint) -> (Double, Double) {
-        let w = max(bounds.width, 1)
-        let h = max(bounds.height, 1)
-        let nx = min(max(Double(pt.x / w), 0.0), 1.0)
-        let ny = min(max(Double(pt.y / h), 0.0), 1.0)
+        var fbW: UInt32 = 0
+        var fbH: UInt32 = 0
+        hengelinux_get_presented_fb_size(&fbW, &fbH)
+        if fbW < 4 || fbH < 4 {
+            fbW = UInt32(max(lastSentGuestWidth, 0))
+            fbH = UInt32(max(lastSentGuestHeight, 0))
+        }
+        var nx: Double = 0.0
+        var ny: Double = 0.0
+        henge_map_touch_to_guest_norm(
+            Double(pt.x),
+            Double(pt.y),
+            Double(bounds.width),
+            Double(bounds.height),
+            fbW,
+            fbH,
+            &nx,
+            &ny
+        )
+        onPointerMoved?(nx, ny)
         return (nx, ny)
     }
 
@@ -1646,8 +1760,16 @@ final class MultiTouchTrackpadUIView: UIView {
             return
         }
         if gr.state == .changed {
-            let dx = Double(delta.x / w) * 1.35
-            let dy = Double(delta.y / h) * 1.35
+            var fbW: UInt32 = 0
+            var fbH: UInt32 = 0
+            hengelinux_get_presented_fb_size(&fbW, &fbH)
+            let aspect: Double = (fbW >= 4 && fbH >= 4)
+                ? (Double(fbW) / Double(fbH))
+                : (4.0 / 3.0)
+            let span = Double(max(min(w, h), 1))
+            let gain = 1.25
+            let dx = (Double(delta.x) / span) * gain
+            let dy = (Double(delta.y) / span) * gain * aspect
             onRelativeMove?(dx, dy)
             gr.setTranslation(.zero, in: self)
         }
@@ -1692,6 +1814,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     var pendingPasteText: String?
     var onPasteConsumed: (() -> Void)?
     var onCharacterTyped: (() -> Void)?
+    var onPointerMoved: ((Double, Double) -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -1711,6 +1834,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
             }
         }
         view.onCharacterTyped = onCharacterTyped
+        view.onPointerMoved = onPointerMoved
         if let metalLayer = view.metalLayer {
             metalLayer.pixelFormat = .bgra8Unorm
             metalLayer.framebufferOnly = true
@@ -1722,6 +1846,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
     func updateUIView(_ uiView: MetalDisplaySurfaceView, context: Context) {
         _ = lifecycle.isPaused
         uiView.onCharacterTyped = onCharacterTyped
+        uiView.onPointerMoved = onPointerMoved
         uiView.allowGuestResize = allowGuestResize
         uiView.suppressSoftwareKeyboard = suppressSoftwareKeyboard
         if context.coordinator.lastLayoutTrigger != layoutTrigger {

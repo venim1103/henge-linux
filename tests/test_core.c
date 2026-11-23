@@ -966,6 +966,51 @@ static void test_cidata_fat16_generator(void) {
     }
 }
 
+static bool near_double(double a, double b, double eps) {
+    double diff = a - b;
+    if (diff < 0.0) diff = -diff;
+    return diff <= eps;
+}
+
+static void test_touch_aspect_coordinate_mapping(void) {
+    uint32_t w = 99U, h = 99U;
+    hengelinux_set_presented_fb_size(1024U, 768U);
+    hengelinux_get_presented_fb_size(&w, &h);
+    HENGE_CHECK(w == 1024U && h == 768U);
+
+    /* Portrait letterbox: 390x600 view showing 1024x768 (4:3) -> rendered height = 292.5, y in [153.75, 446.25]. */
+    double nx = -1.0, ny = -1.0;
+    henge_map_touch_to_guest_norm(0.0, 153.75, 390.0, 600.0, 1024U, 768U, &nx, &ny);
+    HENGE_CHECK(near_double(nx, 0.0, 1e-4) && near_double(ny, 0.0, 1e-4));
+
+    henge_map_touch_to_guest_norm(195.0, 300.0, 390.0, 600.0, 1024U, 768U, &nx, &ny);
+    HENGE_CHECK(near_double(nx, 0.5, 1e-4) && near_double(ny, 0.5, 1e-4));
+
+    henge_map_touch_to_guest_norm(390.0, 446.25, 390.0, 600.0, 1024U, 768U, &nx, &ny);
+    HENGE_CHECK(near_double(nx, 1.0, 1e-4) && near_double(ny, 1.0, 1e-4));
+
+    /* Taps inside top/bottom letterbox bars clamp cleanly to [0, 1]. */
+    henge_map_touch_to_guest_norm(195.0, 10.0, 390.0, 600.0, 1024U, 768U, &nx, &ny);
+    HENGE_CHECK(near_double(nx, 0.5, 1e-4) && near_double(ny, 0.0, 1e-4));
+    henge_map_touch_to_guest_norm(195.0, 590.0, 390.0, 600.0, 1024U, 768U, &nx, &ny);
+    HENGE_CHECK(near_double(nx, 0.5, 1e-4) && near_double(ny, 1.0, 1e-4));
+
+    /* Landscape pillarbox: 800x300 view showing 1024x768 (4:3) -> rendered width = 400, x in [200, 600]. */
+    henge_map_touch_to_guest_norm(200.0, 0.0, 800.0, 300.0, 1024U, 768U, &nx, &ny);
+    HENGE_CHECK(near_double(nx, 0.0, 1e-4) && near_double(ny, 0.0, 1e-4));
+    henge_map_touch_to_guest_norm(600.0, 300.0, 800.0, 300.0, 1024U, 768U, &nx, &ny);
+    HENGE_CHECK(near_double(nx, 1.0, 1e-4) && near_double(ny, 1.0, 1e-4));
+    henge_map_touch_to_guest_norm(50.0, 150.0, 800.0, 300.0, 1024U, 768U, &nx, &ny);
+    HENGE_CHECK(near_double(nx, 0.0, 1e-4) && near_double(ny, 0.5, 1e-4));
+
+    /* Unknown/zero framebuffer size falls back to linear full-view normalization. */
+    hengelinux_set_presented_fb_size(0U, 0U);
+    hengelinux_get_presented_fb_size(&w, &h);
+    HENGE_CHECK(w == 0U && h == 0U);
+    henge_map_touch_to_guest_norm(100.0, 75.0, 400.0, 300.0, 0U, 0U, &nx, &ny);
+    HENGE_CHECK(near_double(nx, 0.25, 1e-4) && near_double(ny, 0.25, 1e-4));
+}
+
 int main(void) {
     test_unix_socket_path_bounds();
     test_mmu_granule_decoding();
@@ -977,6 +1022,7 @@ int main(void) {
     test_console_log_capture();
     test_qcow2_and_storage_tools();
     test_cidata_fat16_generator();
-    printf("[PASS] test_core: all platform, MMU, RAM, lifecycle, TXM JIT, VirtIO-GPU, QCOW2, CIDATA, and console checks passed.\n");
+    test_touch_aspect_coordinate_mapping();
+    printf("[PASS] test_core: all platform, MMU, RAM, lifecycle, TXM JIT, VirtIO-GPU, QCOW2, CIDATA, touch, and console checks passed.\n");
     return 0;
 }

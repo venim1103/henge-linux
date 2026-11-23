@@ -489,6 +489,7 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
         if (parity) lastHashOdd = hval;
         else lastHashEven = hval;
         lastDrawableSize = dsize;
+        hengelinux_set_presented_fb_size(w, h);
         atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
         os_unfair_lock_unlock(&lock);""",
     )
@@ -524,6 +525,7 @@ void hv_fb_metal_destroy(HvFbDisplay *fb) {
         p->fb = NULL;
         os_unfair_lock_unlock(&p->lock);
     }
+    hengelinux_set_presented_fb_size(0u, 0u);
     hengelinux_render_unlock();
 }""",
     )

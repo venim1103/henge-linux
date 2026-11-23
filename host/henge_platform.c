@@ -845,3 +845,63 @@ void hengelinux_serial_clear(void) {
     atomic_store_explicit(&g_serial_atomic_total, 0ULL, memory_order_release);
     pthread_mutex_unlock(&g_serial_mutex);
 }
+
+static atomic_uint_fast64_t g_presented_fb_packed = 0ULL;
+
+void hengelinux_set_presented_fb_size(uint32_t width, uint32_t height) {
+    uint64_t packed = ((uint64_t)width << 32) | (uint64_t)height;
+    atomic_store_explicit(&g_presented_fb_packed, packed, memory_order_release);
+}
+
+void hengelinux_get_presented_fb_size(uint32_t *out_width, uint32_t *out_height) {
+    uint64_t packed = atomic_load_explicit(&g_presented_fb_packed, memory_order_acquire);
+    if (out_width != NULL) {
+        *out_width = (uint32_t)(packed >> 32);
+    }
+    if (out_height != NULL) {
+        *out_height = (uint32_t)(packed & 0xFFFFFFFFULL);
+    }
+}
+
+void henge_map_touch_to_guest_norm(double touch_x,
+                                   double touch_y,
+                                   double view_w,
+                                   double view_h,
+                                   uint32_t fb_w,
+                                   uint32_t fb_h,
+                                   double *out_nx,
+                                   double *out_ny) {
+    double safe_w = (view_w > 1.0) ? view_w : 1.0;
+    double safe_h = (view_h > 1.0) ? view_h : 1.0;
+    double vx = touch_x / safe_w;
+    double vy = touch_y / safe_h;
+
+    double scale_x = 1.0;
+    double scale_y = 1.0;
+    if (fb_w >= 4U && fb_h >= 4U) {
+        double dst_aspect = safe_w / safe_h;
+        double src_aspect = (double)fb_w / (double)fb_h;
+        if (dst_aspect > src_aspect) {
+            scale_x = src_aspect / dst_aspect;
+        } else if (src_aspect > dst_aspect) {
+            scale_y = dst_aspect / src_aspect;
+        }
+    }
+
+    double min_x = 0.5 * (1.0 - scale_x);
+    double min_y = 0.5 * (1.0 - scale_y);
+    double nx = (scale_x > 1e-6) ? ((vx - min_x) / scale_x) : vx;
+    double ny = (scale_y > 1e-6) ? ((vy - min_y) / scale_y) : vy;
+
+    if (nx < 0.0) nx = 0.0;
+    if (nx > 1.0) nx = 1.0;
+    if (ny < 0.0) ny = 0.0;
+    if (ny > 1.0) ny = 1.0;
+
+    if (out_nx != NULL) {
+        *out_nx = nx;
+    }
+    if (out_ny != NULL) {
+        *out_ny = ny;
+    }
+}

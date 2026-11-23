@@ -109,6 +109,21 @@ bool hengelinux_is_guest_hid_bridge_ready(void);
 bool hengelinux_is_guest_hid_bridge_v2(void);
 void hengelinux_reset_guest_hid_bridge_ready(void);
 
+/*
+ * Latest Metal-presented guest framebuffer dimensions (packed lock-free atomic)
+ * and inverse aspect-fit touch mapper matching fb_metal.m's centered quad.
+ */
+void hengelinux_set_presented_fb_size(uint32_t width, uint32_t height);
+void hengelinux_get_presented_fb_size(uint32_t *out_width, uint32_t *out_height);
+void henge_map_touch_to_guest_norm(double touch_x,
+                                   double touch_y,
+                                   double view_w,
+                                   double view_h,
+                                   uint32_t fb_w,
+                                   uint32_t fb_h,
+                                   double *out_nx,
+                                   double *out_ny);
+
 #ifdef __cplusplus
 }
 #endif
