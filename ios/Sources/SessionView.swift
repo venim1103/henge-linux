@@ -385,6 +385,7 @@ struct SessionView: View {
                 hidPulseButton("Esc", usage: 0x29)
                 hidPulseButton("Tab", usage: 0x2B)
                 hidPulseButton("Bck", usage: 0x2A)
+                hidPulseButton("Space", usage: 0x2C)
                 hidPulseButton("Del", usage: 0x4C)
                 modifierToggle("Shift", usage: 0xE1, isOn: $shiftActive)
                 modifierToggle("Ctrl", usage: 0xE0, isOn: $ctrlActive)
@@ -901,55 +902,134 @@ private struct HidHoldKeyBody: View {
     }
 }
 
-/// Dedicated hidden `UIKeyInput` proxy view that becomes first responder ONLY
-/// when the user explicitly toggles the on-screen software keyboard. Keeping
-/// `UIKeyInput` off `MetalDisplaySurfaceView` prevents UIKit from retaining a
-/// ghost keyboard safe-area inset when the software keyboard is dismissed.
-private final class SoftwareKeyboardInputProxyView: UIView, UIKeyInput {
+/// Hidden `UITextView`-backed software keyboard responder shared by both the
+/// Metal Display surface and the `ttyAMA0` terminal canvas.
+///
+/// Using `UITextView` (full `UITextInput` conformance) with a non-empty sentinel
+/// buffer before the caret enables native iOS hold-to-repeat on `⌫` (Backspace),
+/// while `keyboardType = .default` restores the native `🌐` language switcher
+/// and left/right one-handed keyboards without enabling autocorrect or smart punctuation.
+final class HengeSoftwareKeyboardProxyView: UITextView {
     var onInsertText: ((String) -> Void)?
     var onDeleteBackward: (() -> Void)?
     var onPressesBegan: ((Set<UIPress>, UIPressesEvent?) -> Bool)?
     var onPressesEnded: ((Set<UIPress>, UIPressesEvent?) -> Bool)?
     var onResignedFirstResponder: (() -> Void)?
 
-    override var canBecomeFirstResponder: Bool { true }
-    var hasText: Bool { true }
+    private static let sentinelText = "--------------------------------"
+    private static let sentinelCursor = NSRange(location: 16, length: 0)
+    private var isRestoringSentinel = false
+    private var isHandlingMutation = false
 
-    var keyboardType: UIKeyboardType {
-        get { .asciiCapable }
-        set {}
-    }
-    var smartInsertDeleteType: UITextSmartInsertDeleteType {
-        get { .no }
-        set {}
-    }
-    var autocorrectionType: UITextAutocorrectionType {
-        get { .no }
-        set {}
-    }
-    var autocapitalizationType: UITextAutocapitalizationType {
-        get { .none }
-        set {}
-    }
-    var spellCheckingType: UITextSpellCheckingType {
-        get { .no }
-        set {}
-    }
-    var smartQuotesType: UITextSmartQuotesType {
-        get { .no }
-        set {}
-    }
-    var smartDashesType: UITextSmartDashesType {
-        get { .no }
-        set {}
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        configureProxy()
     }
 
-    func insertText(_ text: String) {
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureProxy()
+    }
+
+    private func configureProxy() {
+        isUserInteractionEnabled = false
+        alpha = 0.01
+        backgroundColor = .clear
+        textColor = .clear
+        tintColor = .clear
+        isScrollEnabled = false
+        isEditable = true
+        isSelectable = true
+        textContainerInset = .zero
+        textContainer.lineFragmentPadding = 0
+
+        keyboardType = .default
+        keyboardAppearance = .dark
+        autocorrectionType = .no
+        autocapitalizationType = .none
+        spellCheckingType = .no
+        smartQuotesType = .no
+        smartDashesType = .no
+        smartInsertDeleteType = .no
+        inlinePredictionType = .no
+        inputAssistantItem.leadingBarButtonGroups = []
+        inputAssistantItem.trailingBarButtonGroups = []
+
+        restoreSentinelIfNeeded(force: true)
+    }
+
+    override var hasText: Bool { true }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        false
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok {
+            restoreSentinelIfNeeded(force: true)
+        }
+        return ok
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        onResignedFirstResponder?()
+        return ok
+    }
+
+    override func insertText(_ text: String) {
+        if isHandlingMutation {
+            super.insertText(text)
+            return
+        }
+        guard !text.isEmpty else { return }
+        if markedTextRange != nil {
+            super.unmarkText()
+        }
         onInsertText?(text)
+        restoreSentinelIfNeeded(force: false)
     }
 
-    func deleteBackward() {
+    override func deleteBackward() {
+        if isHandlingMutation || markedTextRange != nil {
+            super.deleteBackward()
+            return
+        }
+        isHandlingMutation = true
         onDeleteBackward?()
+        super.deleteBackward()
+        isHandlingMutation = false
+        if selectedRange.location <= 6 || (super.text?.count ?? 0) <= 10 {
+            restoreSentinelIfNeeded(force: true)
+        }
+    }
+
+    override func replace(_ range: UITextRange, withText text: String) {
+        if isHandlingMutation || markedTextRange != nil {
+            super.replace(range, withText: text)
+            return
+        }
+        isHandlingMutation = true
+        if text.isEmpty {
+            onDeleteBackward?()
+        } else {
+            onInsertText?(text)
+        }
+        isHandlingMutation = false
+        restoreSentinelIfNeeded(force: true)
+    }
+
+    private func restoreSentinelIfNeeded(force: Bool) {
+        guard !isRestoringSentinel else { return }
+        isRestoringSentinel = true
+        defer { isRestoringSentinel = false }
+        if force || super.text != Self.sentinelText {
+            super.text = Self.sentinelText
+        }
+        if force || super.selectedRange != Self.sentinelCursor {
+            super.selectedRange = Self.sentinelCursor
+        }
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -966,12 +1046,6 @@ private final class SoftwareKeyboardInputProxyView: UIView, UIKeyInput {
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         pressesEnded(presses, with: event)
-    }
-
-    override func resignFirstResponder() -> Bool {
-        let ok = super.resignFirstResponder()
-        onResignedFirstResponder?()
-        return ok
     }
 }
 
@@ -998,7 +1072,10 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
             }
         }
     }
-    private let softwareKeyboardProxy = SoftwareKeyboardInputProxyView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+    private let softwareKeyboardProxy = HengeSoftwareKeyboardProxyView(
+        frame: CGRect(x: 0, y: 0, width: 1, height: 1),
+        textContainer: nil
+    )
     private var isProgrammaticResponderChange = false
     private var responderSyncScheduled = false
     private var pendingGuestResizeWorkItem: DispatchWorkItem?
@@ -1980,8 +2057,18 @@ private struct InteractiveSerialTerminalView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    termByteButton("Esc", byte: 0x1B)
-                    termByteButton("Tab", byte: 0x09)
+                    TermRepeatKeyButton(label: "Esc") {
+                        pendingCommand = .sendByte(UUID(), 0x1B)
+                    }
+                    TermRepeatKeyButton(label: "Tab") {
+                        pendingCommand = .sendByte(UUID(), 0x09)
+                    }
+                    TermRepeatKeyButton(label: "Bck") {
+                        pendingCommand = .sendByte(UUID(), 0x7F)
+                    }
+                    TermRepeatKeyButton(label: "Space") {
+                        pendingCommand = .sendByte(UUID(), 0x20)
+                    }
                     termModifierButton("Ctrl", isOn: $stickyCtrl)
                     termModifierButton("Alt", isOn: $stickyAlt)
 
@@ -2006,9 +2093,15 @@ private struct InteractiveSerialTerminalView: View {
                     termByteButton("^C", byte: 0x03)
                     termByteButton("^D", byte: 0x04)
                     termByteButton("^Z", byte: 0x1A)
-                    termSeqButton("Del", seq: "\u{1B}[3~")
-                    termSeqButton("Home", seq: "\u{1B}[H")
-                    termSeqButton("End", seq: "\u{1B}[F")
+                    TermRepeatKeyButton(label: "Del") {
+                        pendingCommand = .sendSequence(UUID(), "\u{1B}[3~")
+                    }
+                    TermRepeatKeyButton(label: "Home") {
+                        pendingCommand = .sendSequence(UUID(), "\u{1B}[H")
+                    }
+                    TermRepeatKeyButton(label: "End") {
+                        pendingCommand = .sendSequence(UUID(), "\u{1B}[F")
+                    }
                     TermRepeatKeyButton(label: "PgUp") {
                         pendingCommand = .sendSequence(UUID(), "\u{1B}[5~")
                     }
@@ -2080,15 +2173,6 @@ private struct InteractiveSerialTerminalView: View {
     private func termByteButton(_ title: String, byte: UInt8) -> some View {
         Button(title) {
             pendingCommand = .sendByte(UUID(), byte)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.mini)
-        .font(.caption.monospaced())
-    }
-
-    private func termSeqButton(_ title: String, seq: String) -> some View {
-        Button(title) {
-            pendingCommand = .sendSequence(UUID(), seq)
         }
         .buttonStyle(.bordered)
         .controlSize(.mini)

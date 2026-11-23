@@ -1242,9 +1242,10 @@ final class VT100TerminalEmulator {
 }
 
 /// CoreGraphics-rendered interactive VT100/xterm-256color terminal view with
-/// direct `UIKeyInput`, Bluetooth keyboard support, SGR mouse tap/scroll,
-/// zero TextKit relayout jumps, and smooth touch scrollback.
-final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuInteractionDelegate {
+/// hidden `UITextView` keyboard proxy (native `⌫` repeat + `🌐` switcher),
+/// Bluetooth keyboard support, SGR mouse tap/scroll, zero TextKit relayout
+/// jumps, and smooth touch scrollback.
+final class SerialTerminalCanvasView: UIView, @MainActor UIEditMenuInteractionDelegate {
     var onFocusChanged: ((Bool) -> Void)?
     var onGridSizeChanged: ((Int, Int) -> Void)?
     var onGuestSizeSynced: ((Int, Int) -> Void)?
@@ -1273,9 +1274,17 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
                     drainSerial(suppressReplies: true)
                 } else {
                     stopPolling()
-                    if isFirstResponder {
-                        _ = resignFirstResponder()
+                    if keyboardProxy.isFirstResponder {
+                        isProgrammaticResponderChange = true
+                        _ = keyboardProxy.resignFirstResponder()
+                        isProgrammaticResponderChange = false
                     }
+                    if isFirstResponder {
+                        isProgrammaticResponderChange = true
+                        _ = resignFirstResponder()
+                        isProgrammaticResponderChange = false
+                    }
+                    setNeedsDisplay()
                 }
             }
         }
@@ -1289,6 +1298,10 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
     }
 
     private let emulator = VT100TerminalEmulator(cols: 80, rows: 24)
+    private let keyboardProxy = HengeSoftwareKeyboardProxyView(
+        frame: CGRect(x: 0, y: 0, width: 1, height: 1),
+        textContainer: nil
+    )
     private var serialCursor: UInt64 = 0
     private var scrollOffsetLines: Int = 0
     private var panResidualY: CGFloat = 0
@@ -1302,18 +1315,11 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
     private let insetX: CGFloat = 6
     private let insetY: CGFloat = 6
 
-    // MARK: - UITextInputTraits
-    var autocorrectionType: UITextAutocorrectionType = .no
-    var autocapitalizationType: UITextAutocapitalizationType = .none
-    var spellCheckingType: UITextSpellCheckingType = .no
-    var smartQuotesType: UITextSmartQuotesType = .no
-    var smartDashesType: UITextSmartDashesType = .no
-    var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
-    var keyboardType: UIKeyboardType = .asciiCapable
-    var keyboardAppearance: UIKeyboardAppearance = .dark
-
     override var canBecomeFirstResponder: Bool { true }
-    var hasText: Bool { true }
+
+    private var isKeyboardFocused: Bool {
+        isFirstResponder || keyboardProxy.isFirstResponder
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -1340,6 +1346,31 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
         emulator.onAltScreenChanged = { [weak self] inAlt in
             self?.onAltScreenChanged?(inAlt)
         }
+
+        keyboardProxy.onInsertText = { [weak self] text in
+            self?.insertText(text)
+        }
+        keyboardProxy.onDeleteBackward = { [weak self] in
+            self?.deleteBackward()
+        }
+        keyboardProxy.onPressesBegan = { [weak self] presses, event in
+            self?.handleHardwarePressesBegan(presses, with: event) ?? false
+        }
+        keyboardProxy.onResignedFirstResponder = { [weak self] in
+            guard let self else { return }
+            if !self.isProgrammaticResponderChange {
+                self.onFocusChanged?(false)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.window != nil, self.isActiveTab, !self.wantsSoftwareKeyboard, !self.isFirstResponder else { return }
+                    self.isProgrammaticResponderChange = true
+                    _ = self.becomeFirstResponder()
+                    self.isProgrammaticResponderChange = false
+                    self.setNeedsDisplay()
+                }
+            }
+            self.setNeedsDisplay()
+        }
+        addSubview(keyboardProxy)
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.numberOfTapsRequired = 1
@@ -1510,16 +1541,27 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
     private func syncKeyboardResponder() {
         guard window != nil, isActiveTab else { return }
         if wantsSoftwareKeyboard {
-            if !isFirstResponder {
+            if !keyboardProxy.isFirstResponder {
                 isProgrammaticResponderChange = true
-                _ = becomeFirstResponder()
+                _ = keyboardProxy.becomeFirstResponder()
                 isProgrammaticResponderChange = false
                 setNeedsDisplay()
             }
         } else {
-            if isFirstResponder {
+            if keyboardProxy.isFirstResponder {
                 isProgrammaticResponderChange = true
-                _ = resignFirstResponder()
+                _ = keyboardProxy.resignFirstResponder()
+                isProgrammaticResponderChange = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                    guard let self, self.window != nil, self.isActiveTab, !self.wantsSoftwareKeyboard, !self.isFirstResponder else { return }
+                    self.isProgrammaticResponderChange = true
+                    _ = self.becomeFirstResponder()
+                    self.isProgrammaticResponderChange = false
+                    self.setNeedsDisplay()
+                }
+            } else if !isFirstResponder {
+                isProgrammaticResponderChange = true
+                _ = becomeFirstResponder()
                 isProgrammaticResponderChange = false
                 setNeedsDisplay()
             }
@@ -1528,7 +1570,7 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
 
     override func resignFirstResponder() -> Bool {
         let ok = super.resignFirstResponder()
-        if !isProgrammaticResponderChange {
+        if !isProgrammaticResponderChange && !keyboardProxy.isFirstResponder {
             onFocusChanged?(false)
         }
         setNeedsDisplay()
@@ -1582,7 +1624,7 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
 
     // MARK: - Hardware Bluetooth Keyboard
 
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    private func handleHardwarePressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) -> Bool {
         var handled = false
         for press in presses {
             guard let key = press.key else { continue }
@@ -1653,10 +1695,17 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
                         sendBytes(out)
                         handled = true
                     }
+                } else if !chars.isEmpty && !keyboardProxy.isFirstResponder && !mods.contains(.command) {
+                    insertText(chars)
+                    handled = true
                 }
             }
         }
-        if !handled {
+        return handled
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !handleHardwarePressesBegan(presses, with: event) {
             super.pressesBegan(presses, with: event)
         }
     }
@@ -1664,8 +1713,7 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
     // MARK: - Touch Gestures & Edit Menu
 
     @objc private func handleTap(_ gr: UITapGestureRecognizer) {
-        let wasFocused = isFirstResponder
-        if !wasFocused {
+        if !keyboardProxy.isFirstResponder {
             wantsSoftwareKeyboard = true
             onFocusChanged?(true)
         }
@@ -1760,7 +1808,7 @@ final class SerialTerminalCanvasView: UIView, UIKeyInput, @MainActor UIEditMenuI
         let showCursor = (clampedScroll == 0 && emulator.cursorVisible)
         let cursorX = min(max(emulator.cursorX, 0), cols - 1)
         let cursorY = min(max(emulator.cursorY, 0), rows - 1)
-        let cursorSolid = showCursor && isFirstResponder
+        let cursorSolid = showCursor && isKeyboardFocused
 
         for screenRow in firstRow...lastRow {
             let lineIndex = totalScrollback - clampedScroll + screenRow
