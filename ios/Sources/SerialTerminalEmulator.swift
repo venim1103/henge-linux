@@ -1254,6 +1254,7 @@ final class SerialTerminalCanvasView: UIView, @MainActor UIEditMenuInteractionDe
 
     var stickyCtrl: Bool = false
     var stickyAlt: Bool = false
+    var stickyShift: Bool = false
     var fontSize: CGFloat = 10.5 {
         didSet {
             if abs(oldValue - fontSize) > 0.2 {
@@ -1510,11 +1511,26 @@ final class SerialTerminalCanvasView: UIView, @MainActor UIEditMenuInteractionDe
     }
 
     func sendArrow(direction: Character) {
+        if stickyCtrl || stickyAlt || stickyShift {
+            let mod = 1 + (stickyShift ? 1 : 0) + (stickyAlt ? 2 : 0) + (stickyCtrl ? 4 : 0)
+            stickyCtrl = false
+            stickyAlt = false
+            stickyShift = false
+            onStickyModifiersConsumed?()
+            sendBytes(Data("\u{1B}[1;\(mod)\(direction)".utf8))
+            return
+        }
         let prefix = emulator.appCursorKeys ? "\u{1B}O" : "\u{1B}["
         sendBytes(Data("\(prefix)\(direction)".utf8))
     }
 
     func sendControlByte(_ byte: UInt8) {
+        if byte == 0x09 && stickyShift {
+            stickyShift = false
+            onStickyModifiersConsumed?()
+            sendBytes(Data("\u{1B}[Z".utf8))
+            return
+        }
         sendBytes(Data([byte]))
     }
 
@@ -1605,7 +1621,11 @@ final class SerialTerminalCanvasView: UIView, @MainActor UIEditMenuInteractionDe
             } else if stickyAlt {
                 consumedSticky = true
                 out.append(0x1B)
-                out.append(contentsOf: String(scalar).utf8)
+                let str = stickyShift ? String(scalar).uppercased() : String(scalar)
+                out.append(contentsOf: str.utf8)
+            } else if stickyShift {
+                consumedSticky = true
+                out.append(contentsOf: String(scalar).uppercased().utf8)
             } else {
                 out.append(contentsOf: String(scalar).utf8)
             }
@@ -1613,6 +1633,7 @@ final class SerialTerminalCanvasView: UIView, @MainActor UIEditMenuInteractionDe
         if consumedSticky {
             stickyCtrl = false
             stickyAlt = false
+            stickyShift = false
             onStickyModifiersConsumed?()
         }
         sendBytes(out)
@@ -1687,9 +1708,10 @@ final class SerialTerminalCanvasView: UIView, @MainActor UIEditMenuInteractionDe
                         }
                     }
                     if !out.isEmpty {
-                        if stickyCtrl || stickyAlt {
+                        if stickyCtrl || stickyAlt || stickyShift {
                             stickyCtrl = false
                             stickyAlt = false
+                            stickyShift = false
                             onStickyModifiersConsumed?()
                         }
                         sendBytes(out)
@@ -1974,6 +1996,7 @@ struct SerialTerminalRepresentable: UIViewRepresentable {
     @Binding var focusKeyboard: Bool
     @Binding var stickyCtrl: Bool
     @Binding var stickyAlt: Bool
+    @Binding var stickyShift: Bool
     var fontSize: CGFloat
     var pendingCommand: SerialTerminalCommand?
     var onCommandConsumed: () -> Void
@@ -1992,6 +2015,7 @@ struct SerialTerminalRepresentable: UIViewRepresentable {
         view.wantsSoftwareKeyboard = focusKeyboard && isActiveTab
         view.stickyCtrl = stickyCtrl
         view.stickyAlt = stickyAlt
+        view.stickyShift = stickyShift
         view.onFocusChanged = { focused in
             DispatchQueue.main.async {
                 if focusKeyboard != focused {
@@ -2003,6 +2027,7 @@ struct SerialTerminalRepresentable: UIViewRepresentable {
             DispatchQueue.main.async {
                 stickyCtrl = false
                 stickyAlt = false
+                stickyShift = false
             }
         }
         view.onGridSizeChanged = { cols, rows in
@@ -2028,6 +2053,7 @@ struct SerialTerminalRepresentable: UIViewRepresentable {
         uiView.isActiveTab = isActiveTab
         uiView.stickyCtrl = stickyCtrl
         uiView.stickyAlt = stickyAlt
+        uiView.stickyShift = stickyShift
         uiView.wantsSoftwareKeyboard = focusKeyboard && isActiveTab
 
         if let cmd = pendingCommand {

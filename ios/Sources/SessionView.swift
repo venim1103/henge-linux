@@ -52,104 +52,140 @@ struct SessionView: View {
     private let idleCheckTimer = Timer.publish(every: 5.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        ZStack {
-            VStack(spacing: 0) {
-                topStatusBar
+        GeometryReader { rootGeo in
+            let totalW = max(rootGeo.size.width, 1)
+            let totalH = max(rootGeo.size.height, 1)
+            let isLandscape = totalW > totalH
+            let effectiveKeyboardHeight = min(keyboardHeight, max(0, totalH - (isLandscape ? 110 : 140)))
+            let topBarEstHeight: CGFloat = isLandscape ? 34 : 44
+            let contentAvailHeight = max(0, totalH - effectiveKeyboardHeight - topBarEstHeight)
+            let sideBySide = isLandscape && isClamshellPosture && !externalDisplay.isRenderingOnExternalDisplay
+            let deckLayout = sideBySide
+                ? AnyLayout(HStackLayout(spacing: 0))
+                : AnyLayout(VStackLayout(spacing: 0))
 
-                if let bootWarning {
-                    Text(bootWarning)
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(white: 0.12))
-                }
+            ZStack {
+                VStack(spacing: 0) {
+                    topStatusBar(isLandscape: isLandscape)
+                        .layoutPriority(2)
 
-                ZStack {
-                    VStack(spacing: 0) {
-                        ZStack {
-                            MetalFramebufferRepresentable(
-                                lifecycle: lifecycle,
-                                focusKeyboard: $focusSoftwareKeyboard,
-                                suppressSoftwareKeyboard: !focusSoftwareKeyboard || activeTab != .display || isScreenSaverActive,
-                                allowGuestResize: !isSoftwareKeyboardVisible && !isClamshellPosture && activeTab == .display && !externalDisplay.isRenderingOnExternalDisplay,
-                                layoutTrigger: "\(posture)-\(showModifierBar)-\(activeTab == .display)-\(externalDisplay.isRenderingOnExternalDisplay)",
-                                pendingPasteID: pendingPaste?.id,
-                                pendingPasteText: pendingPaste?.text,
-                                onPasteConsumed: {
-                                    pendingPaste = nil
-                                },
-                                onCharacterTyped: {
-                                    releaseActiveModifiers()
-                                },
-                                onPointerMoved: { nx, ny in
-                                    cursorNormX = nx
-                                    cursorNormY = ny
-                                }
-                            )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Color.black)
-                            .opacity(externalDisplay.isRenderingOnExternalDisplay ? 0.01 : 1)
-                            .allowsHitTesting(!externalDisplay.isRenderingOnExternalDisplay)
-
-                            if externalDisplay.isRenderingOnExternalDisplay {
-                                externalMonitorControlDeck
-                            }
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                        if !externalDisplay.isRenderingOnExternalDisplay {
-                            if case .clamshell = posture {
-                                clamshellInputDeck
-                                    .containerRelativeFrame(.vertical) { height, _ in
-                                        clamshellDeckHeight(forContainerHeight: height)
-                                    }
-                            } else if showModifierBar {
-                                compactModifierStrip
-                            }
-                        }
+                    if let bootWarning {
+                        Text(bootWarning)
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, isLandscape ? 3 : 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(white: 0.12))
                     }
-                    .opacity(activeTab == .display ? 1 : 0)
-                    .allowsHitTesting(activeTab == .display)
 
-                    InteractiveSerialTerminalView(
-                        isActiveTab: activeTab == .terminal,
-                        focusKeyboard: $focusTerminalKeyboard,
-                        onOpenLogs: {
-                            showDebugConsole = true
+                    ZStack {
+                        VStack(spacing: 0) {
+                            deckLayout {
+                                ZStack {
+                                    MetalFramebufferRepresentable(
+                                        lifecycle: lifecycle,
+                                        focusKeyboard: $focusSoftwareKeyboard,
+                                        suppressSoftwareKeyboard: !focusSoftwareKeyboard || activeTab != .display || isScreenSaverActive,
+                                        allowGuestResize: !isSoftwareKeyboardVisible && !isClamshellPosture && activeTab == .display && !externalDisplay.isRenderingOnExternalDisplay,
+                                        layoutTrigger: "\(posture)-\(showModifierBar)-\(activeTab == .display)-\(externalDisplay.isRenderingOnExternalDisplay)-\(isLandscape)-\(Int(effectiveKeyboardHeight))",
+                                        pendingPasteID: pendingPaste?.id,
+                                        pendingPasteText: pendingPaste?.text,
+                                        onPasteConsumed: {
+                                            pendingPaste = nil
+                                        },
+                                        onCharacterTyped: {
+                                            releaseActiveModifiers()
+                                        },
+                                        onPointerMoved: { nx, ny in
+                                            cursorNormX = nx
+                                            cursorNormY = ny
+                                        }
+                                    )
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .background(Color.black)
+                                    .opacity(externalDisplay.isRenderingOnExternalDisplay ? 0.01 : 1)
+                                    .allowsHitTesting(!externalDisplay.isRenderingOnExternalDisplay)
+
+                                    if externalDisplay.isRenderingOnExternalDisplay {
+                                        externalMonitorControlDeck
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                                if !externalDisplay.isRenderingOnExternalDisplay {
+                                    if isClamshellPosture {
+                                        clamshellInputDeck(
+                                            includeModifierStrip: !sideBySide && showModifierBar,
+                                            compact: isSoftwareKeyboardVisible || sideBySide
+                                        )
+                                        .frame(
+                                            width: sideBySide ? landscapeDeckWidth(totalWidth: totalW) : nil,
+                                            height: sideBySide ? nil : min(clamshellDeckHeight(forContainerHeight: totalH), max(88, contentAvailHeight * 0.56))
+                                        )
+                                        .frame(maxHeight: sideBySide ? .infinity : nil)
+                                    } else if showModifierBar && !sideBySide {
+                                        compactModifierStrip(compact: isLandscape || isSoftwareKeyboardVisible)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                            if sideBySide && showModifierBar {
+                                compactModifierStrip(compact: true)
+                            }
                         }
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.black)
-                    .opacity(activeTab == .terminal ? 1 : 0)
-                    .allowsHitTesting(activeTab == .terminal)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .padding(.bottom, keyboardHeight)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea(.keyboard, edges: .bottom)
-            .background(Color.black.ignoresSafeArea())
-            .overlay(
-                TouchActivityObserverRepresentable {
-                    lastUserActivityAt = Date()
-                }
-            )
+                        .opacity(activeTab == .display ? 1 : 0)
+                        .allowsHitTesting(activeTab == .display)
 
-            if isScreenSaverActive {
-                OLEDScreenSaverOverlayView(
-                    externalMonitorLabel: externalDisplay.isRenderingOnExternalDisplay
-                        ? "External \(externalDisplay.activeResolutionLabel)"
-                        : nil,
-                    onWake: {
-                        deactivateScreenSaver()
+                        InteractiveSerialTerminalView(
+                            isActiveTab: activeTab == .terminal,
+                            showModifierBar: showModifierBar,
+                            compactBar: isLandscape || isSoftwareKeyboardVisible,
+                            focusKeyboard: $focusTerminalKeyboard,
+                            onOpenLogs: {
+                                showDebugConsole = true
+                            }
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.black)
+                        .opacity(activeTab == .terminal ? 1 : 0)
+                        .allowsHitTesting(activeTab == .terminal)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                }
+                .padding(.bottom, effectiveKeyboardHeight)
+                .frame(width: totalW, height: totalH, alignment: .top)
+                .clipped()
+                .background(Color.black.ignoresSafeArea())
+                .overlay(
+                    TouchActivityObserverRepresentable {
+                        lastUserActivityAt = Date()
                     }
                 )
-                .transition(.opacity)
-                .zIndex(100)
+
+                if isScreenSaverActive {
+                    OLEDScreenSaverOverlayView(
+                        externalMonitorLabel: externalDisplay.isRenderingOnExternalDisplay
+                            ? "External \(externalDisplay.activeResolutionLabel)"
+                            : nil,
+                        onWake: {
+                            deactivateScreenSaver()
+                        }
+                    )
+                    .transition(.opacity)
+                    .zIndex(100)
+                }
+            }
+            .onChange(of: isLandscape) { _, _ in
+                if !focusSoftwareKeyboard && !focusTerminalKeyboard && keyboardHeight != 0 {
+                    keyboardHeight = 0
+                }
             }
         }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .background(Color.black.ignoresSafeArea())
         .statusBarHidden(isScreenSaverActive)
         .sheet(isPresented: $showDebugConsole) {
             DebugConsoleSheetView()
@@ -168,6 +204,9 @@ struct SessionView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             updateKeyboardHeight(from: note)
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { note in
+            updateKeyboardHeight(from: note)
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             if keyboardHeight != 0 {
                 keyboardHeight = 0
@@ -177,6 +216,18 @@ struct SessionView: View {
             if keyboardHeight != 0 {
                 keyboardHeight = 0
             }
+        }
+        .onChange(of: shiftActive) { _, pressed in
+            HengeVMBridge.shared.sendHidKeyUsage(0xE1, pressed: pressed)
+        }
+        .onChange(of: ctrlActive) { _, pressed in
+            HengeVMBridge.shared.sendHidKeyUsage(0xE0, pressed: pressed)
+        }
+        .onChange(of: altActive) { _, pressed in
+            HengeVMBridge.shared.sendHidKeyUsage(0xE2, pressed: pressed)
+        }
+        .onChange(of: superActive) { _, pressed in
+            HengeVMBridge.shared.sendHidKeyUsage(0xE3, pressed: pressed)
         }
         .onChange(of: focusSoftwareKeyboard) { _, show in
             lastUserActivityAt = Date()
@@ -256,14 +307,17 @@ struct SessionView: View {
             .filter { $0.session.role == .windowApplication }
         let windowScene = appScenes.first(where: { $0.activationState == .foregroundActive }) ?? appScenes.first
         let keyWindow = windowScene?.windows.first(where: \.isKeyWindow) ?? windowScene?.windows.first
-        let screenHeight = keyWindow?.bounds.height ?? windowScene?.screen.bounds.height ?? 0
+        let windowBounds = keyWindow?.bounds ?? windowScene?.screen.bounds ?? .zero
+        let screenHeight = windowBounds.height
         let bottomInset = keyWindow?.safeAreaInsets.bottom ?? 0
         guard screenHeight > 0 else { return }
+        let localEndFrame = keyWindow?.convert(endFrame, from: nil) ?? endFrame
+        let overlap = windowBounds.maxY - localEndFrame.minY
         let nextHeight: CGFloat
-        if endFrame.minY >= screenHeight - 1 || endFrame.height <= 0 {
+        if overlap <= 1 || localEndFrame.height <= 0 {
             nextHeight = 0
         } else {
-            nextHeight = max(0, screenHeight - endFrame.minY - bottomInset)
+            nextHeight = max(0, overlap - bottomInset)
         }
         if abs(keyboardHeight - nextHeight) > 0.5 {
             keyboardHeight = nextHeight
@@ -289,7 +343,7 @@ struct SessionView: View {
         }
     }
 
-    private var topStatusBar: some View {
+    private func topStatusBar(isLandscape: Bool) -> some View {
         HStack(spacing: 8) {
             Picker("View", selection: $activeTab) {
                 ForEach(SessionTab.allCases) { tab in
@@ -351,16 +405,14 @@ struct SessionView: View {
             .controlSize(.mini)
             .accessibilityLabel("Toggle Keyboard")
 
-            if activeTab == .display {
-                Button {
-                    showModifierBar.toggle()
-                } label: {
-                    Image(systemName: showModifierBar ? "slider.horizontal.below.rectangle" : "slider.horizontal.3")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
-                .accessibilityLabel("Toggle Special Keys")
+            Button {
+                showModifierBar.toggle()
+            } label: {
+                Image(systemName: showModifierBar ? "slider.horizontal.below.rectangle" : "slider.horizontal.3")
             }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .accessibilityLabel("Toggle Special Keys")
 
             Button(role: .destructive) {
                 if isScreenSaverActive {
@@ -379,48 +431,33 @@ struct SessionView: View {
             .accessibilityLabel("Stop VM")
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.vertical, isLandscape ? 3 : 6)
         .background(.ultraThinMaterial)
     }
 
-    private var compactModifierStrip: some View {
+    private func sendDisplayCtrlChord(_ keyUsage: UInt8) {
+        HengeVMBridge.shared.sendHidKeyUsage(0xE0, pressed: true)
+        HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+            HengeVMBridge.shared.sendHidKeyUsage(keyUsage, pressed: false)
+            if !ctrlActive {
+                HengeVMBridge.shared.sendHidKeyUsage(0xE0, pressed: false)
+            }
+        }
+    }
+
+    private func compactModifierStrip(compact: Bool = false) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                hidPulseButton("Esc", usage: 0x29)
-                hidPulseButton("Tab", usage: 0x2B)
-                hidPulseButton("Bck", usage: 0x2A)
-                hidPulseButton("Space", usage: 0x2C)
-                hidPulseButton("Del", usage: 0x4C)
-                modifierToggle("Shift", usage: 0xE1, isOn: $shiftActive)
-                modifierToggle("Ctrl", usage: 0xE0, isOn: $ctrlActive)
-                modifierToggle("Alt", usage: 0xE2, isOn: $altActive)
-                modifierToggle("Super", usage: 0xE3, isOn: $superActive)
-                hidPulseButton("Caps", usage: 0x39, repeatable: false)
-                hidPulseButton("←", usage: 0x50)
-                hidPulseButton("→", usage: 0x4F)
-                hidPulseButton("↑", usage: 0x52)
-                hidPulseButton("↓", usage: 0x51)
-                hidPulseButton("Home", usage: 0x4A)
-                hidPulseButton("End", usage: 0x4D)
-                hidPulseButton("PgUp", usage: 0x4B)
-                hidPulseButton("PgDn", usage: 0x4E)
-                hidPulseButton("Ins", usage: 0x49, repeatable: false)
-                hidPulseButton("Prnt", usage: 0x46, repeatable: false)
-                hidPulseButton("ScrLk", usage: 0x47, repeatable: false)
-                hidPulseButton("Pause", usage: 0x48, repeatable: false)
-                hidPulseButton("Menu", usage: 0x65, repeatable: false)
-                hidPulseButton("F1", usage: 0x3A, repeatable: false)
-                hidPulseButton("F2", usage: 0x3B, repeatable: false)
-                hidPulseButton("F3", usage: 0x3C, repeatable: false)
-                hidPulseButton("F4", usage: 0x3D, repeatable: false)
-                hidPulseButton("F5", usage: 0x3E, repeatable: false)
-                hidPulseButton("F6", usage: 0x3F, repeatable: false)
-                hidPulseButton("F7", usage: 0x40, repeatable: false)
-                hidPulseButton("F8", usage: 0x41, repeatable: false)
-                hidPulseButton("F9", usage: 0x42, repeatable: false)
-                hidPulseButton("F10", usage: 0x43, repeatable: false)
-                hidPulseButton("F11", usage: 0x44, repeatable: false)
-                hidPulseButton("F12", usage: 0x45, repeatable: false)
+            HStack(spacing: compact ? 6 : 8) {
+                hidPulseButton("PgUp", usage: 0x4B, compact: compact)
+                hidPulseButton("PgDn", usage: 0x4E, compact: compact)
+                hidPulseButton("Home", usage: 0x4A, compact: compact)
+                hidPulseButton("End", usage: 0x4D, compact: compact)
+                hidPulseButton("Ins", usage: 0x49, repeatable: false, compact: compact)
+                hidPulseButton("Del", usage: 0x4C, compact: compact)
+                modifierToggle("Ctrl", isOn: $ctrlActive, compact: compact)
+                modifierToggle("Shift", isOn: $shiftActive, compact: compact)
+                modifierToggle("Alt", isOn: $altActive, compact: compact)
                 Button("Paste") {
                     if let clip = UIPasteboard.general.string, !clip.isEmpty {
                         HengeVMBridge.shared.pushHostClipboard(clip)
@@ -428,19 +465,64 @@ struct SessionView: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
+                .controlSize(compact ? .mini : .small)
                 .font(.caption.monospaced())
+                Button("^C") { sendDisplayCtrlChord(0x06) }
+                    .buttonStyle(.bordered)
+                    .controlSize(compact ? .mini : .small)
+                    .font(.caption.monospaced())
+                Button("^D") { sendDisplayCtrlChord(0x07) }
+                    .buttonStyle(.bordered)
+                    .controlSize(compact ? .mini : .small)
+                    .font(.caption.monospaced())
+                Button("^Z") { sendDisplayCtrlChord(0x1D) }
+                    .buttonStyle(.bordered)
+                    .controlSize(compact ? .mini : .small)
+                    .font(.caption.monospaced())
+                hidPulseButton("Esc", usage: 0x29, compact: compact)
+                hidPulseButton("Tab", usage: 0x2B, compact: compact)
+                hidPulseButton("Bck", usage: 0x2A, compact: compact)
+                hidPulseButton("Space", usage: 0x2C, compact: compact)
+                hidPulseButton("↑", usage: 0x52, compact: compact)
+                hidPulseButton("↓", usage: 0x51, compact: compact)
+                hidPulseButton("←", usage: 0x50, compact: compact)
+                hidPulseButton("→", usage: 0x4F, compact: compact)
+                hidPulseButton("F1", usage: 0x3A, repeatable: false, compact: compact)
+                hidPulseButton("F2", usage: 0x3B, repeatable: false, compact: compact)
+                hidPulseButton("F3", usage: 0x3C, repeatable: false, compact: compact)
+                hidPulseButton("F4", usage: 0x3D, repeatable: false, compact: compact)
+                hidPulseButton("F5", usage: 0x3E, repeatable: false, compact: compact)
+                hidPulseButton("F6", usage: 0x3F, repeatable: false, compact: compact)
+                hidPulseButton("F7", usage: 0x40, repeatable: false, compact: compact)
+                hidPulseButton("F8", usage: 0x41, repeatable: false, compact: compact)
+                hidPulseButton("F9", usage: 0x42, repeatable: false, compact: compact)
+                hidPulseButton("F10", usage: 0x43, repeatable: false, compact: compact)
+                hidPulseButton("F11", usage: 0x44, repeatable: false, compact: compact)
+                hidPulseButton("F12", usage: 0x45, repeatable: false, compact: compact)
+                modifierToggle("Super", isOn: $superActive, compact: compact)
+                hidPulseButton("Caps", usage: 0x39, repeatable: false, compact: compact)
+                hidPulseButton("Prnt", usage: 0x46, repeatable: false, compact: compact)
+                hidPulseButton("ScrLk", usage: 0x47, repeatable: false, compact: compact)
+                hidPulseButton("Pause", usage: 0x48, repeatable: false, compact: compact)
+                hidPulseButton("Menu", usage: 0x65, repeatable: false, compact: compact)
                 Button("CAD") {
                     HengeVMBridge.shared.sendCtrlAltDel()
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
+                .controlSize(compact ? .mini : .small)
                 .font(.caption.monospaced())
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 10)
+            .padding(.vertical, compact ? 4 : 7)
         }
         .background(.ultraThinMaterial)
+    }
+
+    private func landscapeDeckWidth(totalWidth: CGFloat) -> CGFloat {
+        if isSoftwareKeyboardVisible {
+            return min(max(totalWidth * 0.50, 280), 390)
+        }
+        return min(max(totalWidth * 0.42, 260), 360)
     }
 
     private var isSoftwareKeyboardVisible: Bool {
@@ -567,18 +649,17 @@ struct SessionView: View {
             .padding(.bottom, showModifierBar ? 2 : (compact ? 6 : 12))
 
             if showModifierBar {
-                compactModifierStrip
+                compactModifierStrip(compact: compact)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(white: 0.06))
     }
 
-    private var clamshellInputDeck: some View {
-        let compact = isSoftwareKeyboardVisible
-        return VStack(spacing: compact ? 4 : 6) {
-            if showModifierBar {
-                compactModifierStrip
+    private func clamshellInputDeck(includeModifierStrip: Bool, compact: Bool) -> some View {
+        VStack(spacing: compact ? 4 : 6) {
+            if includeModifierStrip {
+                compactModifierStrip(compact: compact)
             }
 
             GeometryReader { padGeo in
@@ -599,8 +680,8 @@ struct SessionView: View {
                                 deckHoldKey("Tab", usage: 0x2B, width: colW, height: rowH, compact: compact)
                             }
                             HStack(spacing: gap) {
-                                deckCtrlToggle(width: colW, height: rowH, compact: compact)
                                 deckHoldKey("Bck", usage: 0x2A, width: colW, height: rowH, compact: compact)
+                                deckModifierToggle("Alt", isOn: $altActive, width: colW, height: rowH, compact: compact)
                             }
                         }
                         .frame(width: doubleW, height: topH)
@@ -706,23 +787,20 @@ struct SessionView: View {
         .frame(width: width, height: height)
     }
 
-    private func deckCtrlToggle(width: CGFloat, height: CGFloat, compact: Bool) -> some View {
+    private func deckModifierToggle(_ label: String, isOn: Binding<Bool>, width: CGFloat, height: CGFloat, compact: Bool) -> some View {
         Button {
-            ctrlActive.toggle()
-            if !showModifierBar {
-                HengeVMBridge.shared.sendHidKeyUsage(0xE0, pressed: ctrlActive)
-            }
+            isOn.wrappedValue.toggle()
         } label: {
-            Text("Ctrl")
+            Text(label)
                 .font(compact ? .caption2.monospaced().weight(.medium) : .caption.monospaced().weight(.medium))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(ctrlActive ? Color.accentColor.opacity(0.55) : Color.secondary.opacity(0.22))
+                        .fill(isOn.wrappedValue ? Color.accentColor.opacity(0.55) : Color.secondary.opacity(0.22))
                 )
-                .foregroundStyle(ctrlActive ? .white : .primary)
+                .foregroundStyle(isOn.wrappedValue ? .white : .primary)
         }
         .buttonStyle(.plain)
         .frame(width: width, height: height)
@@ -750,20 +828,17 @@ struct SessionView: View {
         }
     }
 
-    private func hidPulseButton(_ label: String, usage: UInt8, repeatable: Bool = true) -> some View {
-        HidHoldKeyButton(label: label, usage: usage, repeatable: repeatable) {
+    private func hidPulseButton(_ label: String, usage: UInt8, repeatable: Bool = true, compact: Bool = false) -> some View {
+        HidHoldKeyButton(label: label, usage: usage, repeatable: repeatable, compact: compact) {
             releaseActiveModifiers()
         }
     }
 
-    private func modifierToggle(_ label: String, usage: UInt8, isOn: Binding<Bool>) -> some View {
+    private func modifierToggle(_ label: String, isOn: Binding<Bool>, compact: Bool = false) -> some View {
         Toggle(label, isOn: isOn)
             .toggleStyle(.button)
-            .controlSize(.small)
+            .controlSize(compact ? .mini : .small)
             .font(.caption.monospaced())
-            .onChange(of: isOn.wrappedValue) { _, pressed in
-                HengeVMBridge.shared.sendHidKeyUsage(usage, pressed: pressed)
-            }
     }
 }
 
@@ -908,8 +983,8 @@ private struct HidHoldKeyBody: View {
             .lineLimit(1)
             .minimumScaleFactor(0.75)
             .frame(maxWidth: fillContainer ? .infinity : nil, maxHeight: fillContainer ? .infinity : nil)
-            .padding(.horizontal, fillContainer ? 2 : 10)
-            .padding(.vertical, fillContainer ? 0 : 6)
+            .padding(.horizontal, fillContainer ? 2 : (compact ? 8 : 10))
+            .padding(.vertical, fillContainer ? 0 : (compact ? 4 : 6))
             .background(
                 RoundedRectangle(cornerRadius: fillContainer ? 7 : 6, style: .continuous)
                     .fill(configuration.isPressed ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.22))
@@ -2134,12 +2209,15 @@ private struct TermRepeatKeyBody: View {
 /// Interactive VT100/xterm-256color PL011 (`ttyAMA0`) terminal tab embedded in `SessionView`.
 private struct InteractiveSerialTerminalView: View {
     let isActiveTab: Bool
+    let showModifierBar: Bool
+    let compactBar: Bool
     @Binding var focusKeyboard: Bool
     let onOpenLogs: () -> Void
 
     @AppStorage("serialTerminalFontSize") private var fontSize: Double = 10.5
     @State private var stickyCtrl: Bool = false
     @State private var stickyAlt: Bool = false
+    @State private var stickyShift: Bool = false
     @State private var gridCols: Int = 80
     @State private var gridRows: Int = 24
     @State private var syncedCols: Int = 0
@@ -2158,6 +2236,7 @@ private struct InteractiveSerialTerminalView: View {
                 focusKeyboard: $focusKeyboard,
                 stickyCtrl: $stickyCtrl,
                 stickyAlt: $stickyAlt,
+                stickyShift: $stickyShift,
                 fontSize: CGFloat(fontSize),
                 pendingCommand: pendingCommand,
                 onCommandConsumed: {
@@ -2178,110 +2257,130 @@ private struct InteractiveSerialTerminalView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black)
 
-            Divider()
+            if showModifierBar {
+                Divider()
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    TermRepeatKeyButton(label: "Esc") {
-                        pendingCommand = .sendByte(UUID(), 0x1B)
-                    }
-                    TermRepeatKeyButton(label: "Tab") {
-                        pendingCommand = .sendByte(UUID(), 0x09)
-                    }
-                    TermRepeatKeyButton(label: "Bck") {
-                        pendingCommand = .sendByte(UUID(), 0x7F)
-                    }
-                    TermRepeatKeyButton(label: "Space") {
-                        pendingCommand = .sendByte(UUID(), 0x20)
-                    }
-                    termModifierButton("Ctrl", isOn: $stickyCtrl)
-                    termModifierButton("Alt", isOn: $stickyAlt)
-
-                    Button("Fit \(gridCols)×\(gridRows)") {
-                        syncedCols = gridCols
-                        syncedRows = gridRows
-                        pendingCommand = .sendSequence(
-                            UUID(),
-                            "unset LINES COLUMNS; export TERM=xterm-256color; stty rows \(gridRows) cols \(gridCols)\r"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .font(.caption.monospaced())
-                    .tint(inAlternateScreen ? .secondary : (needsSizeSync ? .orange : .green))
-                    .disabled(inAlternateScreen)
-
-                    termArrowButton("↑", dir: "A")
-                    termArrowButton("↓", dir: "B")
-                    termArrowButton("←", dir: "D")
-                    termArrowButton("→", dir: "C")
-                    termByteButton("^C", byte: 0x03)
-                    termByteButton("^D", byte: 0x04)
-                    termByteButton("^Z", byte: 0x1A)
-                    TermRepeatKeyButton(label: "Del") {
-                        pendingCommand = .sendSequence(UUID(), "\u{1B}[3~")
-                    }
-                    TermRepeatKeyButton(label: "Home") {
-                        pendingCommand = .sendSequence(UUID(), "\u{1B}[H")
-                    }
-                    TermRepeatKeyButton(label: "End") {
-                        pendingCommand = .sendSequence(UUID(), "\u{1B}[F")
-                    }
-                    TermRepeatKeyButton(label: "PgUp") {
-                        pendingCommand = .sendSequence(UUID(), "\u{1B}[5~")
-                    }
-                    TermRepeatKeyButton(label: "PgDn") {
-                        pendingCommand = .sendSequence(UUID(), "\u{1B}[6~")
-                    }
-
-                    Button("Paste") {
-                        if let clip = UIPasteboard.general.string, !clip.isEmpty {
-                            pendingCommand = .paste(UUID(), clip)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: compactBar ? 6 : 8) {
+                        TermRepeatKeyButton(label: "PgUp") {
+                            pendingCommand = .sendSequence(UUID(), "\u{1B}[5~")
                         }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .font(.caption.monospaced())
+                        TermRepeatKeyButton(label: "PgDn") {
+                            pendingCommand = .sendSequence(UUID(), "\u{1B}[6~")
+                        }
+                        TermRepeatKeyButton(label: "Home") {
+                            pendingCommand = .sendSequence(UUID(), "\u{1B}[H")
+                        }
+                        TermRepeatKeyButton(label: "End") {
+                            pendingCommand = .sendSequence(UUID(), "\u{1B}[F")
+                        }
+                        termSeqButton("Ins", seq: "\u{1B}[2~")
+                        TermRepeatKeyButton(label: "Del") {
+                            pendingCommand = .sendSequence(UUID(), "\u{1B}[3~")
+                        }
+                        termModifierButton("Ctrl", isOn: $stickyCtrl)
+                        termModifierButton("Shift", isOn: $stickyShift)
+                        termModifierButton("Alt", isOn: $stickyAlt)
+                        Button("Paste") {
+                            if let clip = UIPasteboard.general.string, !clip.isEmpty {
+                                pendingCommand = .paste(UUID(), clip)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(compactBar ? .mini : .small)
+                        .font(.caption.monospaced())
+                        termByteButton("^C", byte: 0x03)
+                        termByteButton("^D", byte: 0x04)
+                        termByteButton("^Z", byte: 0x1A)
+                        TermRepeatKeyButton(label: "Esc") {
+                            pendingCommand = .sendByte(UUID(), 0x1B)
+                        }
+                        TermRepeatKeyButton(label: "Tab") {
+                            pendingCommand = .sendByte(UUID(), 0x09)
+                        }
+                        TermRepeatKeyButton(label: "Bck") {
+                            pendingCommand = .sendByte(UUID(), 0x7F)
+                        }
+                        TermRepeatKeyButton(label: "Space") {
+                            pendingCommand = .sendByte(UUID(), 0x20)
+                        }
+                        termArrowButton("↑", dir: "A")
+                        termArrowButton("↓", dir: "B")
+                        termArrowButton("←", dir: "D")
+                        termArrowButton("→", dir: "C")
+                        termSeqButton("F1", seq: "\u{1B}OP")
+                        termSeqButton("F2", seq: "\u{1B}OQ")
+                        termSeqButton("F3", seq: "\u{1B}OR")
+                        termSeqButton("F4", seq: "\u{1B}OS")
+                        termSeqButton("F5", seq: "\u{1B}[15~")
+                        termSeqButton("F6", seq: "\u{1B}[17~")
+                        termSeqButton("F7", seq: "\u{1B}[18~")
+                        termSeqButton("F8", seq: "\u{1B}[19~")
+                        termSeqButton("F9", seq: "\u{1B}[20~")
+                        termSeqButton("F10", seq: "\u{1B}[21~")
+                        termSeqButton("F11", seq: "\u{1B}[23~")
+                        termSeqButton("F12", seq: "\u{1B}[24~")
+                        Button("CAD") {
+                            HengeVMBridge.shared.sendCtrlAltDel()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(compactBar ? .mini : .small)
+                        .font(.caption.monospaced())
 
-                    Button("Copy") {
-                        pendingCommand = .copyScreen(UUID())
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .font(.caption.monospaced())
+                        Button("Fit \(gridCols)×\(gridRows)") {
+                            syncedCols = gridCols
+                            syncedRows = gridRows
+                            pendingCommand = .sendSequence(
+                                UUID(),
+                                "unset LINES COLUMNS; export TERM=xterm-256color; stty rows \(gridRows) cols \(gridCols)\r"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(compactBar ? .mini : .small)
+                        .font(.caption.monospaced())
+                        .tint(inAlternateScreen ? .secondary : (needsSizeSync ? .orange : .green))
+                        .disabled(inAlternateScreen)
 
-                    Button("A-") {
-                        fontSize = max(7.0, ((fontSize - 0.5) * 2.0).rounded() / 2.0)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .font(.caption.monospaced())
+                        Button("Copy") {
+                            pendingCommand = .copyScreen(UUID())
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(compactBar ? .mini : .small)
+                        .font(.caption.monospaced())
 
-                    Button("A+") {
-                        fontSize = min(20.0, ((fontSize + 0.5) * 2.0).rounded() / 2.0)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .font(.caption.monospaced())
+                        Button("A-") {
+                            fontSize = max(7.0, ((fontSize - 0.5) * 2.0).rounded() / 2.0)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(compactBar ? .mini : .small)
+                        .font(.caption.monospaced())
 
-                    Button("Clear") {
-                        pendingCommand = .clear(UUID())
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .font(.caption.monospaced())
+                        Button("A+") {
+                            fontSize = min(20.0, ((fontSize + 0.5) * 2.0).rounded() / 2.0)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(compactBar ? .mini : .small)
+                        .font(.caption.monospaced())
 
-                    Button("Logs") {
-                        onOpenLogs()
+                        Button("Clear") {
+                            pendingCommand = .clear(UUID())
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(compactBar ? .mini : .small)
+                        .font(.caption.monospaced())
+
+                        Button("Logs") {
+                            onOpenLogs()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(compactBar ? .mini : .small)
+                        .font(.caption.monospaced())
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .font(.caption.monospaced())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, compactBar ? 4 : 7)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .background(.ultraThinMaterial)
             }
-            .background(Color(white: 0.11))
         }
     }
 
@@ -2290,7 +2389,7 @@ private struct InteractiveSerialTerminalView: View {
             isOn.wrappedValue.toggle()
         }
         .buttonStyle(.bordered)
-        .controlSize(.mini)
+        .controlSize(compactBar ? .mini : .small)
         .font(.caption.monospaced())
         .tint(isOn.wrappedValue ? .blue : .secondary)
     }
@@ -2300,7 +2399,16 @@ private struct InteractiveSerialTerminalView: View {
             pendingCommand = .sendByte(UUID(), byte)
         }
         .buttonStyle(.bordered)
-        .controlSize(.mini)
+        .controlSize(compactBar ? .mini : .small)
+        .font(.caption.monospaced())
+    }
+
+    private func termSeqButton(_ title: String, seq: String) -> some View {
+        Button(title) {
+            pendingCommand = .sendSequence(UUID(), seq)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(compactBar ? .mini : .small)
         .font(.caption.monospaced())
     }
 
