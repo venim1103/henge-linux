@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.4)'
+        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.5)'
         required: true
-        default: 'v0.2.4'
+        default: 'v0.2.5'
         type: string
 
 concurrency:
@@ -229,10 +229,10 @@ jobs:
           Built from commit \`${SHORT_SHA}\` on ${BUILD_DATE}. Full-system ARM64 (\`aarch64\`) multi-distro Linux virtualization on non-jailbroken iOS 18.0 – iOS 27+ devices without \`Hypervisor.framework\`.
 
           ### Highlights
-          - **In-App Distro & Firmware Downloader + Distro-Aware \`CIDATA\`:** Stream official ARM64 images (**Arch Linux**, **Debian 13**, **Ubuntu 24.04 / 26.04 LTS**, **Alpine 3.23**, **Fedora 43**, **openSUSE Tumbleweed**) and shared UEFI firmware (\`code.fd\` / \`vars.fd\`) directly inside HengeLinux with zero-RAM buffering, custom URL downloads, and distro-aware \`CIDATA\` provisioning (\`/bin/bash\`, auto-grow root, Ubuntu daemon trimming).
-          - **APFS Sparse Disk Expansion & Universal LXQt Desktop Setup:** Expand virtual disks up to 128 GiB in-app (**Expand Virtual Disk...**) with automatic boot-time partition/filesystem resizing (\`henge-grow-root\`); install LXQt + Openbox + SDDM on any supported distro via \`sudo henge-install-desktop\`, backed by boot-time \`henge-xorg-autodetect\` (switching seamlessly between 2D UEFI GOP and VirtIO-GPU KMS) and automatic Ubuntu \`linux-modules-extra\` installation.
-          - **Lag-Free Metal Presentation & Reliable Input:** Replaced SwiftUI \`ScrollViewReader\` log views with \`MonospaceLogTextView\` (\`UITextView\`) and filtered \`AttributeGraph\` stderr noise from \`ttyAMA0\`; added a mutex-protected 4 KiB PL011 RX ring, direct \`virtio-input\` tablet pointer routing, stuck-key auto-release, 4-way unrolled alternating-parity \`fb_metal.m\` hashing with 2-in-flight GPU semaphore pacing, \`1024×768\` (4:3) portrait VirtIO-GPU scaling, and decoupled \`SET_SCANOUT\` rects to eliminate tab/trackpad/keyboard blanking and lag.
-          - **Full VM Memory/Thread Teardown & Accurate Jetsam Headroom:** \`hv_winvm_stop()\` now joins \`kicker_thread\`/\`net_thread\` and frees \`HvMachine\` (\`ram[].whint\`), \`HvPflash\` (128 MiB), \`HvFbMetalPresenter\`, \`HvVirtioGpuPci\`, \`HvPl011\`, \`libslirp\`, and disk handles—eliminating post-stop Jetsam RAM drops and adding a 16 KiB \`vm_map\` fallback for \`LEDGER_NO_FOOTPRINT\` guest RAM.
+          - **Native External Monitor Output & OLED Burn-In Screen Saver:** Added a dedicated \`UIWindowSceneSessionRoleExternalDisplayNonInteractive\` Metal scene (\`ExternalDisplayManager.swift\`) for USB-C / HDMI / AirPlay displays with live VirtIO-GPU KMS resolution presets (\`Auto\`, \`720p\`, \`900p\`, \`1080p\`, \`1440p\`), a dedicated iPhone External Monitor Control Deck, VM keep-awake (\`isIdleTimerDisabled\`), and a pure \`#000000\` OLED Screen Saver with configurable auto-dim (\`Manual / 1m / 3m / 5m\`), drifting clock/thermal status, and brightness restoration on double-tap wake.
+          - **Native VT100 / xterm-256color \`ttyAMA0\` Serial Terminal & \`fbdev\` Seat Fix:** Replaced the basic log view with a CoreGraphics VT100/xterm-256color terminal emulator (\`SerialTerminalEmulator.swift\`) backed by a dedicated 128 KiB pure-guest PL011 ring, supporting SGR colons, alternate screen, wide chars, SGR mouse, \`Fit CxR\` (\`stty\` + \`henge-resize\` DSR sync), and a \`systemd-logind\` udev \`master-of-seat\` rule (\`CanGraphical=yes\`) for UEFI GOP \`fbdev\` desktops.
+          - **Native iPhone Keyboard Repeat, \`🌐\` Switcher & Aspect-Fit Touchscreen Mapping:** Upgraded both Display and \`ttyAMA0\` to a shared \`UITextView\` keyboard proxy (\`HengeSoftwareKeyboardProxyView\`) enabling native iOS \`⌫\` hold-to-repeat and restoring the \`🌐\` language switcher and left/right one-handed keyboards; fixed direct touchscreen cursor offsets by inverting \`fb_metal.m\` letterbox/pillarbox scaling (\`henge_map_touch_to_guest_norm\`).
+          - **6×3 Split Trackpad Deck, Unified Special-Keys Bar & Landscape Layout:** Redesigned the Split Deck into a 6×3 grid with an isotropic square trackpad, double-width \`L\` / \`R\` holdable buttons, and 10 surrounding special keys (\`Esc\`, \`Tab\`, \`Bck\`, \`Alt\`, \`↑↓←→\`, \`␣\`, \`↵\`); unified the Display and \`ttyAMA0\` special-keys bars with non-mousepad keys up front (\`PgUp\`, \`PgDn\`, \`Home\`, \`End\`, \`Ins\`, \`Del\`, \`Ctrl\`, \`Shift\`, \`Alt\`, \`Paste\`, \`^C/^D/^Z\`) and hold-to-repeat on \`Space\`, \`Tab\`, \`Bck\`, \`Del\`, \`Esc\`, \`Home\`, \`End\`, \`PgUp\`, \`PgDn\`, and arrows; fixed landscape top-bar overflow with side-by-side adaptive Display + Mousepad layout.
 
           ### Quick Setup (iOS 18.0+)
           1. Download and sign **\`HengeLinux-unsigned.ipa\`** with **SideStore** or **AltStore**.
