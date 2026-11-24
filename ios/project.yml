@@ -85,7 +85,7 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: false
+          UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations:
             UIWindowSceneSessionRoleExternalDisplayNonInteractive:
               - UISceneConfigurationName: ExternalDisplay

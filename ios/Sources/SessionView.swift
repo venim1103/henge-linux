@@ -104,11 +104,10 @@ struct SessionView: View {
                                     )
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     .background(Color.black)
-                                    .opacity(externalDisplay.isRenderingOnExternalDisplay ? 0.01 : 1)
                                     .allowsHitTesting(!externalDisplay.isRenderingOnExternalDisplay)
 
                                     if externalDisplay.isRenderingOnExternalDisplay {
-                                        externalMonitorControlDeck
+                                        externalMonitorControlDeck(isLandscape: isLandscape)
                                     }
                                 }
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -546,9 +545,9 @@ struct SessionView: View {
         return max(220, totalHeight * 0.42)
     }
 
-    private var externalMonitorControlDeck: some View {
-        let compact = isSoftwareKeyboardVisible
-        return VStack(spacing: compact ? 6 : 10) {
+    private func externalMonitorControlDeck(isLandscape: Bool) -> some View {
+        let compact = isSoftwareKeyboardVisible || isLandscape
+        return VStack(spacing: compact ? 4 : 8) {
             HStack(spacing: 8) {
                 Circle()
                     .fill(Color.green)
@@ -579,74 +578,12 @@ struct SessionView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, compact ? 6 : 10)
+            .padding(.horizontal, 12)
+            .padding(.top, compact ? 4 : 8)
 
-            GeometryReader { _ in
-                RoundedRectangle(cornerRadius: compact ? 10 : 16, style: .continuous)
-                    .fill(Color(white: 0.13))
-                    .overlay(
-                        VStack(spacing: compact ? 2 : 6) {
-                            Image(systemName: "hand.draw")
-                                .font(compact ? .body : .title2)
-                                .foregroundStyle(.secondary)
-                            Text(compact ? "External Monitor Trackpad" : "External Monitor Control Deck")
-                                .font(compact ? .caption.weight(.medium) : .subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            if !compact {
-                                Text("Drag to move pointer · Tap click · Two-finger tap right-click · Two-finger scroll")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                    .multilineTextAlignment(.center)
-                                    .padding(.horizontal, 20)
-                            }
-                        }
-                    )
-                    .contentShape(Rectangle())
-                    .overlay(
-                        TrackpadSurfaceRepresentable(
-                            onRelativeMove: { dx, dy in
-                                cursorNormX = min(max(cursorNormX + dx, 0), 1)
-                                cursorNormY = min(max(cursorNormY + dy, 0), 1)
-                                HengeVMBridge.shared.sendPointerNormX(
-                                    cursorNormX,
-                                    normY: cursorNormY,
-                                    buttons: heldMouseButtons,
-                                    wheel: 0
-                                )
-                            },
-                            onSingleTap: {
-                                pulseMouseButton(1)
-                            },
-                            onTwoFingerTap: {
-                                pulseMouseButton(2)
-                            },
-                            onTwoFingerScroll: { wheelStep in
-                                HengeVMBridge.shared.sendPointerNormX(
-                                    cursorNormX,
-                                    normY: cursorNormY,
-                                    buttons: heldMouseButtons,
-                                    wheel: wheelStep
-                                )
-                            }
-                        )
-                    )
-            }
-            .padding(.horizontal, 14)
-
-            HStack(spacing: 10) {
-                MouseHoldButton(label: "Left Click", buttonMask: 1, compact: compact) { pressed in
-                    setHeldMouseButton(1, pressed: pressed)
-                }
-                .frame(maxWidth: .infinity)
-
-                MouseHoldButton(label: "Right Click", buttonMask: 2, compact: compact) { pressed in
-                    setHeldMouseButton(2, pressed: pressed)
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, showModifierBar ? 2 : (compact ? 6 : 12))
+            deck6x3Grid(compact: compact)
+                .padding(.horizontal, 10)
+                .padding(.bottom, showModifierBar ? 2 : (compact ? 4 : 10))
 
             if showModifierBar {
                 compactModifierStrip(compact: compact)
@@ -662,116 +599,120 @@ struct SessionView: View {
                 compactModifierStrip(compact: compact)
             }
 
-            GeometryReader { padGeo in
-                let gap: CGFloat = compact ? 4 : 6
-                let w = max(padGeo.size.width, 60)
-                let h = max(padGeo.size.height, 48)
-                let colW = max((w - gap * 5) / 6, 10)
-                let doubleW = colW * 2 + gap
-                let rowH = max((h - gap * 2) / 3, 12)
-                let topH = rowH * 2 + gap
-
-                VStack(spacing: gap) {
-                    // Top 2 rows: [2x2 Left Keys] [2x2 Square Trackpad] [2x2 Arrow Cluster]
-                    HStack(spacing: gap) {
-                        VStack(spacing: gap) {
-                            HStack(spacing: gap) {
-                                deckHoldKey("Esc", usage: 0x29, width: colW, height: rowH, compact: compact)
-                                deckHoldKey("Tab", usage: 0x2B, width: colW, height: rowH, compact: compact)
-                            }
-                            HStack(spacing: gap) {
-                                deckHoldKey("Bck", usage: 0x2A, width: colW, height: rowH, compact: compact)
-                                deckModifierToggle("Alt", isOn: $altActive, width: colW, height: rowH, compact: compact)
-                            }
-                        }
-                        .frame(width: doubleW, height: topH)
-
-                        RoundedRectangle(cornerRadius: compact ? 8 : 12, style: .continuous)
-                            .fill(Color(white: 0.14))
-                            .overlay(
-                                VStack(spacing: compact ? 0 : 2) {
-                                    Text("Trackpad")
-                                        .font(compact ? .caption2.weight(.medium) : .footnote.weight(.medium))
-                                        .foregroundStyle(.secondary)
-                                    if !compact {
-                                        Text("Drag · Tap · 2F Scroll")
-                                            .font(.caption2)
-                                            .foregroundStyle(.tertiary)
-                                            .lineLimit(1)
-                                            .minimumScaleFactor(0.75)
-                                    }
-                                }
-                                .padding(.horizontal, 4)
-                            )
-                            .contentShape(Rectangle())
-                            .overlay(
-                                TrackpadSurfaceRepresentable(
-                                    onRelativeMove: { dx, dy in
-                                        cursorNormX = min(max(cursorNormX + dx, 0), 1)
-                                        cursorNormY = min(max(cursorNormY + dy, 0), 1)
-                                        HengeVMBridge.shared.sendPointerNormX(
-                                            cursorNormX,
-                                            normY: cursorNormY,
-                                            buttons: heldMouseButtons,
-                                            wheel: 0
-                                        )
-                                    },
-                                    onSingleTap: {
-                                        pulseMouseButton(1)
-                                    },
-                                    onTwoFingerTap: {
-                                        pulseMouseButton(2)
-                                    },
-                                    onTwoFingerScroll: { wheelStep in
-                                        HengeVMBridge.shared.sendPointerNormX(
-                                            cursorNormX,
-                                            normY: cursorNormY,
-                                            buttons: heldMouseButtons,
-                                            wheel: wheelStep
-                                        )
-                                    }
-                                )
-                            )
-                            .frame(width: doubleW, height: topH)
-
-                        VStack(spacing: gap) {
-                            HStack(spacing: gap) {
-                                deckHoldKey("↑", usage: 0x52, width: colW, height: rowH, compact: compact)
-                                deckHoldKey("↓", usage: 0x51, width: colW, height: rowH, compact: compact)
-                            }
-                            HStack(spacing: gap) {
-                                deckHoldKey("←", usage: 0x50, width: colW, height: rowH, compact: compact)
-                                deckHoldKey("→", usage: 0x4F, width: colW, height: rowH, compact: compact)
-                            }
-                        }
-                        .frame(width: doubleW, height: topH)
-                    }
-                    .frame(width: w, height: topH)
-
-                    // Bottom row: [Space (1x)] [L (2x)] [R (2x)] [Enter (1x)]
-                    HStack(spacing: gap) {
-                        deckHoldKey("␣", usage: 0x2C, width: colW, height: rowH, compact: compact)
-
-                        MouseHoldButton(label: "L", buttonMask: 1, compact: compact, fillContainer: true) { pressed in
-                            setHeldMouseButton(1, pressed: pressed)
-                        }
-                        .frame(width: doubleW, height: rowH)
-
-                        MouseHoldButton(label: "R", buttonMask: 2, compact: compact, fillContainer: true) { pressed in
-                            setHeldMouseButton(2, pressed: pressed)
-                        }
-                        .frame(width: doubleW, height: rowH)
-
-                        deckHoldKey("↵", usage: 0x28, width: colW, height: rowH, compact: compact)
-                    }
-                    .frame(width: w, height: rowH)
-                }
-                .frame(width: w, height: h)
-            }
-            .padding(.horizontal, 10)
-            .padding(.bottom, compact ? 4 : 8)
+            deck6x3Grid(compact: compact)
+                .padding(.horizontal, 10)
+                .padding(.bottom, compact ? 4 : 8)
         }
         .background(Color(white: 0.08))
+    }
+
+    private func deck6x3Grid(compact: Bool) -> some View {
+        GeometryReader { padGeo in
+            let gap: CGFloat = compact ? 4 : 6
+            let w = max(padGeo.size.width, 60)
+            let h = max(padGeo.size.height, 48)
+            let colW = max((w - gap * 5) / 6, 10)
+            let doubleW = colW * 2 + gap
+            let rowH = max((h - gap * 2) / 3, 12)
+            let topH = rowH * 2 + gap
+
+            VStack(spacing: gap) {
+                // Top 2 rows: [2x2 Left Keys] [2x2 Square Trackpad] [2x2 Arrow Cluster]
+                HStack(spacing: gap) {
+                    VStack(spacing: gap) {
+                        HStack(spacing: gap) {
+                            deckHoldKey("Esc", usage: 0x29, width: colW, height: rowH, compact: compact)
+                            deckHoldKey("Tab", usage: 0x2B, width: colW, height: rowH, compact: compact)
+                        }
+                        HStack(spacing: gap) {
+                            deckHoldKey("Bck", usage: 0x2A, width: colW, height: rowH, compact: compact)
+                            deckModifierToggle("Alt", isOn: $altActive, width: colW, height: rowH, compact: compact)
+                        }
+                    }
+                    .frame(width: doubleW, height: topH)
+
+                    RoundedRectangle(cornerRadius: compact ? 8 : 12, style: .continuous)
+                        .fill(Color(white: 0.14))
+                        .overlay(
+                            VStack(spacing: compact ? 0 : 2) {
+                                Text("Trackpad")
+                                    .font(compact ? .caption2.weight(.medium) : .footnote.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                if !compact {
+                                    Text("Drag · Tap · 2F Scroll")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.75)
+                                }
+                            }
+                            .padding(.horizontal, 4)
+                        )
+                        .contentShape(Rectangle())
+                        .overlay(
+                            TrackpadSurfaceRepresentable(
+                                onRelativeMove: { dx, dy in
+                                    cursorNormX = min(max(cursorNormX + dx, 0), 1)
+                                    cursorNormY = min(max(cursorNormY + dy, 0), 1)
+                                    HengeVMBridge.shared.sendPointerNormX(
+                                        cursorNormX,
+                                        normY: cursorNormY,
+                                        buttons: heldMouseButtons,
+                                        wheel: 0
+                                    )
+                                },
+                                onSingleTap: {
+                                    pulseMouseButton(1)
+                                },
+                                onTwoFingerTap: {
+                                    pulseMouseButton(2)
+                                },
+                                onTwoFingerScroll: { wheelStep in
+                                    HengeVMBridge.shared.sendPointerNormX(
+                                        cursorNormX,
+                                        normY: cursorNormY,
+                                        buttons: heldMouseButtons,
+                                        wheel: wheelStep
+                                    )
+                                }
+                            )
+                        )
+                        .frame(width: doubleW, height: topH)
+
+                    VStack(spacing: gap) {
+                        HStack(spacing: gap) {
+                            deckHoldKey("↑", usage: 0x52, width: colW, height: rowH, compact: compact)
+                            deckHoldKey("↓", usage: 0x51, width: colW, height: rowH, compact: compact)
+                        }
+                        HStack(spacing: gap) {
+                            deckHoldKey("←", usage: 0x50, width: colW, height: rowH, compact: compact)
+                            deckHoldKey("→", usage: 0x4F, width: colW, height: rowH, compact: compact)
+                        }
+                    }
+                    .frame(width: doubleW, height: topH)
+                }
+                .frame(width: w, height: topH)
+
+                // Bottom row: [Space (1x)] [L (2x)] [R (2x)] [Enter (1x)]
+                HStack(spacing: gap) {
+                    deckHoldKey("␣", usage: 0x2C, width: colW, height: rowH, compact: compact)
+
+                    MouseHoldButton(label: "L", buttonMask: 1, compact: compact, fillContainer: true) { pressed in
+                        setHeldMouseButton(1, pressed: pressed)
+                    }
+                    .frame(width: doubleW, height: rowH)
+
+                    MouseHoldButton(label: "R", buttonMask: 2, compact: compact, fillContainer: true) { pressed in
+                        setHeldMouseButton(2, pressed: pressed)
+                    }
+                    .frame(width: doubleW, height: rowH)
+
+                    deckHoldKey("↵", usage: 0x28, width: colW, height: rowH, compact: compact)
+                }
+                .frame(width: w, height: rowH)
+            }
+            .frame(width: w, height: h)
+        }
     }
 
     private func deckHoldKey(_ label: String, usage: UInt8, width: CGFloat, height: CGFloat, compact: Bool) -> some View {
@@ -1929,9 +1870,6 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
             DispatchQueue.main.async {
                 uiView.setNeedsLayout()
             }
-        }
-        if let metalLayer = uiView.metalLayer {
-            ExternalDisplayManager.shared.registerLocalDisplayLayer(metalLayer)
         }
         if let pasteID = pendingPasteID,
            let pasteText = pendingPasteText,

@@ -296,15 +296,12 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
         """- (void)tick {
     @autoreleasepool {""",
         """- (void)tick {
-    hengelinux_render_lock();
-    if (!hengelinux_is_render_paused()) {
-        @try {
-            [self _hengeUnlockedTick];
-        } @catch (NSException *ex) {
-            (void)ex;
-        }
+    if (hengelinux_is_render_paused()) return;
+    @try {
+        [self _hengeUnlockedTick];
+    } @catch (NSException *ex) {
+        (void)ex;
     }
-    hengelinux_render_unlock();
 }
 
 - (void)_hengeUnlockedTick {
@@ -386,112 +383,131 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
         lastDrawableSize = dsize;
         atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
         os_unfair_lock_unlock(&lock);""",
-        """        if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
-        if (!px || w < 4 || h < 4 || w > 8192 || h > 8192 || stride < w * 4u) return;
+        """        BOOL renderLocked = NO;
+        BOOL unfairLocked = NO;
+        dispatch_semaphore_t sem = nil;
+        BOOL semAcquired = NO;
+        @try {
+            hengelinux_render_lock();
+            renderLocked = YES;
+            if (hengelinux_is_render_paused() || !fb) return;
+            if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
+            if (!px || w < 4 || h < 4 || w > 8192 || h > 8192 || stride < w * 4u) return;
 
-        os_unfair_lock_lock(&lock);
-        CAMetalLayer *curLayer = layer;
-        if (!curLayer || !device || !pipeline || !queue) {
+            os_unfair_lock_lock(&lock);
+            unfairLocked = YES;
+            CAMetalLayer *curLayer = layer;
+            if (!curLayer || curLayer.hidden || !device || !pipeline || !queue) return;
+
+            CGSize dsize = curLayer.drawableSize;
+            if (dsize.width < 4 || dsize.height < 4) return;
+
+            uint32_t parity = hashParity & 1u;
+            hashParity++;
+            uint64_t hval = quick_frame_hash_parity(px, w, h, stride, parity);
+            uint64_t prevHash = parity ? lastHashOdd : lastHashEven;
+            BOOL sizeChanged = !CGSizeEqualToSize(dsize, lastDrawableSize);
+            if (hval == prevHash && !sizeChanged && texW == w && texH == h) return;
+
+            /* Non-blocking GPU backpressure: cap in-flight command buffers at 2 so
+             * rapid guest redraws never saturate CoreAnimation or stall the UI. */
+            sem = inFlightSem;
+            if (sem) {
+                if (dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW) != 0) return;
+                semAcquired = YES;
+            }
+
+            if (!texture || texW != w || texH != h) {
+                MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                              width:w
+                                                                                             height:h
+                                                                                          mipmapped:NO];
+                td.usage = MTLTextureUsageShaderRead;
+                texture = [device newTextureWithDescriptor:td];
+                if (!texture) {
+                    texW = 0;
+                    texH = 0;
+                    return;
+                }
+                texW = w;
+                texH = h;
+            }
+
+            [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+                       mipmapLevel:0
+                         withBytes:px
+                       bytesPerRow:stride];
+
+            id<MTLTexture> uploadTex = texture;
+
+            /* Release both locks before calling CAMetalLayer.nextDrawable() so
+             * Main Thread willResignActive / HDMI hotplug / rotation never AB-BA
+             * deadlocks waiting on hengelinux_render_lock() or p->lock. */
             os_unfair_lock_unlock(&lock);
-            return;
-        }
+            unfairLocked = NO;
+            hengelinux_render_unlock();
+            renderLocked = NO;
 
-        CGSize dsize = curLayer.drawableSize;
-        if (dsize.width < 4 || dsize.height < 4) {
-            os_unfair_lock_unlock(&lock);
-            return;
-        }
-
-        uint32_t parity = hashParity & 1u;
-        hashParity++;
-        uint64_t hval = quick_frame_hash_parity(px, w, h, stride, parity);
-        uint64_t prevHash = parity ? lastHashOdd : lastHashEven;
-        BOOL sizeChanged = !CGSizeEqualToSize(dsize, lastDrawableSize);
-        if (hval == prevHash && !sizeChanged && texW == w && texH == h) {
-            os_unfair_lock_unlock(&lock);
-            return;
-        }
-
-        /* Non-blocking GPU backpressure: cap in-flight command buffers at 2 so
-         * rapid guest redraws never saturate CoreAnimation or stall the UI. */
-        dispatch_semaphore_t sem = inFlightSem;
-        if (sem && dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW) != 0) {
-            os_unfair_lock_unlock(&lock);
-            return;
-        }
-
-        if (!texture || texW != w || texH != h) {
-            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                                                          width:w
-                                                                                         height:h
-                                                                                      mipmapped:NO];
-            td.usage = MTLTextureUsageShaderRead;
-            texture = [device newTextureWithDescriptor:td];
-            if (!texture) {
-                texW = 0;
-                texH = 0;
-                if (sem) dispatch_semaphore_signal(sem);
-                os_unfair_lock_unlock(&lock);
+            id<CAMetalDrawable> drawable = [curLayer nextDrawable];
+            if (!drawable || !drawable.texture || drawable.texture.width < 4 || drawable.texture.height < 4) {
                 return;
             }
-            texW = w;
-            texH = h;
-        }
 
-        id<CAMetalDrawable> drawable = [curLayer nextDrawable];
-        if (!drawable || !drawable.texture || drawable.texture.width < 4 || drawable.texture.height < 4) {
-            if (sem) dispatch_semaphore_signal(sem);
-            os_unfair_lock_unlock(&lock);
-            return;
-        }
+            hengelinux_render_lock();
+            renderLocked = YES;
+            if (hengelinux_is_render_paused()) return;
 
-        [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
-                   mipmapLevel:0
-                     withBytes:px
-                   bytesPerRow:stride];
+            os_unfair_lock_lock(&lock);
+            unfairLocked = YES;
+            if (!fb || layer != curLayer || curLayer.hidden || texture != uploadTex || !queue || !pipeline) {
+                return;
+            }
 
-        CGSize actualSize = CGSizeMake((CGFloat)drawable.texture.width, (CGFloat)drawable.texture.height);
-        float dstAspect = (float)(actualSize.width / actualSize.height);
-        float srcAspect = (float)w / (float)h;
-        float scale[2] = {1.0f, 1.0f};
-        if (dstAspect > srcAspect) {
-            scale[0] = srcAspect / dstAspect;
-        } else {
-            scale[1] = dstAspect / srcAspect;
-        }
+            CGSize actualSize = CGSizeMake((CGFloat)drawable.texture.width, (CGFloat)drawable.texture.height);
+            float dstAspect = (float)(actualSize.width / actualSize.height);
+            float srcAspect = (float)w / (float)h;
+            float scale[2] = {1.0f, 1.0f};
+            if (dstAspect > srcAspect) {
+                scale[0] = srcAspect / dstAspect;
+            } else {
+                scale[1] = dstAspect / srcAspect;
+            }
 
-        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
-        rp.colorAttachments[0].texture = drawable.texture;
-        rp.colorAttachments[0].loadAction = MTLLoadActionClear;
-        rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
-        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            rp.colorAttachments[0].texture = drawable.texture;
+            rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+            rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
 
-        id<MTLCommandBuffer> cb = [queue commandBuffer];
-        id<MTLRenderCommandEncoder> enc = cb ? [cb renderCommandEncoderWithDescriptor:rp] : nil;
-        if (!cb || !enc) {
-            if (sem) dispatch_semaphore_signal(sem);
-            os_unfair_lock_unlock(&lock);
-            return;
-        }
-        [enc setRenderPipelineState:pipeline];
-        [enc setVertexBytes:scale length:sizeof(scale) atIndex:0];
-        [enc setFragmentTexture:texture atIndex:0];
-        [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
-        [enc endEncoding];
-        if (sem) {
-            [cb addCompletedHandler:^(__unused id<MTLCommandBuffer> buf) {
-                dispatch_semaphore_signal(sem);
-            }];
-        }
-        [cb presentDrawable:drawable];
-        [cb commit];
+            id<MTLCommandBuffer> cb = [queue commandBuffer];
+            id<MTLRenderCommandEncoder> enc = cb ? [cb renderCommandEncoderWithDescriptor:rp] : nil;
+            if (!cb || !enc) return;
 
-        if (parity) lastHashOdd = hval;
-        else lastHashEven = hval;
-        lastDrawableSize = dsize;
-        hengelinux_set_presented_fb_size(w, h);
-        atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
-        os_unfair_lock_unlock(&lock);""",
+            [enc setRenderPipelineState:pipeline];
+            [enc setVertexBytes:scale length:sizeof(scale) atIndex:0];
+            [enc setFragmentTexture:uploadTex atIndex:0];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+            [enc endEncoding];
+            if (sem && semAcquired) {
+                dispatch_semaphore_t cbSem = sem;
+                [cb addCompletedHandler:^(__unused id<MTLCommandBuffer> buf) {
+                    dispatch_semaphore_signal(cbSem);
+                }];
+                semAcquired = NO;
+            }
+            [cb presentDrawable:drawable];
+            [cb commit];
+
+            if (parity) lastHashOdd = hval;
+            else lastHashEven = hval;
+            lastDrawableSize = dsize;
+            hengelinux_set_presented_fb_size(w, h);
+            atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
+        } @finally {
+            if (unfairLocked) os_unfair_lock_unlock(&lock);
+            if (renderLocked) hengelinux_render_unlock();
+            if (semAcquired && sem) dispatch_semaphore_signal(sem);
+        }""",
     )
     patch_file(
         fb_metal_m,

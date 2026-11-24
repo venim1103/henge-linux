@@ -414,7 +414,9 @@ struct HengeLinuxApp: App {
             }
             .onChange(of: isRunning) { _, running in
                 UIApplication.shared.isIdleTimerDisabled = running
-                externalDisplay.setVMRunning(running)
+                if externalDisplay.isVMRunning != running {
+                    externalDisplay.setVMRunning(running)
+                }
             }
             .onOpenURL { url in
                 do {
@@ -917,6 +919,7 @@ struct HengeLinuxApp: App {
                                 return
                             }
                             let gpuMode: Int32 = jitClient.gpuBackend.modeCode
+                            externalDisplay.setVMRunning(true)
                             do {
                                 try HengeVMBridge.shared.startGuest(
                                     atMachineDir: machineDir.path,
@@ -940,6 +943,7 @@ struct HengeLinuxApp: App {
                                 bootErrorAlert = nil
                                 isRunning = true
                             } catch {
+                                externalDisplay.setVMRunning(false)
                                 bootWarning = error.localizedDescription
                                 bootErrorAlert = error.localizedDescription
                                 isRunning = false

@@ -86,6 +86,7 @@ enum OLEDAutoDimOption: Int, CaseIterable, Identifiable, Sendable {
 /// USB-C / HDMI / AirPlay display scene.
 final class ExternalDisplaySurfaceView: UIView {
     var onGeometryChanged: ((CGSize) -> Void)?
+    private var lastReportedPixelSize: CGSize = .zero
 
     override class var layerClass: AnyClass {
         CAMetalLayer.self
@@ -145,13 +146,19 @@ final class ExternalDisplaySurfaceView: UIView {
             metalLayer.contentsScale = scale
             metalLayer.drawableSize = target
         }
-        onGeometryChanged?(CGSize(width: bounds.width * scale, height: bounds.height * scale))
+        let nativePx = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
+        if abs(lastReportedPixelSize.width - nativePx.width) >= 2 ||
+           abs(lastReportedPixelSize.height - nativePx.height) >= 2 {
+            lastReportedPixelSize = nativePx
+            onGeometryChanged?(nativePx)
+        }
     }
 }
 
 /// Root view controller hosted inside the external `UIWindowScene`.
 final class ExternalDisplayViewController: UIViewController {
     let surfaceView = ExternalDisplaySurfaceView(frame: .zero)
+    private let standbyContainer = UIView()
     private let statusLabel = UILabel()
 
     override func viewDidLoad() {
@@ -162,19 +169,24 @@ final class ExternalDisplayViewController: UIViewController {
         surfaceView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(surfaceView)
 
+        standbyContainer.frame = view.bounds
+        standbyContainer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        standbyContainer.backgroundColor = .black
+        view.addSubview(standbyContainer)
+
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.font = UIFont.monospacedSystemFont(ofSize: 22, weight: .medium)
         statusLabel.textColor = UIColor(white: 0.72, alpha: 1.0)
         statusLabel.numberOfLines = 0
         statusLabel.textAlignment = .center
         statusLabel.text = "HengeLinux · External Display Connected\nBoot a Linux VM on your iPhone"
-        view.addSubview(statusLabel)
+        standbyContainer.addSubview(statusLabel)
 
         NSLayoutConstraint.activate([
-            statusLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            statusLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 40),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -40),
+            statusLabel.centerXAnchor.constraint(equalTo: standbyContainer.centerXAnchor),
+            statusLabel.centerYAnchor.constraint(equalTo: standbyContainer.centerYAnchor),
+            statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: standbyContainer.leadingAnchor, constant: 40),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: standbyContainer.trailingAnchor, constant: -40),
         ])
     }
 
@@ -184,13 +196,15 @@ final class ExternalDisplayViewController: UIViewController {
     }
 
     func updateStandbyMessage(_ message: String?) {
+        // Keep `surfaceView` unhidden behind `standbyContainer` so CoreAnimation
+        // keeps its `CAMetalLayer` drawable pool valid across standby transitions.
         if let message, !message.isEmpty {
-            statusLabel.text = message
-            statusLabel.isHidden = false
-            surfaceView.isHidden = true
+            if statusLabel.text != message {
+                statusLabel.text = message
+            }
+            standbyContainer.isHidden = false
         } else {
-            statusLabel.isHidden = true
-            surfaceView.isHidden = false
+            standbyContainer.isHidden = true
             surfaceView.syncDrawableSize()
         }
     }
@@ -255,11 +269,14 @@ final class ExternalDisplayManager: ObservableObject {
     }
 
     func setVMRunning(_ running: Bool) {
-        isVMRunning = running
+        if isVMRunning != running {
+            isVMRunning = running
+        }
         syncActiveDisplayLayer()
     }
 
     func registerLocalDisplayLayer(_ layer: CAMetalLayer?) {
+        guard localDisplayLayer !== layer else { return }
         localDisplayLayer = layer
         syncActiveDisplayLayer()
     }
@@ -288,14 +305,15 @@ final class ExternalDisplayManager: ObservableObject {
     func detachExternalViewController(_ vc: ExternalDisplayViewController) {
         guard externalViewController === vc else { return }
         let extLayer = vc.surfaceView.metalLayer
+        vc.surfaceView.onGeometryChanged = nil
         externalViewController = nil
-        externalNativeSize = .zero
-        isExternalDisplayConnected = false
         if let local = localDisplayLayer {
             HengeVMBridge.shared.attachDisplayLayer(local)
         } else {
             HengeVMBridge.shared.detachDisplayLayer(ifMatching: extLayer)
         }
+        externalNativeSize = .zero
+        isExternalDisplayConnected = false
     }
 
     private func handleExternalGeometryUpdate(_ pixelSize: CGSize) {
@@ -313,8 +331,12 @@ final class ExternalDisplayManager: ObservableObject {
     func applyExternalGuestResolution() {
         guard isRenderingOnExternalDisplay else { return }
         let target = resolutionPreset.resolvedPixelSize(forNativeSize: externalNativeSize)
-        activeExternalGuestWidth = target.width
-        activeExternalGuestHeight = target.height
+        if activeExternalGuestWidth != target.width {
+            activeExternalGuestWidth = target.width
+        }
+        if activeExternalGuestHeight != target.height {
+            activeExternalGuestHeight = target.height
+        }
         HengeVMBridge.shared.updateDisplaySize(
             width: UInt32(target.width),
             height: UInt32(target.height)
@@ -323,20 +345,28 @@ final class ExternalDisplayManager: ObservableObject {
 
     func syncActiveDisplayLayer() {
         if isRenderingOnExternalDisplay, let extVC = externalViewController {
+            let target = resolutionPreset.resolvedPixelSize(forNativeSize: externalNativeSize)
+            if activeExternalGuestWidth != target.width {
+                activeExternalGuestWidth = target.width
+            }
+            if activeExternalGuestHeight != target.height {
+                activeExternalGuestHeight = target.height
+            }
             if isVMRunning {
                 extVC.updateStandbyMessage(nil)
+                if let extLayer = extVC.surfaceView.metalLayer {
+                    HengeVMBridge.shared.attachDisplayLayer(extLayer)
+                }
+                HengeVMBridge.shared.updateDisplaySize(
+                    width: UInt32(target.width),
+                    height: UInt32(target.height)
+                )
             } else {
-                let target = resolutionPreset.resolvedPixelSize(forNativeSize: externalNativeSize)
-                activeExternalGuestWidth = target.width
-                activeExternalGuestHeight = target.height
                 extVC.updateStandbyMessage(
                     "HengeLinux · External Display Ready (\(target.width)×\(target.height))\nBoot a Linux VM on your iPhone"
                 )
+                HengeVMBridge.shared.detachDisplayLayer(ifMatching: extVC.surfaceView.metalLayer)
             }
-            if let extLayer = extVC.surfaceView.metalLayer {
-                HengeVMBridge.shared.attachDisplayLayer(extLayer)
-            }
-            applyExternalGuestResolution()
         } else {
             if let extVC = externalViewController {
                 extVC.updateStandbyMessage(
@@ -347,6 +377,8 @@ final class ExternalDisplayManager: ObservableObject {
             }
             if let local = localDisplayLayer {
                 HengeVMBridge.shared.attachDisplayLayer(local)
+            } else if let extLayer = externalViewController?.surfaceView.metalLayer {
+                HengeVMBridge.shared.detachDisplayLayer(ifMatching: extLayer)
             }
         }
     }
@@ -399,6 +431,7 @@ final class ExternalDisplaySceneDelegate: UIResponder, UIWindowSceneDelegate {
             ExternalDisplayManager.shared.detachExternalViewController(vc)
         }
         displayViewController = nil
+        window?.rootViewController = nil
         window?.isHidden = true
         window = nil
     }
