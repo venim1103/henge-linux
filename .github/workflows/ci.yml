@@ -63,10 +63,11 @@ jobs:
           ./build/henge-guest-agent-musl --version
           sh -n guest/install.sh
           sh guest/install.sh --dry-run
-          python3 -m py_compile guest/henge-xdg-open scripts/apply_upstream_patches.py
+          python3 -m py_compile guest/henge-xdg-open scripts/apply_upstream_patches.py scripts/patch_gpu_deps.py
           bash -n guest/setup-arch-bridge.sh
           bash -n scripts/sync_upstream.sh
           bash -n scripts/build_ios_deps.sh
+          bash -n scripts/build_ios_gpu_deps.sh
           bash -n scripts/provision_archlinux_arm64.sh
           bash -n scripts/build_prebuilt_archlinux_arm64.sh
           bash -n scripts/build_guest_image.sh
@@ -106,7 +107,7 @@ jobs:
     name: iOS Unsigned IPA Build (macOS)
     needs: [guest-agent-arm64]
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Download static ARM64 guest agent into app bundle resources
@@ -122,17 +123,22 @@ jobs:
           xcodebuild -version | tee .xcode-version
       - name: Install XcodeGen & iOS static dependency build tools
         run: |
-          brew install xcodegen meson ninja pkg-config
-          brew list --versions xcodegen meson ninja pkg-config
+          brew install xcodegen meson ninja pkg-config scons
+          brew list --versions xcodegen meson ninja pkg-config scons
       - name: Sync & patch upstream WindowsiOS engine
         run: bash scripts/sync_upstream.sh
-      - name: Restore cached iOS static dependencies (libffi, glib, libslirp)
+      - name: Restore cached iOS static dependencies (libffi, glib, libslirp, zstd)
         uses: actions/cache@3edfce9056124e459a23f683a21433670d47daca # @actions/cache 6.2.0
         with:
           path: .upstream/WindowsiOS/ios/deps
           key: ios-arm64-deps-ios18-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/sync_upstream.sh', 'scripts/build_ios_deps.sh') }}
-      - name: Build or validate iOS static dependencies (libffi, glib, libslirp)
-        run: IOS_MIN_VERSION=18.0 bash scripts/build_ios_deps.sh
+      - name: Restore cached iOS static 3D GPU dependencies (ANGLE, libepoxy, virglrenderer)
+        uses: actions/cache@3edfce9056124e459a23f683a21433670d47daca # @actions/cache 6.2.0
+        with:
+          path: .upstream/WindowsiOS/ios/gpu-deps
+          key: ios-arm64-gpu-deps-ios18-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/build_ios_gpu_deps.sh', 'scripts/patch_gpu_deps.py') }}
+      - name: Build or validate iOS static dependencies (base + 3D GPU stack)
+        run: BUILD_GPU_DEPS=1 IOS_MIN_VERSION=18.0 bash scripts/build_ios_deps.sh
       - name: Run macOS platform tests & build full ios-lib
         run: make REQUIRE_UPSTREAM=1 IOS_MIN_VERSION=18.0 test-core hvsparse ios-lib
       - name: Generate Xcode project

@@ -13,8 +13,8 @@ settings:
     SWIFT_VERSION: "6.0"
     CLANG_C_LANGUAGE_STANDARD: c11
     CLANG_CXX_LANGUAGE_STANDARD: c++20
-    MARKETING_VERSION: "0.2.5"
-    CURRENT_PROJECT_VERSION: "7"
+    MARKETING_VERSION: "0.3.0"
+    CURRENT_PROJECT_VERSION: "8"
     HENGE_GIT_COMMIT: "local"
     HENGE_BUILD_CHANNEL: "Local"
     HENGE_BUILD_DATE: "Local"
@@ -33,6 +33,8 @@ settings:
       - "$(SRCROOT)/../.upstream/WindowsiOS/ios/deps/include/slirp"
       - "$(SRCROOT)/../.upstream/WindowsiOS/ios/deps/include/glib-2.0"
       - "$(SRCROOT)/../.upstream/WindowsiOS/ios/deps/lib/glib-2.0/include"
+      - "$(SRCROOT)/../.upstream/WindowsiOS/ios/gpu-deps/include"
+      - "$(SRCROOT)/../.upstream/WindowsiOS/ios/gpu-deps/include/virgl"
 
 targets:
   HengeLinuxJITExtension:
@@ -149,9 +151,14 @@ targets:
           - "$(inherited)"
           - "$(SRCROOT)/../build/ios"
           - "$(SRCROOT)/../.upstream/WindowsiOS/ios/deps/lib"
+          - "$(SRCROOT)/../.upstream/WindowsiOS/ios/gpu-deps/lib"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-lhengelinux"
+          - "-lvirglrenderer"
+          - "-lepoxy"
+          - "-lEGL"
+          - "-lGLESv2"
           - "-lslirp"
           - "-lglib-2.0"
           - "-lintl"
@@ -161,6 +168,7 @@ targets:
           - "-liconv"
           - "-lz"
           - "-lzstd"
+          - "-lc++"
           - "-framework"
           - "AudioToolbox"
           - "-framework"
@@ -171,6 +179,10 @@ targets:
           - "IOSurface"
           - "-framework"
           - "CoreFoundation"
+          - "-framework"
+          - "Foundation"
+          - "-framework"
+          - "CoreGraphics"
           - "-framework"
           - "QuartzCore"
           - "-framework"

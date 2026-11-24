@@ -19,10 +19,68 @@
 #include <virglrenderer.h>
 #define HENGE_WORKER_HAS_VIRGL 1
 #endif
+#if __has_include(<EGL/egl.h>) && __has_include(<EGL/eglext.h>) && __has_include(<GLES3/gl3.h>)
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES3/gl3.h>
+#define HENGE_WORKER_HAS_ANGLE_EGL 1
+#endif
 #endif
 
 #ifndef HENGE_WORKER_HAS_VIRGL
 #define HENGE_WORKER_HAS_VIRGL 0
+#endif
+#ifndef HENGE_WORKER_HAS_ANGLE_EGL
+#define HENGE_WORKER_HAS_ANGLE_EGL 0
+#endif
+
+#if HENGE_WORKER_HAS_ANGLE_EGL
+#ifndef EGL_PLATFORM_ANGLE_ANGLE
+#define EGL_PLATFORM_ANGLE_ANGLE 0x3202
+#endif
+#ifndef EGL_PLATFORM_ANGLE_TYPE_ANGLE
+#define EGL_PLATFORM_ANGLE_TYPE_ANGLE 0x3203
+#endif
+#ifndef EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE
+#define EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE 0x3489
+#endif
+#ifndef EGL_IOSURFACE_ANGLE
+#define EGL_IOSURFACE_ANGLE 0x3454
+#endif
+#ifndef EGL_IOSURFACE_PLANE_ANGLE
+#define EGL_IOSURFACE_PLANE_ANGLE 0x345A
+#endif
+#ifndef EGL_TEXTURE_INTERNAL_FORMAT_ANGLE
+#define EGL_TEXTURE_INTERNAL_FORMAT_ANGLE 0x345D
+#endif
+#ifndef EGL_TEXTURE_TYPE_ANGLE
+#define EGL_TEXTURE_TYPE_ANGLE 0x345C
+#endif
+#ifndef EGL_SYNC_METAL_SHARED_EVENT_ANGLE
+#define EGL_SYNC_METAL_SHARED_EVENT_ANGLE 0x34D8
+#endif
+#ifndef EGL_SYNC_METAL_SHARED_EVENT_SIGNALED_VALUE_LO_ANGLE
+#define EGL_SYNC_METAL_SHARED_EVENT_SIGNALED_VALUE_LO_ANGLE 0x34DB
+#endif
+#ifndef EGL_SYNC_METAL_SHARED_EVENT_SIGNALED_VALUE_HI_ANGLE
+#define EGL_SYNC_METAL_SHARED_EVENT_SIGNALED_VALUE_HI_ANGLE 0x34DC
+#endif
+#ifndef GL_BGRA_EXT
+#define GL_BGRA_EXT 0x80E1
+#endif
+typedef void (*HengeEglSetBlobCacheFuncsFn)(EGLDisplay dpy,
+                                            EGLSetBlobFuncANDROID set,
+                                            EGLGetBlobFuncANDROID get);
+typedef void *(*HengeEglCopyMetalSharedEventFn)(EGLDisplay dpy, EGLSync sync);
+
+typedef struct {
+    void      *iosurface_ref;
+    EGLSurface pbuffer;
+    GLuint     tex_id;
+    GLuint     fbo_id;
+    uint32_t   width;
+    uint32_t   height;
+} HengeAngleSurfaceBinding;
 #endif
 
 #define HENGE_VIRGL_MAX_QUEUE_DEPTH 4096U
@@ -114,6 +172,15 @@ struct HengeVirglWorker {
 
 #if HENGE_WORKER_HAS_VIRGL
     HengeVirglIovEntry      *iov_head;
+#endif
+#if HENGE_WORKER_HAS_VIRGL && HENGE_WORKER_HAS_ANGLE_EGL
+    EGLDisplay               egl_dpy;
+    EGLConfig                egl_cfg;
+    EGLContext               egl_root_ctx;
+    EGLSurface               egl_dummy_surf;
+    GLuint                   blit_src_fbo;
+    HengeEglCopyMetalSharedEventFn egl_copy_shared_event;
+    HengeAngleSurfaceBinding surface_bindings[HENGE_VIRTIO_GPU_MAX_SCANOUTS][HENGE_GPU_SWAPCHAIN_SLOTS];
 #endif
 };
 
@@ -269,6 +336,293 @@ static void virgl_cb_write_fence(void *cookie, uint32_t fence) {
         free_pending_fence(pf);
     }
 }
+
+#if HENGE_WORKER_HAS_ANGLE_EGL
+static void henge_egl_blob_set(const void *key, EGLsizeiANDROID key_size,
+                               const void *value, EGLsizeiANDROID value_size) {
+    if (key != NULL && key_size > 0 && value != NULL && value_size > 0) {
+        (void)henge_shader_cache_put(key, (size_t)key_size, value, (size_t)value_size);
+    }
+}
+
+static EGLsizeiANDROID henge_egl_blob_get(const void *key, EGLsizeiANDROID key_size,
+                                          void *value, EGLsizeiANDROID value_size) {
+    if (key == NULL || key_size <= 0) {
+        return 0;
+    }
+    return (EGLsizeiANDROID)henge_shader_cache_get(
+        key, (size_t)key_size, value, (value_size > 0) ? (size_t)value_size : 0U);
+}
+
+static void angle_release_surface_binding(HengeVirglWorker *w, HengeAngleSurfaceBinding *b) {
+    if (w == NULL || b == NULL) {
+        return;
+    }
+    if (b->fbo_id != 0U) {
+        glDeleteFramebuffers(1, &b->fbo_id);
+        b->fbo_id = 0U;
+    }
+    if (b->pbuffer != EGL_NO_SURFACE && w->egl_dpy != EGL_NO_DISPLAY) {
+        eglReleaseTexImage(w->egl_dpy, b->pbuffer, EGL_BACK_BUFFER);
+        eglDestroySurface(w->egl_dpy, b->pbuffer);
+        b->pbuffer = EGL_NO_SURFACE;
+    }
+    if (b->tex_id != 0U) {
+        glDeleteTextures(1, &b->tex_id);
+        b->tex_id = 0U;
+    }
+    b->iosurface_ref = NULL;
+    b->width = 0U;
+    b->height = 0U;
+}
+
+static void angle_release_all_bindings(HengeVirglWorker *w) {
+    if (w == NULL || w->egl_dpy == EGL_NO_DISPLAY) {
+        return;
+    }
+    if (w->egl_root_ctx != EGL_NO_CONTEXT) {
+        eglMakeCurrent(w->egl_dpy, w->egl_dummy_surf, w->egl_dummy_surf, w->egl_root_ctx);
+    }
+    for (uint32_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+        for (uint32_t i = 0U; i < HENGE_GPU_SWAPCHAIN_SLOTS; i++) {
+            angle_release_surface_binding(w, &w->surface_bindings[s][i]);
+        }
+    }
+}
+
+static bool angle_init_metal_egl(HengeVirglWorker *w) {
+    const EGLAttrib disp_attrs[] = {
+        EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE,
+        EGL_NONE
+    };
+    EGLDisplay dpy = eglGetPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE,
+                                           (void *)(uintptr_t)EGL_DEFAULT_DISPLAY,
+                                           disp_attrs);
+    if (dpy == EGL_NO_DISPLAY) {
+        dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    }
+    if (dpy == EGL_NO_DISPLAY) {
+        return false;
+    }
+    EGLint major = 0, minor = 0;
+    if (!eglInitialize(dpy, &major, &minor)) {
+        return false;
+    }
+    if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+        eglTerminate(dpy);
+        return false;
+    }
+    /* Wire EGL_ANDROID_blob_cache to bounded 64 MiB LRU shader disk cache (Pitfall #2). */
+    HengeEglSetBlobCacheFuncsFn set_blob =
+        (HengeEglSetBlobCacheFuncsFn)eglGetProcAddress("eglSetBlobCacheFuncsANDROID");
+    if (set_blob != NULL && henge_shader_cache_is_ready()) {
+        set_blob(dpy, henge_egl_blob_set, henge_egl_blob_get);
+    }
+
+    const EGLint cfg_attrs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_NONE
+    };
+    EGLConfig cfg = NULL;
+    EGLint num_cfg = 0;
+    if (!eglChooseConfig(dpy, cfg_attrs, &cfg, 1, &num_cfg) || num_cfg < 1) {
+        eglTerminate(dpy);
+        return false;
+    }
+    const EGLint pbuf_attrs[] = { EGL_WIDTH, 16, EGL_HEIGHT, 16, EGL_NONE };
+    EGLSurface dummy = eglCreatePbufferSurface(dpy, cfg, pbuf_attrs);
+    const EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+    EGLContext root_ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attrs);
+    if (root_ctx == EGL_NO_CONTEXT) {
+        if (dummy != EGL_NO_SURFACE) eglDestroySurface(dpy, dummy);
+        eglTerminate(dpy);
+        return false;
+    }
+    if (!eglMakeCurrent(dpy, dummy, dummy, root_ctx)) {
+        eglDestroyContext(dpy, root_ctx);
+        if (dummy != EGL_NO_SURFACE) eglDestroySurface(dpy, dummy);
+        eglTerminate(dpy);
+        return false;
+    }
+    w->egl_dpy = dpy;
+    w->egl_cfg = cfg;
+    w->egl_root_ctx = root_ctx;
+    w->egl_dummy_surf = dummy;
+    w->egl_copy_shared_event =
+        (HengeEglCopyMetalSharedEventFn)eglGetProcAddress("eglCopyMetalSharedEventANGLE");
+    glGenFramebuffers(1, &w->blit_src_fbo);
+    return true;
+}
+
+static void angle_teardown_metal_egl(HengeVirglWorker *w) {
+    if (w == NULL || w->egl_dpy == EGL_NO_DISPLAY) {
+        return;
+    }
+    angle_release_all_bindings(w);
+    if (w->blit_src_fbo != 0U) {
+        glDeleteFramebuffers(1, &w->blit_src_fbo);
+        w->blit_src_fbo = 0U;
+    }
+    eglMakeCurrent(w->egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (w->egl_root_ctx != EGL_NO_CONTEXT) {
+        eglDestroyContext(w->egl_dpy, w->egl_root_ctx);
+        w->egl_root_ctx = EGL_NO_CONTEXT;
+    }
+    if (w->egl_dummy_surf != EGL_NO_SURFACE) {
+        eglDestroySurface(w->egl_dpy, w->egl_dummy_surf);
+        w->egl_dummy_surf = EGL_NO_SURFACE;
+    }
+    eglTerminate(w->egl_dpy);
+    w->egl_dpy = EGL_NO_DISPLAY;
+}
+
+static virgl_renderer_gl_context virgl_cb_create_gl_context(void *cookie,
+                                                            int scanout_idx,
+                                                            struct virgl_renderer_gl_ctx_param *param) {
+    HengeVirglWorker *w = (HengeVirglWorker *)cookie;
+    (void)scanout_idx;
+    if (w == NULL || w->egl_dpy == EGL_NO_DISPLAY) {
+        return NULL;
+    }
+    EGLint major = (param != NULL && param->major_ver >= 2) ? param->major_ver : 3;
+    EGLint minor = (param != NULL && param->minor_ver >= 0) ? param->minor_ver : 0;
+    if (major > 3) {
+        major = 3;
+        minor = 0;
+    }
+    const EGLint attrs[] = {
+        EGL_CONTEXT_MAJOR_VERSION, major,
+        EGL_CONTEXT_MINOR_VERSION, minor,
+        EGL_NONE
+    };
+    EGLContext ctx = eglCreateContext(w->egl_dpy, w->egl_cfg, w->egl_root_ctx, attrs);
+    if (ctx == EGL_NO_CONTEXT) {
+        const EGLint fallback[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+        ctx = eglCreateContext(w->egl_dpy, w->egl_cfg, w->egl_root_ctx, fallback);
+    }
+    return (virgl_renderer_gl_context)ctx;
+}
+
+static void virgl_cb_destroy_gl_context(void *cookie, virgl_renderer_gl_context ctx) {
+    HengeVirglWorker *w = (HengeVirglWorker *)cookie;
+    if (w != NULL && w->egl_dpy != EGL_NO_DISPLAY && ctx != NULL) {
+        eglDestroyContext(w->egl_dpy, (EGLContext)ctx);
+    }
+}
+
+static int virgl_cb_make_current(void *cookie, int scanout_idx, virgl_renderer_gl_context ctx) {
+    HengeVirglWorker *w = (HengeVirglWorker *)cookie;
+    (void)scanout_idx;
+    if (w == NULL || w->egl_dpy == EGL_NO_DISPLAY) {
+        return -1;
+    }
+    EGLContext egl_ctx = (ctx != NULL) ? (EGLContext)ctx : w->egl_root_ctx;
+    EGLSurface surf = (egl_ctx != EGL_NO_CONTEXT) ? w->egl_dummy_surf : EGL_NO_SURFACE;
+    return eglMakeCurrent(w->egl_dpy, surf, surf, egl_ctx) ? 0 : -1;
+}
+
+static bool angle_blit_scanout_to_iosurface(HengeVirglWorker *w,
+                                            uint32_t scanout_id,
+                                            uint32_t slot_idx,
+                                            uint32_t res_id,
+                                            const HengeGpuSwapchainSlot *slot,
+                                            void **out_shared_event,
+                                            uint64_t *out_signal_value) {
+    if (out_shared_event != NULL) *out_shared_event = NULL;
+    if (out_signal_value != NULL) *out_signal_value = 0ULL;
+    if (w == NULL || w->egl_dpy == EGL_NO_DISPLAY || slot == NULL || slot->iosurface == NULL ||
+        scanout_id >= HENGE_VIRTIO_GPU_MAX_SCANOUTS || slot_idx >= HENGE_GPU_SWAPCHAIN_SLOTS) {
+        return false;
+    }
+    struct virgl_renderer_resource_info rinfo;
+    memset(&rinfo, 0, sizeof(rinfo));
+    if (virgl_renderer_resource_get_info((int)res_id, &rinfo) != 0 || rinfo.tex_id == 0U) {
+        return false;
+    }
+
+    if (!eglMakeCurrent(w->egl_dpy, w->egl_dummy_surf, w->egl_dummy_surf, w->egl_root_ctx)) {
+        return false;
+    }
+
+    HengeAngleSurfaceBinding *b = &w->surface_bindings[scanout_id][slot_idx];
+    if (b->iosurface_ref != slot->iosurface || b->width != slot->width || b->height != slot->height) {
+        angle_release_surface_binding(w, b);
+        const EGLint surf_attrs[] = {
+            EGL_WIDTH, (EGLint)slot->width,
+            EGL_HEIGHT, (EGLint)slot->height,
+            EGL_IOSURFACE_PLANE_ANGLE, 0,
+            EGL_TEXTURE_TARGET, EGL_TEXTURE_2D,
+            EGL_TEXTURE_INTERNAL_FORMAT_ANGLE, GL_BGRA_EXT,
+            EGL_TEXTURE_FORMAT, EGL_TEXTURE_RGBA,
+            EGL_TEXTURE_TYPE_ANGLE, GL_UNSIGNED_BYTE,
+            EGL_NONE
+        };
+        EGLSurface pbuf = eglCreatePbufferFromClientBuffer(
+            w->egl_dpy, EGL_IOSURFACE_ANGLE, slot->iosurface, w->egl_cfg, surf_attrs);
+        if (pbuf == EGL_NO_SURFACE) {
+            return false;
+        }
+        GLuint dst_tex = 0U;
+        glGenTextures(1, &dst_tex);
+        glBindTexture(GL_TEXTURE_2D, dst_tex);
+        if (!eglBindTexImage(w->egl_dpy, pbuf, EGL_BACK_BUFFER)) {
+            glDeleteTextures(1, &dst_tex);
+            eglDestroySurface(w->egl_dpy, pbuf);
+            return false;
+        }
+        GLuint dst_fbo = 0U;
+        glGenFramebuffers(1, &dst_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, dst_fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst_tex, 0);
+        b->iosurface_ref = slot->iosurface;
+        b->pbuffer = pbuf;
+        b->tex_id = dst_tex;
+        b->fbo_id = dst_fbo;
+        b->width = slot->width;
+        b->height = slot->height;
+    }
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, w->blit_src_fbo);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rinfo.tex_id, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, b->fbo_id);
+    GLint sw = (rinfo.width > 0U) ? (GLint)rinfo.width : (GLint)slot->width;
+    GLint sh = (rinfo.height > 0U) ? (GLint)rinfo.height : (GLint)slot->height;
+    glBlitFramebuffer(0, 0, sw, sh,
+                      0, 0, (GLint)slot->width, (GLint)slot->height,
+                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+    uint64_t next_sig = ++w->swapchain_signal_seq;
+    void *shared_ev = NULL;
+    if (w->egl_copy_shared_event != NULL) {
+        const EGLAttrib sync_attrs[] = {
+            EGL_SYNC_METAL_SHARED_EVENT_SIGNALED_VALUE_LO_ANGLE, (EGLAttrib)(next_sig & 0xFFFFFFFFULL),
+            EGL_SYNC_METAL_SHARED_EVENT_SIGNALED_VALUE_HI_ANGLE, (EGLAttrib)(next_sig >> 32),
+            EGL_NONE
+        };
+        EGLSync sync = eglCreateSync(w->egl_dpy, EGL_SYNC_METAL_SHARED_EVENT_ANGLE, sync_attrs);
+        if (sync != EGL_NO_SYNC) {
+            glFlush();
+            shared_ev = w->egl_copy_shared_event(w->egl_dpy, sync);
+            eglDestroySync(w->egl_dpy, sync);
+        } else {
+            glFlush();
+        }
+    } else {
+        glFlush();
+    }
+
+    if (out_shared_event != NULL) *out_shared_event = shared_ev;
+    if (out_signal_value != NULL) *out_signal_value = next_sig;
+    return true;
+}
+#endif /* HENGE_WORKER_HAS_ANGLE_EGL */
 #endif /* HENGE_WORKER_HAS_VIRGL */
 
 static void flush_stale_fences(HengeVirglWorker *w, uint64_t min_generation, bool drop_all) {
@@ -816,7 +1170,7 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                         ? virgl_renderer_transfer_write_iov(
                               res_id, node->ctx_id, (int)level, stride, layer_stride, &box, off, NULL, 0U)
                         : virgl_renderer_transfer_read_iov(
-                              res_id, node->ctx_id, level, stride, layer_stride, &box, off, NULL, 0U);
+                              res_id, node->ctx_id, level, stride, layer_stride, &box, off, NULL, 0);
                     if (rc != 0) {
                         resp_type = HENGE_VIRTIO_GPU_RESP_ERR_UNSPEC;
                     }
@@ -846,7 +1200,7 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                             resp_type = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
                         } else {
                             memcpy(aligned_cmd, cmd_buf, cmd_bytes);
-                            if (virgl_renderer_submit_cmd(aligned_cmd, (int)node->ctx_id, cmd_bytes / 4U) != 0) {
+                            if (virgl_renderer_submit_cmd(aligned_cmd, (int)node->ctx_id, (int)(cmd_bytes / 4U)) != 0) {
                                 resp_type = HENGE_VIRTIO_GPU_RESP_ERR_UNSPEC;
                             }
                             free(aligned_cmd);
@@ -905,8 +1259,16 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                                 uint32_t slot_idx = 0U;
                                 HengeGpuSwapchainSlot slot;
                                 if (henge_gpu_swapchain_acquire_back(w->swapchains[s], &slot_idx, &slot) == 0) {
-                                    uint64_t sig = ++w->swapchain_signal_seq;
-                                    (void)henge_gpu_swapchain_publish(w->swapchains[s], slot_idx, NULL, sig, slot.is_srgb);
+                                    void *shared_ev = NULL;
+                                    uint64_t sig = 0ULL;
+#if HENGE_WORKER_HAS_VIRGL && HENGE_WORKER_HAS_ANGLE_EGL
+                                    if (angle_blit_scanout_to_iosurface(w, s, slot_idx, res_id, &slot, &shared_ev, &sig)) {
+                                        (void)henge_gpu_swapchain_publish(w->swapchains[s], slot_idx, shared_ev, sig, slot.is_srgb);
+                                    }
+#else
+                                    sig = ++w->swapchain_signal_seq;
+                                    (void)henge_gpu_swapchain_publish(w->swapchains[s], slot_idx, shared_ev, sig, slot.is_srgb);
+#endif
                                 }
                             }
                         }
@@ -943,11 +1305,26 @@ static void *virgl_worker_thread_main(void *arg) {
         cbs.write_fence = virgl_cb_write_fence;
 
         int flags = VIRGL_RENDERER_USE_GLES |
-                    VIRGL_RENDERER_THREAD_SYNC |
-                    VIRGL_RENDERER_ASYNC_FENCE_CB;
-#ifdef VIRGL_RENDERER_USE_EGL
-        flags |= VIRGL_RENDERER_USE_EGL;
+                    VIRGL_RENDERER_THREAD_SYNC;
+#ifdef VIRGL_RENDERER_ASYNC_FENCE_CB
+        flags |= VIRGL_RENDERER_ASYNC_FENCE_CB;
 #endif
+#if HENGE_WORKER_HAS_ANGLE_EGL
+        bool egl_ok = angle_init_metal_egl(w);
+        if (egl_ok) {
+            cbs.create_gl_context = virgl_cb_create_gl_context;
+            cbs.destroy_gl_context = virgl_cb_destroy_gl_context;
+            cbs.make_current = virgl_cb_make_current;
+        }
+        if (egl_ok && virgl_renderer_init(w, flags, &cbs) == 0) {
+            virgl_ok = true;
+            fprintf(stderr, "virgl-worker: initialized libvirglrenderer + ANGLE Metal on virgl_thread (flags=0x%x, vram=%u MiB)\n",
+                    flags, w->vram_mib);
+        } else {
+            angle_teardown_metal_egl(w);
+            fprintf(stderr, "virgl-worker: ANGLE Metal / virgl_renderer_init failed; staying on 2D KMS fallback\n");
+        }
+#else
         if (virgl_renderer_init(w, flags, &cbs) == 0) {
             virgl_ok = true;
             fprintf(stderr, "virgl-worker: initialized libvirglrenderer on dedicated virgl_thread (flags=0x%x, vram=%u MiB)\n",
@@ -955,6 +1332,7 @@ static void *virgl_worker_thread_main(void *arg) {
         } else {
             fprintf(stderr, "virgl-worker: virgl_renderer_init failed; staying on 2D KMS fallback\n");
         }
+#endif
     }
 #else
     bool virgl_ok = false;
@@ -1011,6 +1389,9 @@ static void *virgl_worker_thread_main(void *arg) {
 
         if (node->kind == HENGE_WORK_RESET) {
             flush_stale_fences(w, node->generation, false);
+#if HENGE_WORKER_HAS_VIRGL && HENGE_WORKER_HAS_ANGLE_EGL
+            angle_release_all_bindings(w);
+#endif
             for (uint32_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
                 if (w->swapchains[s] != NULL) {
                     henge_gpu_swapchain_destroy(w->swapchains[s]);
@@ -1068,6 +1449,9 @@ static void *virgl_worker_thread_main(void *arg) {
         virgl_renderer_cleanup(w);
         virgl_iov_clear_all(w);
     }
+#if HENGE_WORKER_HAS_ANGLE_EGL
+    angle_teardown_metal_egl(w);
+#endif
 #endif
     return NULL;
 }
