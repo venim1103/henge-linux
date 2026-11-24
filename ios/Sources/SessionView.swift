@@ -347,6 +347,7 @@ struct SessionView: View {
             }
             screen.brightness = 0.01
         }
+        externalDisplay.setLocalScreenSaverActive(true)
         withAnimation(.easeInOut(duration: 0.2)) {
             isScreenSaverActive = true
         }
@@ -354,6 +355,7 @@ struct SessionView: View {
 
     private func deactivateScreenSaver() {
         lastUserActivityAt = Date()
+        externalDisplay.setLocalScreenSaverActive(false)
         if let previous = savedScreenBrightness,
            let screen = ExternalDisplayManager.mainApplicationScreen() {
             screen.brightness = previous

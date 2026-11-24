@@ -36,7 +36,6 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
     void *_guestRam;
     size_t _guestRamBytes;
     HengeVirtioGpuConfig _gpuConfig;
-    HengeVirtioGpuDevice *_gpuDevice;
     std::string _codePathStr;
     std::string _varsPathStr;
     std::string _diskPathStr;
@@ -83,7 +82,7 @@ static void henge_on_vm_exit(int reason) {
             : @"Host substrate ready (run sync_upstream.sh + build_ios_deps.sh for full VM)";
         _guestRam = nullptr;
         _guestRamBytes = 0;
-        _gpuDevice = nullptr;
+        std::memset(&_gpuConfig, 0, sizeof(_gpuConfig));
 
         NSURL *docsURL = [self documentsDirectoryURL];
         NSURL *logURL = [docsURL URLByAppendingPathComponent:@"hengelinux-boot.log"];
@@ -107,10 +106,16 @@ static void henge_on_vm_exit(int reason) {
 }
 
 - (BOOL)isVirgl3DActive {
+#if HENGE_HAS_UPSTREAM_ENGINE && defined(HENGE_WINVM_HAS_V5_GPU_CONFIG)
     return _running &&
-           _gpuDevice != nullptr &&
+           _vmCreated &&
+           hv_winvm_virtio_gpu_virgl_ready() != 0 &&
+           henge_virtio_gpu_has_virglrenderer();
+#else
+    return _running &&
            henge_virtio_gpu_supports_virgl(&_gpuConfig) &&
            henge_virtio_gpu_has_virglrenderer();
+#endif
 }
 
 - (BOOL)hasSavedBackgroundSnapshot {
@@ -143,11 +148,19 @@ static void henge_on_vm_exit(int reason) {
 }
 
 - (uint64_t)framesPresented {
-    uint64_t virglFrames = (_gpuDevice != nullptr) ? henge_virtio_gpu_flush_count(_gpuDevice) : 0ULL;
 #if HENGE_HAS_UPSTREAM_ENGINE
-    return _running ? (hv_winvm_display_frames() + virglFrames) : 0ULL;
+    if (!_running) {
+        return 0ULL;
+    }
+    uint64_t metalFrames = hv_winvm_display_frames();
+#if defined(HENGE_WINVM_HAS_V5_GPU_CONFIG)
+    uint64_t vgpuFlushes = hv_winvm_virtio_gpu_flushes();
+    return (metalFrames > 0ULL) ? metalFrames : vgpuFlushes;
 #else
-    return _running ? virglFrames : 0ULL;
+    return metalFrames;
+#endif
+#else
+    return 0ULL;
 #endif
 }
 
@@ -265,12 +278,18 @@ static void henge_on_vm_exit(int reason) {
     }
     _lastDisplayWidth = width;
     _lastDisplayHeight = height;
-    if (_gpuDevice != nullptr) {
-        henge_virtio_gpu_set_display_mode(_gpuDevice, 0U, width, height, true);
-    }
 #if HENGE_HAS_UPSTREAM_ENGINE && defined(HENGE_WINVM_HAS_V4_RESIZE)
     if (_running && _vmCreated) {
         hv_winvm_set_virtio_gpu_size(width, height);
+    }
+#endif
+}
+
+- (void)setDisplayPresentationPaused:(BOOL)paused {
+    hengelinux_set_display_presentation_paused(paused ? true : false);
+#if HENGE_HAS_UPSTREAM_ENGINE && defined(HENGE_WINVM_HAS_V5_GPU_CONFIG)
+    if (!paused && _running && _vmCreated) {
+        hv_winvm_request_display_refresh();
     }
 #endif
 }
@@ -485,16 +504,13 @@ static void henge_on_vm_exit(int reason) {
 
     hengelinux_reset_suspend_counter();
     hengelinux_reset_guest_hid_bridge_ready();
+    hengelinux_set_display_presentation_paused(false);
 
     HengeGpuBackendMode mode = (gpuBackend == 1)
         ? HENGE_GPU_BACKEND_VIRGL_3D
         : HENGE_GPU_BACKEND_GOP_2D;
-    henge_virtio_gpu_init_config(mode, (mode == HENGE_GPU_BACKEND_VIRGL_3D) ? 512U : 128U, &_gpuConfig);
-    if (_gpuDevice != nullptr) {
-        henge_virtio_gpu_destroy(_gpuDevice);
-        _gpuDevice = nullptr;
-    }
-    _gpuDevice = henge_virtio_gpu_create(&_gpuConfig);
+    uint32_t vramMiB = (mode == HENGE_GPU_BACKEND_VIRGL_3D) ? 512U : 128U;
+    henge_virtio_gpu_init_config(mode, vramMiB, &_gpuConfig);
 
     NSURL *docsURL = [self documentsDirectoryURL];
     NSURL *machineDir = [NSURL fileURLWithPath:machineDirPath isDirectory:YES];
@@ -696,6 +712,10 @@ static void henge_on_vm_exit(int reason) {
 #if defined(HENGE_WINVM_HAS_V3_GPU)
     cfg.enable_virtio_gpu = (gpuBackend == 1 || gpuBackend == 2) ? 1 : 0;
 #endif
+#if defined(HENGE_WINVM_HAS_V5_GPU_CONFIG)
+    cfg.gpu_backend_mode = (int)mode;
+    cfg.gpu_vram_mib = _gpuConfig.vram_mib;
+#endif
 #if defined(HENGE_WINVM_HAS_V4_RESIZE)
     cfg.disk1_blk_size = _disk1PathStr.empty() ? 512U : henge_iso_preferred_block_size(_disk1PathStr.c_str());
 #endif
@@ -787,18 +807,20 @@ static void henge_on_vm_exit(int reason) {
     info.ram_mib = _activeRamMiB;
     info.cpu_count = (_activeCpuCount > 0) ? (uint32_t)_activeCpuCount : 4U;
     info.gpu_mode = (uint32_t)_gpuConfig.mode;
-    info.scanout0_res_id = (_gpuDevice != nullptr)
-        ? henge_virtio_gpu_scanout_resource(_gpuDevice, 0U)
-        : 0U;
+#if HENGE_HAS_UPSTREAM_ENGINE && defined(HENGE_WINVM_HAS_V5_GPU_CONFIG)
+    info.scanout0_res_id = _vmCreated ? hv_winvm_virtio_gpu_scanout_res(0U) : 0U;
+    info.gpu_flush_count = _vmCreated ? hv_winvm_virtio_gpu_flushes() : 0ULL;
+#else
+    info.scanout0_res_id = 0U;
+    info.gpu_flush_count = 0ULL;
+#endif
     info.suspend_counter_offset = hengelinux_suspend_counter_offset();
-    info.gpu_flush_count = (_gpuDevice != nullptr)
-        ? henge_virtio_gpu_flush_count(_gpuDevice)
-        : 0ULL;
     return henge_vm_snapshot_write(_snapshotPathStr.c_str(), &info, nullptr, 0U) == 0;
 }
 
 - (void)stopGuest {
     hengelinux_console_append_line("[bridge] stopGuest requested");
+    hengelinux_set_display_presentation_paused(false);
 #if HENGE_HAS_UPSTREAM_ENGINE
     if (_vmCreated) {
         hv_winvm_set_display_layer(nullptr);
@@ -806,10 +828,6 @@ static void henge_on_vm_exit(int reason) {
         hv_winvm_flush_disks();
     }
 #endif
-    if (_gpuDevice != nullptr) {
-        henge_virtio_gpu_destroy(_gpuDevice);
-        _gpuDevice = nullptr;
-    }
     _running = NO;
     _vmCreated = NO;
     _activeRamMiB = 0;

@@ -55,6 +55,8 @@ uint64_t henge_align_guest_ram_bytes(uint32_t requested_mib, uint32_t device_cap
  */
 void hengelinux_set_render_paused(bool paused);
 bool hengelinux_is_render_paused(void);
+void hengelinux_set_display_presentation_paused(bool paused);
+bool hengelinux_is_display_presentation_paused(void);
 void hengelinux_render_lock(void);
 void hengelinux_render_unlock(void);
 

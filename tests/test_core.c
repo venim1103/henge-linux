@@ -457,7 +457,23 @@ static void test_virtio_gpu_backends(void) {
     HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == 0);
     HENGE_CHECK(scan_px != NULL && scan_w == 4U && scan_h == 4U && scan_stride == 16U);
 
-    /* Verify 2D hardware cursor overlay compositing (UPDATE_CURSOR + MOVE_CURSOR + hide). */
+    /* Verify dirty-rect accumulation, unioning, consume-and-clear, and SET_SCANOUT full-dirty flag. */
+    HengeGpuDirtyRect dirty;
+    HENGE_CHECK(henge_virtio_gpu_consume_scanout_dirty(gpu, 0U, &dirty) == 0);
+    HENGE_CHECK(dirty.valid && dirty.full && dirty.x == 0U && dirty.y == 0U &&
+                dirty.width == 4U && dirty.height == 4U);
+    /* Second consume without new transfers reports clean (no upload needed). */
+    HENGE_CHECK(henge_virtio_gpu_consume_scanout_dirty(gpu, 0U, &dirty) == 0);
+    HENGE_CHECK(!dirty.valid && !dirty.full && dirty.width == 0U && dirty.height == 0U);
+    /* Two disjoint TRANSFER_TO_HOST_2D calls union into minimal bounding box (0,0)-(3,3). */
+    HENGE_CHECK(henge_virtio_gpu_transfer_to_host_2d(gpu, 20U, 0U, 0U, 1U, 1U, 0ULL) == 0);
+    HENGE_CHECK(henge_virtio_gpu_transfer_to_host_2d(gpu, 20U, 2U, 2U, 1U, 1U, 40ULL) == 0);
+    HENGE_CHECK(henge_virtio_gpu_consume_scanout_dirty(gpu, 0U, &dirty) == 0);
+    HENGE_CHECK(dirty.valid && !dirty.full && dirty.x == 0U && dirty.y == 0U &&
+                dirty.width == 3U && dirty.height == 3U);
+
+    /* Verify Metal hardware cursor state export (zero CPU compositing into scanout pixels,
+     * texture_gen increments only on UPDATE_CURSOR/transfer, position_gen increments on MOVE_CURSOR). */
     HENGE_CHECK(henge_virtio_gpu_process_ctrl(
         gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 0U, 21U, 0U, 2U, 2U,
         HENGE_VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
@@ -470,15 +486,42 @@ static void test_virtio_gpu_backends(void) {
     };
     HENGE_CHECK(henge_virtio_gpu_attach_backing(gpu, 21U, &cur_backing, 1U) == 0);
     HENGE_CHECK(henge_virtio_gpu_transfer_to_host_2d(gpu, 21U, 0U, 0U, 2U, 2U, 0ULL) == 0);
-    HENGE_CHECK(henge_virtio_gpu_update_cursor(gpu, 0U, 21U, 0U, 0U, 0U, 0U, false) == 0);
+    HENGE_CHECK(henge_virtio_gpu_update_cursor(gpu, 0U, 21U, 10U, 20U, 1U, 2U, false) == 0);
     HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == 0);
-    HENGE_CHECK(scan_px[0] == 0xFFU && scan_px[1] == 0xFFU && scan_px[2] == 0xFFU);
-    HENGE_CHECK(henge_virtio_gpu_update_cursor(gpu, 0U, 0U, 1U, 0U, 0U, 0U, true) == 0);
-    HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == 0);
-    HENGE_CHECK(scan_px[0] == 0x00U && scan_px[4] == 0xFFU && scan_px[5] == 0xFFU && scan_px[6] == 0xFFU);
+    /* Scanout pixel (0,0) remains raw (0x00) because cursor compositing happens on Metal GPU. */
+    HENGE_CHECK(scan_px[0] == 0x00U);
+    HengeGpuCursorState cur_state;
+    HENGE_CHECK(henge_virtio_gpu_get_cursor_state(gpu, 0U, &cur_state) == 0);
+    HENGE_CHECK(cur_state.visible && cur_state.resource_id == 21U && cur_state.pixels != NULL);
+    HENGE_CHECK(cur_state.width == 2U && cur_state.height == 2U && cur_state.stride == 8U);
+    HENGE_CHECK(cur_state.x == 10 && cur_state.y == 20 && cur_state.hot_x == 1 && cur_state.hot_y == 2);
+    HENGE_CHECK(cur_state.pixels[0] == 0xFFU && cur_state.pixels[3] == 0xFFU);
+    uint64_t tex_gen_after_update = cur_state.texture_gen;
+    uint64_t pos_gen_after_update = cur_state.position_gen;
+    /* MOVE_CURSOR updates coordinates and position_gen without bumping texture_gen. */
+    HENGE_CHECK(henge_virtio_gpu_update_cursor(gpu, 0U, 0U, 42U, 84U, 0U, 0U, true) == 0);
+    HENGE_CHECK(henge_virtio_gpu_get_cursor_state(gpu, 0U, &cur_state) == 0);
+    HENGE_CHECK(cur_state.visible && cur_state.resource_id == 21U);
+    HENGE_CHECK(cur_state.x == 42 && cur_state.y == 84 && cur_state.hot_x == 1 && cur_state.hot_y == 2);
+    HENGE_CHECK(cur_state.texture_gen == tex_gen_after_update);
+    HENGE_CHECK(cur_state.position_gen == pos_gen_after_update + 1ULL);
+    /* Hide cursor via UPDATE_CURSOR(resource_id = 0). */
     HENGE_CHECK(henge_virtio_gpu_update_cursor(gpu, 0U, 0U, 0U, 0U, 0U, 0U, false) == 0);
-    HENGE_CHECK(henge_virtio_gpu_get_scanout_frame(gpu, 0U, &scan_px, &scan_w, &scan_h, &scan_stride) == 0);
-    HENGE_CHECK(scan_px[4] == 0x00U);
+    HENGE_CHECK(henge_virtio_gpu_get_cursor_state(gpu, 0U, &cur_state) == 0);
+    HENGE_CHECK(!cur_state.visible && cur_state.resource_id == 0U && cur_state.pixels == NULL);
+    HENGE_CHECK(cur_state.texture_gen == tex_gen_after_update + 1ULL);
+
+    /* Verify unified GPU config inspection and independent display presentation pause gate. */
+    HengeVirtioGpuConfig live_cfg;
+    HENGE_CHECK(henge_virtio_gpu_get_config(gpu, &live_cfg) == 0);
+    HENGE_CHECK(live_cfg.mode == HENGE_GPU_BACKEND_VIRGL_3D && live_cfg.vram_mib == 512U);
+    hengelinux_set_render_paused(false);
+    hengelinux_set_display_presentation_paused(true);
+    HENGE_CHECK(hengelinux_is_display_presentation_paused());
+    HENGE_CHECK(!hengelinux_is_render_paused());
+    hengelinux_set_display_presentation_paused(false);
+    HENGE_CHECK(!hengelinux_is_display_presentation_paused());
+
     HENGE_CHECK(henge_virtio_gpu_process_ctrl(
         gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF, 0U, 21U, 0U, 0U, 0U, 0U, NULL, 0U) ==
         HENGE_VIRTIO_GPU_RESP_OK_NODATA);

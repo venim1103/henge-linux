@@ -195,7 +195,7 @@ static int serve_henge(Conn *c, Request *r) {
         print(f"[patch] {fb_metal_m}: header already applied")
     patch_file(
         fb_metal_m,
-        "inFlightSem;",
+        "cursorPipeline;",
         """    _Atomic(uint64_t) framesPresented;
     uint64_t lastHash;
     CGSize lastDrawableSize;
@@ -204,24 +204,38 @@ static int serve_henge(Conn *c, Request *r) {
     uint64_t lastHashEven;
     uint64_t lastHashOdd;
     uint32_t hashParity;
+    uint64_t lastVgpuEpoch;
+    BOOL vgpuForceFullUpload;
+    id<MTLRenderPipelineState> cursorPipeline;
+    BOOL cursorPipelineFailed;
+    id<MTLTexture> cursorTexture;
+    uint32_t cursorTexW;
+    uint32_t cursorTexH;
+    uint64_t lastCursorTexGen;
+    dispatch_queue_t presentQueue;
+    _Atomic(int) tickInProgress;
+    _Atomic(int) presentScheduled;
+    _Atomic(int) presentPending;
     dispatch_semaphore_t inFlightSem;
     CGSize lastDrawableSize;
 }""",
     )
     patch_file(
         fb_metal_m,
-        "inFlightSem = dispatch_semaphore_create(2);",
+        "presentQueue = dispatch_queue_create(",
         """        fb = display;
         lock = OS_UNFAIR_LOCK_INIT;
         device = MTLCreateSystemDefaultDevice();""",
         """        fb = display;
         lock = OS_UNFAIR_LOCK_INIT;
         inFlightSem = dispatch_semaphore_create(2);
+        vgpuForceFullUpload = YES;
+        presentQueue = dispatch_queue_create("io.hengelinux.fb.present", DISPATCH_QUEUE_SERIAL);
         device = MTLCreateSystemDefaultDevice();""",
     )
     patch_file(
         fb_metal_m,
-        "lastHashEven = 0;",
+        "vgpuForceFullUpload = YES;\n    lastCursorTexGen = 0;",
         """    layer = newLayer;
     lastHash = 0;
     lastDrawableSize = CGSizeZero;""",
@@ -229,6 +243,9 @@ static int serve_henge(Conn *c, Request *r) {
     lastHashEven = 0;
     lastHashOdd = 0;
     hashParity = 0;
+    lastVgpuEpoch = 0;
+    vgpuForceFullUpload = YES;
+    lastCursorTexGen = 0;
     lastDrawableSize = CGSizeZero;""",
     )
     patch_file(
@@ -292,15 +309,111 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
     )
     patch_file(
         fb_metal_m,
-        "_hengeUnlockedTick",
+        "ensureCursorPipelineLocked",
         """- (void)tick {
     @autoreleasepool {""",
-        """- (void)tick {
-    if (hengelinux_is_render_paused()) return;
+        """- (BOOL)ensureCursorPipelineLocked {
+    if (cursorPipeline) return YES;
+    if (cursorPipelineFailed || !device) return NO;
+    static NSString *const kHengeCursorShaderSource =
+        @"#include <metal_stdlib>\\n"
+        @"using namespace metal;\\n"
+        @"struct HengeCursorOut {\\n"
+        @"    float4 pos [[position]];\\n"
+        @"    float2 uv;\\n"
+        @"};\\n"
+        @"vertex HengeCursorOut henge_cursor_vs(uint vid [[vertex_id]],\\n"
+        @"                                      constant float4 *params [[buffer(0)]]) {\\n"
+        @"    float4 rect = params[0];\\n"
+        @"    float4 uvr = params[1];\\n"
+        @"    float2 pos[4] = {\\n"
+        @"        float2(rect.x, rect.y),\\n"
+        @"        float2(rect.z, rect.y),\\n"
+        @"        float2(rect.x, rect.w),\\n"
+        @"        float2(rect.z, rect.w)\\n"
+        @"    };\\n"
+        @"    float2 uv[4] = {\\n"
+        @"        float2(uvr.x, uvr.y),\\n"
+        @"        float2(uvr.z, uvr.y),\\n"
+        @"        float2(uvr.x, uvr.w),\\n"
+        @"        float2(uvr.z, uvr.w)\\n"
+        @"    };\\n"
+        @"    HengeCursorOut o;\\n"
+        @"    o.pos = float4(pos[vid], 0.0f, 1.0f);\\n"
+        @"    o.uv = uv[vid];\\n"
+        @"    return o;\\n"
+        @"}\\n"
+        @"fragment float4 henge_cursor_fs(HengeCursorOut in [[stage_in]],\\n"
+        @"                                texture2d<float> tex [[texture(0)]]) {\\n"
+        @"    constexpr sampler s(mag_filter::linear, min_filter::linear, address::clamp_to_edge);\\n"
+        @"    float4 c = tex.sample(s, in.uv);\\n"
+        @"    float maxRGB = max(c.r, max(c.g, c.b));\\n"
+        @"    if (maxRGB > c.a + 0.004f) {\\n"
+        @"        c.rgb *= c.a;\\n"
+        @"    }\\n"
+        @"    return c;\\n"
+        @"}\\n";
+    NSError *err = nil;
+    id<MTLLibrary> lib = [device newLibraryWithSource:kHengeCursorShaderSource options:nil error:&err];
+    id<MTLFunction> vf = lib ? [lib newFunctionWithName:@"henge_cursor_vs"] : nil;
+    id<MTLFunction> ff = lib ? [lib newFunctionWithName:@"henge_cursor_fs"] : nil;
+    if (!vf || !ff) {
+        cursorPipelineFailed = YES;
+        return NO;
+    }
+    MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = vf;
+    desc.fragmentFunction = ff;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    desc.colorAttachments[0].blendingEnabled = YES;
+    desc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
+    desc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
+    desc.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+    desc.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    desc.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+    desc.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    cursorPipeline = [device newRenderPipelineStateWithDescriptor:desc error:&err];
+    if (!cursorPipeline) {
+        cursorPipelineFailed = YES;
+        return NO;
+    }
+    return YES;
+}
+
+- (void)schedulePresent {
+    if (hengelinux_is_render_paused() || hengelinux_is_display_presentation_paused()) return;
+    if (atomic_exchange_explicit(&presentScheduled, 1, memory_order_acq_rel) != 0) return;
+    dispatch_queue_t q = presentQueue;
+    if (!q) {
+        atomic_store_explicit(&presentScheduled, 0, memory_order_release);
+        return;
+    }
+    __weak HvFbMetalPresenter *weakSelf = self;
+    dispatch_async(q, ^{
+        HvFbMetalPresenter *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        atomic_store_explicit(&strongSelf->presentScheduled, 0, memory_order_release);
+        [strongSelf tick];
+    });
+}
+
+- (void)tick {
+    if (hengelinux_is_render_paused() || hengelinux_is_display_presentation_paused()) return;
+    if (atomic_exchange_explicit(&tickInProgress, 1, memory_order_acq_rel) != 0) {
+        atomic_store_explicit(&presentPending, 1, memory_order_release);
+        return;
+    }
     @try {
         [self _hengeUnlockedTick];
     } @catch (NSException *ex) {
         (void)ex;
+    } @finally {
+        atomic_store_explicit(&tickInProgress, 0, memory_order_release);
+        if (atomic_exchange_explicit(&presentPending, 0, memory_order_acq_rel) != 0 &&
+            !hengelinux_is_render_paused() &&
+            !hengelinux_is_display_presentation_paused()) {
+            [self schedulePresent];
+        }
     }
 }
 
@@ -309,7 +422,7 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
     )
     patch_file(
         fb_metal_m,
-        "addCompletedHandler:",
+        "hv_fb_display_peek_vgpu(",
         """        if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
 
         os_unfair_lock_lock(&lock);
@@ -390,9 +503,13 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
         @try {
             hengelinux_render_lock();
             renderLocked = YES;
-            if (hengelinux_is_render_paused() || !fb) return;
+            if (hengelinux_is_render_paused() || hengelinux_is_display_presentation_paused() || !fb) return;
             if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
             if (!px || w < 4 || h < 4 || w > 8192 || h > 8192 || stride < w * 4u) return;
+
+            HvFbVgpuSnapshot vgpuSnap;
+            memset(&vgpuSnap, 0, sizeof vgpuSnap);
+            BOOL vgpuMode = (hv_fb_display_peek_vgpu(fb, &vgpuSnap) == 0 && vgpuSnap.active != 0);
 
             os_unfair_lock_lock(&lock);
             unfairLocked = YES;
@@ -402,21 +519,39 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
             CGSize dsize = curLayer.drawableSize;
             if (dsize.width < 4 || dsize.height < 4) return;
 
-            uint32_t parity = hashParity & 1u;
-            hashParity++;
-            uint64_t hval = quick_frame_hash_parity(px, w, h, stride, parity);
-            uint64_t prevHash = parity ? lastHashOdd : lastHashEven;
             BOOL sizeChanged = !CGSizeEqualToSize(dsize, lastDrawableSize);
-            if (hval == prevHash && !sizeChanged && texW == w && texH == h) return;
+            uint32_t parity = 0u;
+            uint64_t hval = 0ull;
+
+            if (vgpuMode) {
+                BOOL needsPresent = (vgpuSnap.epoch != lastVgpuEpoch) ||
+                                    sizeChanged || !texture || texW != w || texH != h ||
+                                    vgpuForceFullUpload;
+                if (!needsPresent) return;
+            } else {
+                lastVgpuEpoch = 0ull;
+                vgpuForceFullUpload = YES;
+                parity = hashParity & 1u;
+                hashParity++;
+                hval = quick_frame_hash_parity(px, w, h, stride, parity);
+                uint64_t prevHash = parity ? lastHashOdd : lastHashEven;
+                if (hval == prevHash && !sizeChanged && texW == w && texH == h) return;
+            }
 
             /* Non-blocking GPU backpressure: cap in-flight command buffers at 2 so
              * rapid guest redraws never saturate CoreAnimation or stall the UI. */
             sem = inFlightSem;
             if (sem) {
-                if (dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW) != 0) return;
+                if (dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW) != 0) {
+                    if (vgpuMode) {
+                        atomic_store_explicit(&presentPending, 1, memory_order_release);
+                    }
+                    return;
+                }
                 semAcquired = YES;
             }
 
+            BOOL recreatedTex = NO;
             if (!texture || texW != w || texH != h) {
                 MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                                                               width:w
@@ -431,14 +566,83 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
                 }
                 texW = w;
                 texH = h;
+                recreatedTex = YES;
             }
 
-            [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
-                       mipmapLevel:0
-                         withBytes:px
-                       bytesPerRow:stride];
+            if (vgpuMode) {
+                uint32_t dx = 0u, dy = 0u, dw = 0u, dh = 0u;
+                int dfull = 0;
+                int hasDirty = hv_fb_display_consume_vgpu_dirty(fb, &dx, &dy, &dw, &dh, &dfull);
+                if (recreatedTex || vgpuForceFullUpload || (hasDirty && dfull)) {
+                    [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+                               mipmapLevel:0
+                                 withBytes:px
+                               bytesPerRow:stride];
+                    vgpuForceFullUpload = NO;
+                } else if (hasDirty && dw > 0u && dh > 0u) {
+                    if (dx < w && dy < h) {
+                        if (dw > w - dx) dw = w - dx;
+                        if (dh > h - dy) dh = h - dy;
+                        if (dw > 0u && dh > 0u) {
+                            const uint8_t *src = px + (size_t)dy * stride + (size_t)dx * 4u;
+                            [texture replaceRegion:MTLRegionMake2D(dx, dy, dw, dh)
+                                       mipmapLevel:0
+                                         withBytes:src
+                                       bytesPerRow:stride];
+                        }
+                    }
+                }
+            } else {
+                [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+                           mipmapLevel:0
+                             withBytes:px
+                           bytesPerRow:stride];
+            }
 
             id<MTLTexture> uploadTex = texture;
+            id<MTLTexture> uploadCursorTex = nil;
+            id<MTLRenderPipelineState> curCursorPipe = nil;
+            BOOL drawCursor = NO;
+            uint32_t curW = 0u, curH = 0u;
+            int32_t curX = 0, curY = 0, curHotX = 0, curHotY = 0;
+
+            if (vgpuMode && vgpuSnap.cursor_visible && vgpuSnap.cursor_pixels &&
+                vgpuSnap.cursor_w > 0u && vgpuSnap.cursor_h > 0u &&
+                vgpuSnap.cursor_w <= 256u && vgpuSnap.cursor_h <= 256u &&
+                vgpuSnap.cursor_stride >= vgpuSnap.cursor_w * 4u) {
+                if ([self ensureCursorPipelineLocked]) {
+                    BOOL recreatedCur = NO;
+                    if (!cursorTexture || cursorTexW != vgpuSnap.cursor_w || cursorTexH != vgpuSnap.cursor_h) {
+                        MTLTextureDescriptor *ctd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                                       width:vgpuSnap.cursor_w
+                                                                                                      height:vgpuSnap.cursor_h
+                                                                                                   mipmapped:NO];
+                        ctd.usage = MTLTextureUsageShaderRead;
+                        cursorTexture = [device newTextureWithDescriptor:ctd];
+                        cursorTexW = cursorTexture ? vgpuSnap.cursor_w : 0u;
+                        cursorTexH = cursorTexture ? vgpuSnap.cursor_h : 0u;
+                        recreatedCur = YES;
+                    }
+                    if (cursorTexture) {
+                        if (recreatedCur || lastCursorTexGen != vgpuSnap.cursor_tex_gen) {
+                            [cursorTexture replaceRegion:MTLRegionMake2D(0, 0, vgpuSnap.cursor_w, vgpuSnap.cursor_h)
+                                             mipmapLevel:0
+                                               withBytes:vgpuSnap.cursor_pixels
+                                             bytesPerRow:vgpuSnap.cursor_stride];
+                            lastCursorTexGen = vgpuSnap.cursor_tex_gen;
+                        }
+                        uploadCursorTex = cursorTexture;
+                        curCursorPipe = cursorPipeline;
+                        curW = vgpuSnap.cursor_w;
+                        curH = vgpuSnap.cursor_h;
+                        curX = vgpuSnap.cursor_x;
+                        curY = vgpuSnap.cursor_y;
+                        curHotX = vgpuSnap.cursor_hot_x;
+                        curHotY = vgpuSnap.cursor_hot_y;
+                        drawCursor = YES;
+                    }
+                }
+            }
 
             /* Release both locks before calling CAMetalLayer.nextDrawable() so
              * Main Thread willResignActive / HDMI hotplug / rotation never AB-BA
@@ -455,7 +659,7 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
 
             hengelinux_render_lock();
             renderLocked = YES;
-            if (hengelinux_is_render_paused()) return;
+            if (hengelinux_is_render_paused() || hengelinux_is_display_presentation_paused()) return;
 
             os_unfair_lock_lock(&lock);
             unfairLocked = YES;
@@ -487,19 +691,56 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
             [enc setVertexBytes:scale length:sizeof(scale) atIndex:0];
             [enc setFragmentTexture:uploadTex atIndex:0];
             [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+
+            if (drawCursor && uploadCursorTex && curCursorPipe && curW > 0u && curH > 0u) {
+                float gx0 = (float)(curX - curHotX);
+                float gy0 = (float)(curY - curHotY);
+                float gx1 = gx0 + (float)curW;
+                float gy1 = gy0 + (float)curH;
+                float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
+                if (gx0 < 0.0f) { u0 = -gx0 / (float)curW; gx0 = 0.0f; }
+                if (gy0 < 0.0f) { v0 = -gy0 / (float)curH; gy0 = 0.0f; }
+                if (gx1 > (float)w) { u1 = 1.0f - (gx1 - (float)w) / (float)curW; gx1 = (float)w; }
+                if (gy1 > (float)h) { v1 = 1.0f - (gy1 - (float)h) / (float)curH; gy1 = (float)h; }
+                if (gx1 > gx0 && gy1 > gy0) {
+                    float ndcLeft = ((gx0 / (float)w) * 2.0f - 1.0f) * scale[0];
+                    float ndcRight = ((gx1 / (float)w) * 2.0f - 1.0f) * scale[0];
+                    float ndcTop = (1.0f - (gy0 / (float)h) * 2.0f) * scale[1];
+                    float ndcBottom = (1.0f - (gy1 / (float)h) * 2.0f) * scale[1];
+                    float cursorParams[8] = {
+                        ndcLeft, ndcTop, ndcRight, ndcBottom,
+                        u0, v0, u1, v1
+                    };
+                    [enc setRenderPipelineState:curCursorPipe];
+                    [enc setVertexBytes:cursorParams length:sizeof(cursorParams) atIndex:0];
+                    [enc setFragmentTexture:uploadCursorTex atIndex:0];
+                    [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+                }
+            }
+
             [enc endEncoding];
             if (sem && semAcquired) {
                 dispatch_semaphore_t cbSem = sem;
+                __weak HvFbMetalPresenter *weakSelf = self;
                 [cb addCompletedHandler:^(__unused id<MTLCommandBuffer> buf) {
                     dispatch_semaphore_signal(cbSem);
+                    HvFbMetalPresenter *strongSelf = weakSelf;
+                    if (strongSelf &&
+                        atomic_exchange_explicit(&strongSelf->presentPending, 0, memory_order_acq_rel) != 0) {
+                        [strongSelf schedulePresent];
+                    }
                 }];
                 semAcquired = NO;
             }
             [cb presentDrawable:drawable];
             [cb commit];
 
-            if (parity) lastHashOdd = hval;
-            else lastHashEven = hval;
+            if (vgpuMode) {
+                lastVgpuEpoch = vgpuSnap.epoch;
+            } else {
+                if (parity) lastHashOdd = hval;
+                else lastHashEven = hval;
+            }
             lastDrawableSize = dsize;
             hengelinux_set_presented_fb_size(w, h);
             atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
@@ -511,7 +752,7 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
     )
     patch_file(
         fb_metal_m,
-        "void hv_fb_metal_destroy(",
+        "void hv_fb_metal_notify_present(",
         """void hv_fb_metal_set_layer(HvFbDisplay *fb, void *ca_metal_layer) {
     HvFbMetalPresenter *p = ensure_presenter(fb);
     if (!p) return;
@@ -523,6 +764,16 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
     HvFbMetalPresenter *p = ensure_presenter(fb);
     if (!p) return;
     [p setTargetLayer:(__bridge CAMetalLayer *)ca_metal_layer];
+}
+
+void hv_fb_metal_notify_present(HvFbDisplay *fb) {
+    if (!fb || hengelinux_is_render_paused() || hengelinux_is_display_presentation_paused()) return;
+    pthread_mutex_lock(&fb->mu);
+    HvFbMetalPresenter *p = (__bridge HvFbMetalPresenter *)fb->metal;
+    pthread_mutex_unlock(&fb->mu);
+    if (p) {
+        [p schedulePresent];
+    }
 }
 
 void hv_fb_metal_destroy(HvFbDisplay *fb) {
@@ -538,6 +789,12 @@ void hv_fb_metal_destroy(HvFbDisplay *fb) {
         p->texture = nil;
         p->texW = 0;
         p->texH = 0;
+        p->cursorTexture = nil;
+        p->cursorTexW = 0;
+        p->cursorTexH = 0;
+        p->cursorPipeline = nil;
+        p->lastCursorTexGen = 0;
+        p->presentQueue = nil;
         p->fb = NULL;
         os_unfair_lock_unlock(&p->lock);
     }
@@ -1019,14 +1276,18 @@ HvVirtioBlk *hv_virtio_blk_create(HvMachine *m, HvPcie *bus, HvDisk *disk, int a
     )
     patch_file(
         winvirt_h,
-        "hv_winvirt_destroy",
+        "hv_winvirt_set_virtio_gpu_config",
         "void hv_winvirt_power_button(HvWinVirt *b);",
         """void hv_winvirt_power_button(HvWinVirt *b);
 void hv_winvirt_destroy(HvWinVirt *b);
 void hv_winvirt_set_device_flags(int enable_xhci, int enable_virtio_input, int enable_acpi_spcr, int disk1_as_virtio_blk);
 void hv_winvirt_set_disk1_blk_size(uint32_t blk_size);
 void hv_winvirt_set_virtio_gpu(int enable);
-void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t height);""",
+void hv_winvirt_set_virtio_gpu_config(int enable, int backend_mode, uint32_t vram_mib);
+void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t height);
+uint64_t hv_winvirt_get_virtio_gpu_flushes(const HvWinVirt *b);
+uint32_t hv_winvirt_get_virtio_gpu_scanout_res(const HvWinVirt *b, uint32_t scanout_id);
+int hv_winvirt_is_virtio_gpu_virgl_ready(const HvWinVirt *b);""",
     )
 
     winvirt_c = upstream / "devices/winvirt.c"
@@ -1056,17 +1317,50 @@ void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t heigh
     HvFbDisplay *fb;
 } HvVirtioGpuPci;
 
-static void vgpu_sync_scanout0(HvVirtioGpuPci *g) {
+static void vgpu_sync_cursor0(HvVirtioGpuPci *g) {
+    if (!g || !g->fb || !g->gpu) return;
+    HengeGpuCursorState cur;
+    hengelinux_render_lock();
+    if (henge_virtio_gpu_get_cursor_state(g->gpu, 0u, &cur) == 0 && cur.visible && cur.pixels != NULL) {
+        hv_fb_display_set_cursor(g->fb, cur.pixels, cur.width, cur.height, cur.stride,
+                                 cur.x, cur.y, cur.hot_x, cur.hot_y, 1,
+                                 cur.texture_gen, cur.position_gen);
+    } else {
+        hv_fb_display_set_cursor(g->fb, NULL, 0u, 0u, 0u, 0, 0, 0, 0, 0,
+                                 cur.texture_gen, cur.position_gen);
+    }
+    hengelinux_render_unlock();
+    hv_fb_metal_notify_present(g->fb);
+}
+
+static void vgpu_sync_scanout0(HvVirtioGpuPci *g, int force_full) {
     if (!g || !g->fb || !g->gpu) return;
     const uint8_t *px = NULL;
     uint32_t w = 0, h = 0, stride = 0;
+    int wake = 0;
     hengelinux_render_lock();
     if (henge_virtio_gpu_get_scanout_frame(g->gpu, 0u, &px, &w, &h, &stride) == 0 && px != NULL) {
         hv_fb_display_set_host_buffer(g->fb, px, w, h, stride, 0x34325258u /* XR24 */);
+        HengeGpuDirtyRect dirty;
+        if (henge_virtio_gpu_consume_scanout_dirty(g->gpu, 0u, &dirty) == 0) {
+            if (force_full || dirty.full) {
+                hv_fb_display_mark_vgpu_dirty(g->fb, 0u, 0u, w, h, 1);
+            } else if (dirty.valid && dirty.width > 0u && dirty.height > 0u) {
+                hv_fb_display_mark_vgpu_dirty(g->fb, dirty.x, dirty.y, dirty.width, dirty.height, 0);
+            } else {
+                hv_fb_display_mark_vgpu_dirty(g->fb, 0u, 0u, 0u, 0u, 0);
+            }
+        } else if (force_full) {
+            hv_fb_display_mark_vgpu_dirty(g->fb, 0u, 0u, w, h, 1);
+        }
+        wake = 1;
     } else {
         hv_fb_display_set_host_buffer(g->fb, NULL, 0u, 0u, 0u, 0u);
     }
     hengelinux_render_unlock();
+    if (wake) {
+        hv_fb_metal_notify_present(g->fb);
+    }
 }
 
 static void vgpu_reset(HvVirtio *v) {
@@ -1075,6 +1369,7 @@ static void vgpu_reset(HvVirtio *v) {
     hengelinux_render_lock();
     if (g->fb) {
         hv_fb_display_set_host_buffer(g->fb, NULL, 0u, 0u, 0u, 0u);
+        hv_fb_display_set_cursor(g->fb, NULL, 0u, 0u, 0u, 0, 0, 0, 0, 0, 0ull, 0ull);
     }
     henge_virtio_gpu_reset(g->gpu);
     hengelinux_render_unlock();
@@ -1123,7 +1418,7 @@ static void vgpu_notify(HvVirtio *v, int q) {
             bool move_only = (type == HENGE_VIRTIO_GPU_CMD_MOVE_CURSOR);
             henge_virtio_gpu_update_cursor(g->gpu, scanout_id, res_id, cx, cy, hot_x, hot_y, move_only);
             if (scanout_id == 0u) {
-                vgpu_sync_scanout0(g);
+                vgpu_sync_cursor0(g);
             }
             resp_type = HENGE_VIRTIO_GPU_RESP_OK_NODATA;
         } else if (type == HENGE_VIRTIO_GPU_CMD_GET_DISPLAY_INFO) {
@@ -1174,13 +1469,23 @@ static void vgpu_notify(HvVirtio *v, int q) {
             uint32_t res_id = 0;
             hv_virtq_read(v, &e, 24, &res_id, 4);
             int was_scanout0 = (res_id != 0u && res_id == henge_virtio_gpu_scanout_resource(g->gpu, 0u));
-            if (was_scanout0) {
+            HengeGpuCursorState cur_st;
+            int was_cursor0 = (res_id != 0u &&
+                               henge_virtio_gpu_get_cursor_state(g->gpu, 0u, &cur_st) == 0 &&
+                               cur_st.resource_id == res_id);
+            if (was_scanout0 || was_cursor0) {
                 hengelinux_render_lock();
-                hv_fb_display_set_host_buffer(g->fb, NULL, 0u, 0u, 0u, 0u);
+                if (was_scanout0) {
+                    hv_fb_display_set_host_buffer(g->fb, NULL, 0u, 0u, 0u, 0u);
+                }
+                if (was_cursor0) {
+                    hv_fb_display_set_cursor(g->fb, NULL, 0u, 0u, 0u, 0, 0, 0, 0, 0,
+                                             cur_st.texture_gen + 1ull, cur_st.position_gen + 1ull);
+                }
             }
             resp_type = (uint32_t)henge_virtio_gpu_process_ctrl(
                 g->gpu, type, ctx_id, res_id, 0u, 0u, 0u, 0u, NULL, 0u);
-            if (was_scanout0) {
+            if (was_scanout0 || was_cursor0) {
                 hengelinux_render_unlock();
             }
         } else if (type == HENGE_VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING) {
@@ -1233,6 +1538,13 @@ static void vgpu_notify(HvVirtio *v, int q) {
             resp_type = (henge_virtio_gpu_transfer_to_host_2d(g->gpu, res_id, rx, ry, rw, rh, off) == 0)
                 ? HENGE_VIRTIO_GPU_RESP_OK_NODATA
                 : HENGE_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE;
+            if (resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA) {
+                HengeGpuCursorState cur_st;
+                if (henge_virtio_gpu_get_cursor_state(g->gpu, 0u, &cur_st) == 0 &&
+                    cur_st.resource_id == res_id && cur_st.visible) {
+                    vgpu_sync_cursor0(g);
+                }
+            }
         } else if (type == HENGE_VIRTIO_GPU_CMD_SET_SCANOUT) {
             uint32_t req[6] = {0};
             hv_virtq_read(v, &e, 24, req, sizeof req);
@@ -1240,7 +1552,7 @@ static void vgpu_notify(HvVirtio *v, int q) {
             resp_type = (uint32_t)henge_virtio_gpu_process_ctrl(
                 g->gpu, type, ctx_id, res_id, scanout_id, rw, rh, 0u, NULL, 0u);
             if (resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA && scanout_id == 0u) {
-                vgpu_sync_scanout0(g);
+                vgpu_sync_scanout0(g, 1);
                 static int logged_scanout = 0;
                 if (res_id != 0u && logged_scanout < 4) {
                     logged_scanout++;
@@ -1255,7 +1567,7 @@ static void vgpu_notify(HvVirtio *v, int q) {
                 g->gpu, type, ctx_id, res_id, 0u, req[2], req[3], 0u, NULL, 0u);
             if (resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA &&
                 res_id == henge_virtio_gpu_scanout_resource(g->gpu, 0u)) {
-                vgpu_sync_scanout0(g);
+                vgpu_sync_scanout0(g, 0);
             }
         } else {
             resp_type = HENGE_VIRTIO_GPU_RESP_ERR_UNSPEC;
@@ -1281,9 +1593,19 @@ static void vgpu_notify(HvVirtio *v, int q) {
     if (any) hv_virtio_interrupt(v);
 }
 
+static int g_wv_gpu_backend_mode = 0;
+static uint32_t g_wv_gpu_vram_mib = 128u;
+
 static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, HvFbDisplay *fb) {
+    HengeGpuBackendMode mode = (g_wv_gpu_backend_mode == 1)
+        ? HENGE_GPU_BACKEND_VIRGL_3D
+        : HENGE_GPU_BACKEND_GOP_2D;
+    uint32_t vram_mib = g_wv_gpu_vram_mib;
+    if (vram_mib < 64u || vram_mib > 2048u) {
+        vram_mib = (mode == HENGE_GPU_BACKEND_VIRGL_3D) ? 512u : 128u;
+    }
     HengeVirtioGpuConfig cfg;
-    if (henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_GOP_2D, 128u, &cfg) != 0) return NULL;
+    if (henge_virtio_gpu_init_config(mode, vram_mib, &cfg) != 0) return NULL;
     HengeVirtioGpuDevice *gpu = henge_virtio_gpu_create(&cfg);
     if (!gpu) return NULL;
     henge_virtio_gpu_set_display_mode(gpu, 0u, 1024u, 768u, true);
@@ -1295,7 +1617,10 @@ static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, Hv
     }
     g->gpu = gpu;
     g->fb = fb;
-    hv_virtio_init(&g->vio, m, 16, 0x038000, 2, HENGE_VIRTIO_GPU_F_EDID);
+    /* Phase 0.3.0-A: advertise EDID on PCIe until libvirglrenderer worker lands in Phase 0.3.0-B. */
+    uint64_t pci_features = HENGE_VIRTIO_GPU_F_EDID;
+    uint32_t num_capsets = 0u;
+    hv_virtio_init(&g->vio, m, 16, 0x038000, 2, pci_features);
     g->vio.dev = g;
     g->vio.notify = vgpu_notify;
     g->vio.config_write = vgpu_config_write;
@@ -1303,8 +1628,10 @@ static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, Hv
     g->vio.config_len = 16;
     uint32_t num_scanouts = 1u;
     memcpy(g->vio.config + 8, &num_scanouts, 4);
+    memcpy(g->vio.config + 12, &num_capsets, 4);
     hv_pcie_attach(bus, &g->vio.pci);
-    fprintf(stderr, "winvm: virtio-gpu 2D KMS (0x1af4:0x1050, EDID 1024x768) attached on PCIe\\n");
+    fprintf(stderr, "winvm: virtio-gpu (0x1af4:0x1050, mode=%d, vram=%u MiB, EDID 1024x768) attached on PCIe\\n",
+            (int)mode, vram_mib);
     return g;
 }
 
@@ -1316,6 +1643,7 @@ void hv_winvirt_destroy(HvWinVirt *b) {
         hengelinux_render_lock();
         if (b->fb) {
             hv_fb_display_set_host_buffer(b->fb, NULL, 0u, 0u, 0u, 0u);
+            hv_fb_display_set_cursor(b->fb, NULL, 0u, 0u, 0u, 0, 0, 0, 0, 0, 0ull, 0ull);
         }
         henge_virtio_gpu_destroy(b->vgpu->gpu);
         free(b->vgpu);
@@ -1383,6 +1711,29 @@ void hv_winvirt_set_disk1_blk_size(uint32_t blk_size) {
 
 void hv_winvirt_set_virtio_gpu(int enable) {
     g_wv_enable_virtio_gpu = enable ? 1 : 0;
+}
+
+void hv_winvirt_set_virtio_gpu_config(int enable, int backend_mode, uint32_t vram_mib) {
+    g_wv_enable_virtio_gpu = enable ? 1 : 0;
+    g_wv_gpu_backend_mode = (backend_mode == 1) ? 1 : 0;
+    g_wv_gpu_vram_mib = (vram_mib >= 64u && vram_mib <= 2048u)
+        ? vram_mib
+        : (g_wv_gpu_backend_mode == 1 ? 512u : 128u);
+}
+
+uint64_t hv_winvirt_get_virtio_gpu_flushes(const HvWinVirt *b) {
+    if (!b || !b->vgpu || !b->vgpu->gpu) return 0ull;
+    return henge_virtio_gpu_flush_count(b->vgpu->gpu);
+}
+
+uint32_t hv_winvirt_get_virtio_gpu_scanout_res(const HvWinVirt *b, uint32_t scanout_id) {
+    if (!b || !b->vgpu || !b->vgpu->gpu) return 0u;
+    return henge_virtio_gpu_scanout_resource(b->vgpu->gpu, scanout_id);
+}
+
+int hv_winvirt_is_virtio_gpu_virgl_ready(const HvWinVirt *b) {
+    if (!b || !b->vgpu || !b->vgpu->gpu) return 0;
+    return henge_virtio_gpu_is_virgl_ready(b->vgpu->gpu) ? 1 : 0;
 }
 
 void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t height) {
@@ -1468,7 +1819,7 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     winvm_h = upstream / "host/winvm.h"
     patch_file(
         winvm_h,
-        "HENGE_WINVM_HAS_V4_RESIZE",
+        "HENGE_WINVM_HAS_V5_GPU_CONFIG",
         """    int log;
     int stats_interval;
 } HvWinVmConfig;""",
@@ -1479,24 +1830,31 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     int disable_acpi_spcr;    /* 1 = omit ACPI SPCR so Linux defaults /dev/console to tty0 */
     int disk1_virtio_blk;     /* 1 = expose disk1 as read-only virtio-blk instead of NVMe1 */
     uint32_t disk1_blk_size;  /* 512 (default/isohybrid/CIDATA) or 2048 (pure El Torito ISO) */
-    int enable_virtio_gpu;    /* 1 = attach PCIe virtio-gpu 2D KMS (0x1af4:0x1050) */
+    int enable_virtio_gpu;    /* 1 = attach PCIe virtio-gpu (0x1af4:0x1050) */
+    int gpu_backend_mode;     /* 0 = 2D KMS, 1 = VirGL 3D */
+    uint32_t gpu_vram_mib;    /* VRAM budget in MiB (64..2048) */
 } HvWinVmConfig;
 
 #define HENGE_WINVM_HAS_V2_FLAGS 1
 #define HENGE_WINVM_HAS_V3_GPU 1
 #define HENGE_WINVM_HAS_V4_RESIZE 1
-void hv_winvm_set_virtio_gpu_size(uint32_t width, uint32_t height);""",
+#define HENGE_WINVM_HAS_V5_GPU_CONFIG 1
+void hv_winvm_set_virtio_gpu_size(uint32_t width, uint32_t height);
+uint64_t hv_winvm_virtio_gpu_flushes(void);
+uint32_t hv_winvm_virtio_gpu_scanout_res(uint32_t scanout_id);
+int hv_winvm_virtio_gpu_virgl_ready(void);
+void hv_winvm_request_display_refresh(void);""",
     )
 
     winvm_c = upstream / "host/winvm.c"
     patch_file(
         winvm_c,
-        "hv_winvirt_set_disk1_blk_size(c->disk1_blk_size);",
+        "hv_winvirt_set_virtio_gpu_config(",
         """    if (hv_winvirt_create(&board, &m, cpus, ncpus, ram_bytes, c->prealloc_ram, c->code_fd, c->vars_fd,
                           d0_ptr, d1_ptr, mac, c->enable_sound) != 0) {""",
         """    hv_winvirt_set_device_flags(!c->disable_xhci, c->enable_virtio_input, !c->disable_acpi_spcr, c->disk1_virtio_blk);
     hv_winvirt_set_disk1_blk_size(c->disk1_blk_size);
-    hv_winvirt_set_virtio_gpu(c->enable_virtio_gpu);
+    hv_winvirt_set_virtio_gpu_config(c->enable_virtio_gpu, c->gpu_backend_mode, c->gpu_vram_mib);
     if (hv_winvirt_create(&board, &m, cpus, ncpus, ram_bytes, c->prealloc_ram, c->code_fd, c->vars_fd,
                           d0_ptr, d1_ptr, mac, c->enable_sound) != 0) {""",
     )
@@ -1632,10 +1990,32 @@ void hv_winvm_stop(void) {
     )
     patch_file(
         winvm_c,
-        "void hv_winvm_set_virtio_gpu_size(",
+        "void hv_winvm_request_display_refresh(",
         "void hv_winvm_power_button(void) {",
         """void hv_winvm_set_virtio_gpu_size(uint32_t width, uint32_t height) {
     hv_winvirt_set_virtio_gpu_size(&board, width, height);
+}
+
+uint64_t hv_winvm_virtio_gpu_flushes(void) {
+    if (!atomic_load_explicit(&vm_initialized, memory_order_acquire)) return 0ull;
+    return hv_winvirt_get_virtio_gpu_flushes(&board);
+}
+
+uint32_t hv_winvm_virtio_gpu_scanout_res(uint32_t scanout_id) {
+    if (!atomic_load_explicit(&vm_initialized, memory_order_acquire)) return 0u;
+    return hv_winvirt_get_virtio_gpu_scanout_res(&board, scanout_id);
+}
+
+int hv_winvm_virtio_gpu_virgl_ready(void) {
+    if (!atomic_load_explicit(&vm_initialized, memory_order_acquire)) return 0;
+    return hv_winvirt_is_virtio_gpu_virgl_ready(&board);
+}
+
+void hv_winvm_request_display_refresh(void) {
+    HvFbDisplay *fb = atomic_load_explicit(&display_fb, memory_order_acquire);
+    if (!fb) return;
+    hv_fb_display_mark_vgpu_dirty(fb, 0u, 0u, 0u, 0u, 0);
+    hv_fb_metal_notify_present(fb);
 }
 
 void hv_winvm_power_button(void) {""",
@@ -1759,7 +2139,7 @@ void hv_winvm_send_ctrl_alt_del(void) {
     fb_display_h = upstream / "devices/fb_display.h"
     patch_file(
         fb_display_h,
-        "vgpu_host;",
+        "vgpu_cursor_host;",
         """    uint32_t fourcc; /* DRM fourcc, e.g. XR24 / AR24 (32-bit BGRX) */
     int active;""",
         """    uint32_t fourcc; /* DRM fourcc, e.g. XR24 / AR24 (32-bit BGRX) */
@@ -1771,27 +2151,72 @@ void hv_winvm_send_ctrl_alt_del(void) {
     uint32_t vgpu_height;
     uint32_t vgpu_stride;
     uint32_t vgpu_fourcc;
-    int vgpu_active;""",
+    int vgpu_active;
+    uint64_t vgpu_epoch;
+    int vgpu_dirty_valid;
+    int vgpu_dirty_full;
+    uint32_t vgpu_dirty_x0;
+    uint32_t vgpu_dirty_y0;
+    uint32_t vgpu_dirty_x1;
+    uint32_t vgpu_dirty_y1;
+    const uint8_t *vgpu_cursor_host;
+    uint32_t vgpu_cursor_width;
+    uint32_t vgpu_cursor_height;
+    uint32_t vgpu_cursor_stride;
+    int32_t vgpu_cursor_x;
+    int32_t vgpu_cursor_y;
+    int32_t vgpu_cursor_hot_x;
+    int32_t vgpu_cursor_hot_y;
+    int vgpu_cursor_visible;
+    uint64_t vgpu_cursor_tex_gen;
+    uint64_t vgpu_cursor_pos_gen;""",
     )
     patch_file(
         fb_display_h,
-        "hv_fb_metal_destroy",
+        "hv_fb_metal_notify_present",
         "void hv_fb_metal_set_layer(HvFbDisplay *fb, void *ca_metal_layer);",
         """void hv_fb_metal_set_layer(HvFbDisplay *fb, void *ca_metal_layer);
+void hv_fb_metal_notify_present(HvFbDisplay *fb);
 void hv_fb_metal_destroy(HvFbDisplay *fb);""",
     )
     patch_file(
         fb_display_h,
-        "hv_fb_display_set_host_buffer",
+        "HvFbVgpuSnapshot",
         "int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride);",
-        """int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride);
-void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uint32_t width, uint32_t height, uint32_t stride, uint32_t fourcc);""",
+        """typedef struct {
+    int active;
+    uint64_t epoch;
+    int dirty_valid;
+    int dirty_full;
+    uint32_t dirty_x;
+    uint32_t dirty_y;
+    uint32_t dirty_w;
+    uint32_t dirty_h;
+    int cursor_visible;
+    const uint8_t *cursor_pixels;
+    uint32_t cursor_w;
+    uint32_t cursor_h;
+    uint32_t cursor_stride;
+    int32_t cursor_x;
+    int32_t cursor_y;
+    int32_t cursor_hot_x;
+    int32_t cursor_hot_y;
+    uint64_t cursor_tex_gen;
+    uint64_t cursor_pos_gen;
+} HvFbVgpuSnapshot;
+
+int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride);
+void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uint32_t width, uint32_t height, uint32_t stride, uint32_t fourcc);
+void hv_fb_display_mark_vgpu_dirty(HvFbDisplay *fb, uint32_t x, uint32_t y, uint32_t w, uint32_t h, int full);
+void hv_fb_display_set_cursor(HvFbDisplay *fb, const uint8_t *host_ptr, uint32_t width, uint32_t height, uint32_t stride, int32_t x, int32_t y, int32_t hot_x, int32_t hot_y, int visible, uint64_t tex_gen, uint64_t pos_gen);
+int hv_fb_display_peek_vgpu(HvFbDisplay *fb, HvFbVgpuSnapshot *out);
+int hv_fb_display_consume_vgpu_dirty(HvFbDisplay *fb, uint32_t *out_x, uint32_t *out_y, uint32_t *out_w, uint32_t *out_h, int *out_full);""",
     )
 
     fb_display_c = upstream / "devices/fb_display.c"
     patch_file(
         fb_display_c,
-        "hv_fb_display_set_host_buffer",
+        "hv_fb_display_consume_vgpu_dirty",
         """int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride) {
     if (!fb) return -1;
     pthread_mutex_lock(&fb->mu);
@@ -1833,12 +2258,24 @@ void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uin
     if (!fb) return;
     pthread_mutex_lock(&fb->mu);
     if (host_ptr && width > 0 && height > 0 && stride >= width * 4u) {
+        int changed = (!fb->vgpu_active || fb->vgpu_host != host_ptr ||
+                       fb->vgpu_width != width || fb->vgpu_height != height ||
+                       fb->vgpu_stride != stride);
         fb->vgpu_host = host_ptr;
         fb->vgpu_width = width;
         fb->vgpu_height = height;
         fb->vgpu_stride = stride;
         fb->vgpu_fourcc = fourcc;
         fb->vgpu_active = 1;
+        if (changed) {
+            fb->vgpu_dirty_valid = 1;
+            fb->vgpu_dirty_full = 1;
+            fb->vgpu_dirty_x0 = 0u;
+            fb->vgpu_dirty_y0 = 0u;
+            fb->vgpu_dirty_x1 = width;
+            fb->vgpu_dirty_y1 = height;
+            fb->vgpu_epoch++;
+        }
     } else {
         fb->vgpu_host = NULL;
         fb->vgpu_width = 0;
@@ -1846,8 +2283,130 @@ void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uin
         fb->vgpu_stride = 0;
         fb->vgpu_fourcc = 0;
         fb->vgpu_active = 0;
+        fb->vgpu_dirty_valid = 0;
+        fb->vgpu_dirty_full = 0;
+        fb->vgpu_dirty_x0 = 0u;
+        fb->vgpu_dirty_y0 = 0u;
+        fb->vgpu_dirty_x1 = 0u;
+        fb->vgpu_dirty_y1 = 0u;
+        fb->vgpu_epoch++;
     }
     pthread_mutex_unlock(&fb->mu);
+}
+
+void hv_fb_display_mark_vgpu_dirty(HvFbDisplay *fb, uint32_t x, uint32_t y, uint32_t w, uint32_t h, int full) {
+    if (!fb) return;
+    pthread_mutex_lock(&fb->mu);
+    if (full) {
+        fb->vgpu_dirty_valid = 1;
+        fb->vgpu_dirty_full = 1;
+        fb->vgpu_dirty_x0 = 0u;
+        fb->vgpu_dirty_y0 = 0u;
+        fb->vgpu_dirty_x1 = fb->vgpu_width;
+        fb->vgpu_dirty_y1 = fb->vgpu_height;
+    } else if (w > 0u && h > 0u && !fb->vgpu_dirty_full) {
+        uint32_t x1 = x + w;
+        uint32_t y1 = y + h;
+        if (!fb->vgpu_dirty_valid) {
+            fb->vgpu_dirty_valid = 1;
+            fb->vgpu_dirty_x0 = x;
+            fb->vgpu_dirty_y0 = y;
+            fb->vgpu_dirty_x1 = x1;
+            fb->vgpu_dirty_y1 = y1;
+        } else {
+            if (x < fb->vgpu_dirty_x0) fb->vgpu_dirty_x0 = x;
+            if (y < fb->vgpu_dirty_y0) fb->vgpu_dirty_y0 = y;
+            if (x1 > fb->vgpu_dirty_x1) fb->vgpu_dirty_x1 = x1;
+            if (y1 > fb->vgpu_dirty_y1) fb->vgpu_dirty_y1 = y1;
+        }
+    }
+    fb->vgpu_epoch++;
+    pthread_mutex_unlock(&fb->mu);
+}
+
+void hv_fb_display_set_cursor(HvFbDisplay *fb, const uint8_t *host_ptr, uint32_t width, uint32_t height, uint32_t stride,
+                              int32_t x, int32_t y, int32_t hot_x, int32_t hot_y, int visible,
+                              uint64_t tex_gen, uint64_t pos_gen) {
+    if (!fb) return;
+    pthread_mutex_lock(&fb->mu);
+    if (visible && host_ptr && width > 0u && height > 0u && stride >= width * 4u) {
+        fb->vgpu_cursor_host = host_ptr;
+        fb->vgpu_cursor_width = width;
+        fb->vgpu_cursor_height = height;
+        fb->vgpu_cursor_stride = stride;
+        fb->vgpu_cursor_x = x;
+        fb->vgpu_cursor_y = y;
+        fb->vgpu_cursor_hot_x = hot_x;
+        fb->vgpu_cursor_hot_y = hot_y;
+        fb->vgpu_cursor_visible = 1;
+    } else {
+        fb->vgpu_cursor_host = NULL;
+        fb->vgpu_cursor_width = 0u;
+        fb->vgpu_cursor_height = 0u;
+        fb->vgpu_cursor_stride = 0u;
+        fb->vgpu_cursor_visible = 0;
+    }
+    fb->vgpu_cursor_tex_gen = tex_gen;
+    fb->vgpu_cursor_pos_gen = pos_gen;
+    fb->vgpu_epoch++;
+    pthread_mutex_unlock(&fb->mu);
+}
+
+int hv_fb_display_peek_vgpu(HvFbDisplay *fb, HvFbVgpuSnapshot *out) {
+    if (!fb || !out) return -1;
+    pthread_mutex_lock(&fb->mu);
+    out->active = fb->vgpu_active;
+    out->epoch = fb->vgpu_epoch;
+    out->dirty_valid = fb->vgpu_dirty_valid;
+    out->dirty_full = fb->vgpu_dirty_full;
+    if (fb->vgpu_dirty_valid && fb->vgpu_dirty_x1 > fb->vgpu_dirty_x0 && fb->vgpu_dirty_y1 > fb->vgpu_dirty_y0) {
+        out->dirty_x = fb->vgpu_dirty_x0;
+        out->dirty_y = fb->vgpu_dirty_y0;
+        out->dirty_w = fb->vgpu_dirty_x1 - fb->vgpu_dirty_x0;
+        out->dirty_h = fb->vgpu_dirty_y1 - fb->vgpu_dirty_y0;
+    } else {
+        out->dirty_x = 0u;
+        out->dirty_y = 0u;
+        out->dirty_w = 0u;
+        out->dirty_h = 0u;
+    }
+    out->cursor_visible = fb->vgpu_cursor_visible;
+    out->cursor_pixels = fb->vgpu_cursor_host;
+    out->cursor_w = fb->vgpu_cursor_width;
+    out->cursor_h = fb->vgpu_cursor_height;
+    out->cursor_stride = fb->vgpu_cursor_stride;
+    out->cursor_x = fb->vgpu_cursor_x;
+    out->cursor_y = fb->vgpu_cursor_y;
+    out->cursor_hot_x = fb->vgpu_cursor_hot_x;
+    out->cursor_hot_y = fb->vgpu_cursor_hot_y;
+    out->cursor_tex_gen = fb->vgpu_cursor_tex_gen;
+    out->cursor_pos_gen = fb->vgpu_cursor_pos_gen;
+    pthread_mutex_unlock(&fb->mu);
+    return 0;
+}
+
+int hv_fb_display_consume_vgpu_dirty(HvFbDisplay *fb, uint32_t *out_x, uint32_t *out_y, uint32_t *out_w, uint32_t *out_h, int *out_full) {
+    if (!fb) return 0;
+    pthread_mutex_lock(&fb->mu);
+    int had = fb->vgpu_dirty_valid;
+    int full = fb->vgpu_dirty_full;
+    uint32_t x = fb->vgpu_dirty_x0;
+    uint32_t y = fb->vgpu_dirty_y0;
+    uint32_t w = (fb->vgpu_dirty_x1 > fb->vgpu_dirty_x0) ? (fb->vgpu_dirty_x1 - fb->vgpu_dirty_x0) : 0u;
+    uint32_t h = (fb->vgpu_dirty_y1 > fb->vgpu_dirty_y0) ? (fb->vgpu_dirty_y1 - fb->vgpu_dirty_y0) : 0u;
+    fb->vgpu_dirty_valid = 0;
+    fb->vgpu_dirty_full = 0;
+    fb->vgpu_dirty_x0 = 0u;
+    fb->vgpu_dirty_y0 = 0u;
+    fb->vgpu_dirty_x1 = 0u;
+    fb->vgpu_dirty_y1 = 0u;
+    pthread_mutex_unlock(&fb->mu);
+    if (out_x) *out_x = x;
+    if (out_y) *out_y = y;
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    if (out_full) *out_full = full;
+    return had;
 }""",
     )
 

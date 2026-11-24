@@ -122,12 +122,39 @@ void henge_virtio_gpu_reset(HengeVirtioGpuDevice *dev);
 void henge_virtio_gpu_destroy(HengeVirtioGpuDevice *dev);
 
 /* Query negotiated VirtIO-GPU feature bits and live state counters. */
+int henge_virtio_gpu_get_config(const HengeVirtioGpuDevice *dev, HengeVirtioGpuConfig *out_cfg);
 uint64_t henge_virtio_gpu_feature_bits(const HengeVirtioGpuDevice *dev);
 uint32_t henge_virtio_gpu_scanout_resource(const HengeVirtioGpuDevice *dev, uint32_t scanout_id);
 uint64_t henge_virtio_gpu_flush_count(const HengeVirtioGpuDevice *dev);
 uint32_t henge_virtio_gpu_active_contexts(const HengeVirtioGpuDevice *dev);
 uint32_t henge_virtio_gpu_active_resources(const HengeVirtioGpuDevice *dev);
 uint32_t henge_virtio_gpu_context_attached_resources(const HengeVirtioGpuDevice *dev, uint32_t ctx_id);
+
+/* Accumulated dirty rectangle for event-driven Metal partial texture uploads. */
+typedef struct {
+    bool     valid;
+    bool     full;
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+} HengeGpuDirtyRect;
+
+/* Hardware cursor overlay state exported directly to the Metal presenter (zero CPU compositing). */
+typedef struct {
+    bool           visible;
+    uint32_t       resource_id;
+    const uint8_t *pixels;
+    uint32_t       width;
+    uint32_t       height;
+    uint32_t       stride;
+    int32_t        x;
+    int32_t        y;
+    int32_t        hot_x;
+    int32_t        hot_y;
+    uint64_t       texture_gen;
+    uint64_t       position_gen;
+} HengeGpuCursorState;
 
 /* Update host display geometry for primary (0) or USB-C external (1) scanout. */
 int henge_virtio_gpu_set_display_mode(HengeVirtioGpuDevice *dev,
@@ -173,13 +200,23 @@ int henge_virtio_gpu_update_cursor(HengeVirtioGpuDevice *dev,
                                    uint32_t hot_y,
                                    bool move_only);
 
-/* Snapshot the active scanout's host BGRA8 pixel buffer pointer and geometry. */
+/* Snapshot the active scanout's raw host BGRA8 pixel buffer pointer and geometry. */
 int henge_virtio_gpu_get_scanout_frame(const HengeVirtioGpuDevice *dev,
                                        uint32_t scanout_id,
                                        const uint8_t **out_pixels,
                                        uint32_t *out_width,
                                        uint32_t *out_height,
                                        uint32_t *out_stride);
+
+/* Atomically consume and clear accumulated dirty bounds for a scanout's active resource. */
+int henge_virtio_gpu_consume_scanout_dirty(HengeVirtioGpuDevice *dev,
+                                           uint32_t scanout_id,
+                                           HengeGpuDirtyRect *out_dirty);
+
+/* Snapshot hardware cursor overlay state for native Metal quad compositing. */
+int henge_virtio_gpu_get_cursor_state(const HengeVirtioGpuDevice *dev,
+                                      uint32_t scanout_id,
+                                      HengeGpuCursorState *out_cursor);
 
 /* Dispatch a VirtIO-GPU 2D/3D control queue command and return its response code. */
 HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,

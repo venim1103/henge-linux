@@ -239,6 +239,7 @@ final class ExternalDisplayManager: ObservableObject {
     @Published private(set) var activeExternalGuestWidth: Int = 1920
     @Published private(set) var activeExternalGuestHeight: Int = 1080
     @Published private(set) var isVMRunning: Bool = false
+    @Published private(set) var isLocalScreenSaverActive: Bool = false
 
     private weak var externalViewController: ExternalDisplayViewController?
     private weak var localDisplayLayer: CAMetalLayer?
@@ -272,6 +273,15 @@ final class ExternalDisplayManager: ObservableObject {
         if isVMRunning != running {
             isVMRunning = running
         }
+        if !running && isLocalScreenSaverActive {
+            isLocalScreenSaverActive = false
+        }
+        syncActiveDisplayLayer()
+    }
+
+    func setLocalScreenSaverActive(_ active: Bool) {
+        guard isLocalScreenSaverActive != active else { return }
+        isLocalScreenSaverActive = active
         syncActiveDisplayLayer()
     }
 
@@ -314,6 +324,7 @@ final class ExternalDisplayManager: ObservableObject {
         }
         externalNativeSize = .zero
         isExternalDisplayConnected = false
+        HengeVMBridge.shared.setDisplayPresentationPaused(isVMRunning && isLocalScreenSaverActive)
     }
 
     private func handleExternalGeometryUpdate(_ pixelSize: CGSize) {
@@ -344,6 +355,7 @@ final class ExternalDisplayManager: ObservableObject {
     }
 
     func syncActiveDisplayLayer() {
+        let shouldPauseLocalPresentation = isVMRunning && isLocalScreenSaverActive && !isRenderingOnExternalDisplay
         if isRenderingOnExternalDisplay, let extVC = externalViewController {
             let target = resolutionPreset.resolvedPixelSize(forNativeSize: externalNativeSize)
             if activeExternalGuestWidth != target.width {
@@ -381,6 +393,7 @@ final class ExternalDisplayManager: ObservableObject {
                 HengeVMBridge.shared.detachDisplayLayer(ifMatching: extLayer)
             }
         }
+        HengeVMBridge.shared.setDisplayPresentationPaused(shouldPauseLocalPresentation)
     }
 
     /// Returns the primary iPhone/iPad application `UIScreen` (excluding any

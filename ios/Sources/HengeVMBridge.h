@@ -43,6 +43,9 @@ NS_SWIFT_UI_ACTOR
 - (void)detachDisplayLayerIfMatching:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(detachDisplayLayer(ifMatching:));
 /// Notify the 2D VirtIO-GPU KMS backend of viewport / orientation pixel-size changes.
 - (void)updateDisplaySizeWidth:(uint32_t)width height:(uint32_t)height NS_SWIFT_NAME(updateDisplaySize(width:height:));
+/// Pause or resume local Metal display presentation (e.g. OLED Screen Saver without an external monitor)
+/// without silencing CoreAudio or interfering with `MetalLifecycleGuard`.
+- (void)setDisplayPresentationPaused:(BOOL)paused;
 
 /// Unpack primary `.hvsparse` / `.qcow2` disk image into a raw APFS sparse image off the main thread,
 /// optionally growing the unpacked raw disk to at least `minDiskBytes`.

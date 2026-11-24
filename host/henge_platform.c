@@ -60,6 +60,7 @@ int pipe2(int fds[2], int flags) {
 #endif
 
 static atomic_bool g_render_paused = false;
+static atomic_bool g_display_presentation_paused = false;
 static pthread_mutex_t g_render_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_clock_mutex = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint_fast64_t g_clock_seq = 0ULL;
@@ -306,6 +307,16 @@ void hengelinux_set_render_paused(bool paused) {
 
 bool hengelinux_is_render_paused(void) {
     return atomic_load_explicit(&g_render_paused, memory_order_acquire);
+}
+
+void hengelinux_set_display_presentation_paused(bool paused) {
+    pthread_mutex_lock(&g_render_mutex);
+    atomic_store_explicit(&g_display_presentation_paused, paused, memory_order_release);
+    pthread_mutex_unlock(&g_render_mutex);
+}
+
+bool hengelinux_is_display_presentation_paused(void) {
+    return atomic_load_explicit(&g_display_presentation_paused, memory_order_acquire);
 }
 
 void hengelinux_render_lock(void) {
