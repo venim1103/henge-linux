@@ -43,6 +43,21 @@ NS_SWIFT_UI_ACTOR
 - (void)detachDisplayLayerIfMatching:(nullable CAMetalLayer *)layer NS_SWIFT_NAME(detachDisplayLayer(ifMatching:));
 /// Notify the 2D VirtIO-GPU KMS backend of viewport / orientation pixel-size changes.
 - (void)updateDisplaySizeWidth:(uint32_t)width height:(uint32_t)height NS_SWIFT_NAME(updateDisplaySize(width:height:));
+/// Update a specific VirtIO-GPU scanout (0 = primary, 1 = extended external monitor) with geometry and refresh rate.
+- (void)updateScanout:(uint32_t)scanoutId
+                width:(uint32_t)width
+               height:(uint32_t)height
+              enabled:(BOOL)enabled
+            refreshHz:(uint32_t)refreshHz;
+/// Set target host presentation refresh rate (30, 60, or 120 Hz ProMotion) and update EDID.
+- (void)setTargetRefreshHz:(uint32_t)refreshHz;
+/// Set explicit VRAM cap (MiB) for the next VM launch (0 = auto based on Jetsam tier).
+- (void)setConfiguredVramCapMiB:(uint32_t)vramMiB;
+/// Clear the bounded 64 MiB LRU shader cache under Library/Caches/HengeShaders/.
+- (BOOL)clearShaderCache;
+- (uint64_t)shaderCacheSizeBytes;
+/// Trigger immediate GPU memory pressure reclaim (called on didReceiveMemoryWarning).
+- (void)notifyMemoryWarning;
 /// Pause or resume local Metal display presentation (e.g. OLED Screen Saver without an external monitor)
 /// without silencing CoreAudio or interfering with `MetalLifecycleGuard`.
 - (void)setDisplayPresentationPaused:(BOOL)paused;

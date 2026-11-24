@@ -129,6 +129,12 @@ uint64_t henge_virtio_gpu_flush_count(const HengeVirtioGpuDevice *dev);
 uint32_t henge_virtio_gpu_active_contexts(const HengeVirtioGpuDevice *dev);
 uint32_t henge_virtio_gpu_active_resources(const HengeVirtioGpuDevice *dev);
 uint32_t henge_virtio_gpu_context_attached_resources(const HengeVirtioGpuDevice *dev, uint32_t ctx_id);
+uint64_t henge_virtio_gpu_vram_used_bytes(const HengeVirtioGpuDevice *dev);
+
+/* Update preferred EDID refresh rate (30, 60, or 120 Hz) for a scanout. */
+int henge_virtio_gpu_set_refresh_hz(HengeVirtioGpuDevice *dev,
+                                    uint32_t scanout_id,
+                                    uint32_t refresh_hz);
 
 /* Accumulated dirty rectangle for event-driven Metal partial texture uploads. */
 typedef struct {

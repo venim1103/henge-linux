@@ -1,9 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #import "HengeVMBridge.h"
+#import <UIKit/UIKit.h>
 
 #include "henge_platform.h"
 #include "henge_txm_jit.h"
+#include "henge_gpu_surface.h"
 #include "henge_virtio_gpu.h"
+#include "henge_virgl_worker.h"
 #include "henge_qcow2.h"
 
 #include <cstdlib>
@@ -30,6 +33,8 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
     int _activeCpuCount;
     uint32_t _lastDisplayWidth;
     uint32_t _lastDisplayHeight;
+    uint32_t _targetRefreshHz;
+    uint32_t _configuredVramCapMiB;
     uint8_t _hidModifiers;
     NSString *_statusText;
     CAMetalLayer *__weak _displayLayer;
@@ -76,6 +81,8 @@ static void henge_on_vm_exit(int reason) {
         _activeCpuCount = 4;
         _lastDisplayWidth = 1024U;
         _lastDisplayHeight = 768U;
+        _targetRefreshHz = 60U;
+        _configuredVramCapMiB = 0U;
         _hidModifiers = 0;
         _statusText = self.isEngineLinked
             ? @"Engine linked · Ready"
@@ -88,9 +95,58 @@ static void henge_on_vm_exit(int reason) {
         NSURL *logURL = [docsURL URLByAppendingPathComponent:@"hengelinux-boot.log"];
         _bootLogPathStr = logURL.path.fileSystemRepresentation;
         hengelinux_start_console_capture(_bootLogPathStr.c_str());
+
+        /* Initialize writable 64 MiB LRU shader cache (Library/Caches/HengeShaders/). */
+        NSURL *cachesURL = [NSFileManager.defaultManager URLsForDirectory:NSCachesDirectory
+                                                                inDomains:NSUserDomainMask].firstObject;
+        if (cachesURL != nil) {
+            NSURL *shaderDir = [cachesURL URLByAppendingPathComponent:@"HengeShaders" isDirectory:YES];
+            NSString *appVer = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.3.0";
+            NSString *osVer = NSProcessInfo.processInfo.operatingSystemVersionString ?: @"ios";
+            NSString *nsTag = [NSString stringWithFormat:@"henge-%@-%@", appVer, osVer];
+            henge_shader_cache_init(shaderDir.path.fileSystemRepresentation,
+                                    nsTag.UTF8String,
+                                    HENGE_SHADER_CACHE_MAX_BYTES);
+        }
+
+        [self syncThermalStateFromProcessInfo];
+        [NSNotificationCenter.defaultCenter addObserver:self
+                                               selector:@selector(handleThermalStateChanged:)
+                                                   name:NSProcessInfoThermalStateDidChangeNotification
+                                                 object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self
+                                               selector:@selector(handleMemoryWarning:)
+                                                   name:UIApplicationDidReceiveMemoryWarningNotification
+                                                 object:nil];
+
         hengelinux_console_append_line("[bridge] HengeVMBridge initialized");
     }
     return self;
+}
+
+- (void)syncThermalStateFromProcessInfo {
+    NSProcessInfoThermalState st = NSProcessInfo.processInfo.thermalState;
+    uint32_t mapped = HENGE_THERMAL_NOMINAL;
+    switch (st) {
+        case NSProcessInfoThermalStateNominal:  mapped = HENGE_THERMAL_NOMINAL;  break;
+        case NSProcessInfoThermalStateFair:     mapped = HENGE_THERMAL_FAIR;     break;
+        case NSProcessInfoThermalStateSerious:  mapped = HENGE_THERMAL_SERIOUS;  break;
+        case NSProcessInfoThermalStateCritical: mapped = HENGE_THERMAL_CRITICAL; break;
+    }
+    henge_gpu_telemetry_set_thermal_state(mapped);
+    if (mapped == HENGE_THERMAL_CRITICAL) {
+        [self notifyMemoryWarning];
+    }
+}
+
+- (void)handleThermalStateChanged:(NSNotification *)note {
+    (void)note;
+    [self syncThermalStateFromProcessInfo];
+}
+
+- (void)handleMemoryWarning:(NSNotification *)note {
+    (void)note;
+    [self notifyMemoryWarning];
 }
 
 - (BOOL)isEngineLinked {
@@ -281,6 +337,59 @@ static void henge_on_vm_exit(int reason) {
 #if HENGE_HAS_UPSTREAM_ENGINE && defined(HENGE_WINVM_HAS_V4_RESIZE)
     if (_running && _vmCreated) {
         hv_winvm_set_virtio_gpu_size(width, height);
+    }
+#endif
+}
+
+- (void)updateScanout:(uint32_t)scanoutId
+                width:(uint32_t)width
+               height:(uint32_t)height
+              enabled:(BOOL)enabled
+            refreshHz:(uint32_t)refreshHz {
+#if HENGE_HAS_UPSTREAM_ENGINE && defined(HENGE_WINVM_HAS_V6_DUAL_SCANOUT)
+    if (_running && _vmCreated) {
+        hv_winvm_set_virtio_gpu_scanout(scanoutId, width, height, enabled ? 1 : 0, refreshHz);
+    }
+#else
+    (void)scanoutId; (void)width; (void)height; (void)enabled; (void)refreshHz;
+#endif
+}
+
+- (void)setTargetRefreshHz:(uint32_t)refreshHz {
+    uint32_t clamped = 60U;
+    if (refreshHz <= 30U) {
+        clamped = 30U;
+    } else if (refreshHz >= 120U) {
+        clamped = 120U;
+    }
+    _targetRefreshHz = clamped;
+    henge_gpu_telemetry_set_target_refresh_hz(clamped);
+#if HENGE_HAS_UPSTREAM_ENGINE && defined(HENGE_WINVM_HAS_V6_DUAL_SCANOUT)
+    if (_running && _vmCreated) {
+        hv_winvm_set_virtio_gpu_scanout(0U, _lastDisplayWidth, _lastDisplayHeight, 1, clamped);
+    }
+#endif
+}
+
+- (void)setConfiguredVramCapMiB:(uint32_t)vramMiB {
+    _configuredVramCapMiB = vramMiB;
+}
+
+- (BOOL)clearShaderCache {
+    return henge_shader_cache_clear() == 0;
+}
+
+- (uint64_t)shaderCacheSizeBytes {
+    HengeShaderCacheStats st;
+    henge_shader_cache_get_stats(&st);
+    return st.total_bytes;
+}
+
+- (void)notifyMemoryWarning {
+    henge_virgl_notify_active_memory_pressure();
+#if HENGE_HAS_UPSTREAM_ENGINE && defined(HENGE_WINVM_HAS_V6_DUAL_SCANOUT)
+    if (_running && _vmCreated) {
+        hv_winvm_notify_memory_warning();
     }
 #endif
 }
@@ -505,11 +614,20 @@ static void henge_on_vm_exit(int reason) {
     hengelinux_reset_suspend_counter();
     hengelinux_reset_guest_hid_bridge_ready();
     hengelinux_set_display_presentation_paused(false);
+    henge_gpu_telemetry_reset();
+    henge_gpu_telemetry_set_active_backend((uint32_t)gpuBackend);
+    henge_gpu_telemetry_set_target_refresh_hz(_targetRefreshHz);
+    [self syncThermalStateFromProcessInfo];
 
     HengeGpuBackendMode mode = (gpuBackend == 1)
         ? HENGE_GPU_BACKEND_VIRGL_3D
         : HENGE_GPU_BACKEND_GOP_2D;
-    uint32_t vramMiB = (mode == HENGE_GPU_BACKEND_VIRGL_3D) ? 512U : 128U;
+    uint32_t defaultVram = (mode == HENGE_GPU_BACKEND_VIRGL_3D)
+        ? henge_gpu_default_vram_cap_mib(NSProcessInfo.processInfo.physicalMemory, henge_available_memory_bytes())
+        : 128U;
+    uint32_t vramMiB = (_configuredVramCapMiB >= 64U && _configuredVramCapMiB <= 2048U)
+        ? _configuredVramCapMiB
+        : defaultVram;
     henge_virtio_gpu_init_config(mode, vramMiB, &_gpuConfig);
 
     NSURL *docsURL = [self documentsDirectoryURL];
@@ -770,7 +888,11 @@ static void henge_on_vm_exit(int reason) {
     if (layer != nil) {
         hv_winvm_set_display_layer((__bridge void *)layer);
     }
-#if defined(HENGE_WINVM_HAS_V4_RESIZE)
+#if defined(HENGE_WINVM_HAS_V6_DUAL_SCANOUT)
+    if (_lastDisplayWidth >= 320U && _lastDisplayHeight >= 240U) {
+        hv_winvm_set_virtio_gpu_scanout(0U, _lastDisplayWidth, _lastDisplayHeight, 1, _targetRefreshHz);
+    }
+#elif defined(HENGE_WINVM_HAS_V4_RESIZE)
     if (_lastDisplayWidth >= 320U && _lastDisplayHeight >= 240U) {
         hv_winvm_set_virtio_gpu_size(_lastDisplayWidth, _lastDisplayHeight);
     }

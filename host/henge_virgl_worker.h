@@ -3,6 +3,7 @@
 #define HENGE_VIRGL_WORKER_H
 
 #include "henge_virtio_gpu.h"
+#include "henge_gpu_surface.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -63,6 +64,7 @@ typedef struct {
     uint64_t cmds_completed;
     uint64_t fences_retired;
     uint64_t resets_processed;
+    uint64_t flushes_3d;
     uint32_t pending_queue_depth;
     uint32_t pending_fence_count;
     bool     virgl_initialized;
@@ -109,6 +111,14 @@ int henge_virgl_worker_drain(HengeVirglWorker *worker, uint32_t timeout_ms);
 void henge_virgl_worker_get_stats(const HengeVirglWorker *worker,
                                   HengeVirglWorkerStats *out_stats);
 
+/* Query the latest published zero-copy IOSurface swapchain slot for a scanout. */
+int henge_virgl_worker_get_front_surface(const HengeVirglWorker *worker,
+                                         uint32_t scanout_id,
+                                         HengeGpuSwapchainSlot *out_slot);
+
+/* Purge idle GPU shader/texture pools on iOS didReceiveMemoryWarning or critical thermal state. */
+int henge_virgl_worker_notify_memory_pressure(HengeVirglWorker *worker);
+
 /*
  * Process-wide active worker registration so MetalLifecycleGuard's willResignActive
  * observer can synchronously drain ANGLE/VirGL queues before iOS revokes GPU access.
@@ -116,6 +126,7 @@ void henge_virgl_worker_get_stats(const HengeVirglWorker *worker,
 void henge_virgl_register_active_worker(HengeVirglWorker *worker);
 void henge_virgl_unregister_active_worker(HengeVirglWorker *worker);
 void henge_virgl_drain_active_worker(uint32_t timeout_ms);
+void henge_virgl_notify_active_memory_pressure(void);
 
 #ifdef __cplusplus
 }

@@ -4,6 +4,8 @@
 #endif
 
 #include "henge_virtio_gpu.h"
+#include "henge_gpu_surface.h"
+#include "henge_txm_jit.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -45,6 +47,7 @@ typedef struct {
     uint32_t              dirty_y0;
     uint32_t              dirty_x1;
     uint32_t              dirty_y1;
+    uint64_t              vram_bytes;
     uint8_t              *pixels;
     HengeGpuBackingEntry *backing;
     uint32_t              backing_count;
@@ -147,6 +150,7 @@ typedef struct {
     bool     force_full_dirty;
     uint32_t width;      /* Preferred display width reported by GET_DISPLAY_INFO / GET_EDID */
     uint32_t height;     /* Preferred display height reported by GET_DISPLAY_INFO / GET_EDID */
+    uint32_t refresh_hz; /* Preferred EDID refresh rate (30, 60, or 120 Hz) */
     uint32_t scanout_w;  /* Active SET_SCANOUT rect width (0 = use resource width) */
     uint32_t scanout_h;  /* Active SET_SCANOUT rect height (0 = use resource height) */
     uint32_t resource_id;
@@ -165,6 +169,7 @@ struct HengeVirtioGpuDevice {
     uint64_t             feature_bits;
     uint64_t             flush_count;
     uint64_t             cmd_count;
+    uint64_t             vram_used_bytes;
     bool                 virgl_backend_ready;
     HengeGpuScanoutState scanouts[HENGE_VIRTIO_GPU_MAX_SCANOUTS];
     HengeGpuContextSlot  contexts[HENGE_VIRTIO_GPU_MAX_CONTEXTS];
@@ -273,9 +278,11 @@ HengeVirtioGpuDevice *henge_virtio_gpu_create(const HengeVirtioGpuConfig *cfg) {
     dev->scanouts[0].enabled = true;
     dev->scanouts[0].width = 1920U;
     dev->scanouts[0].height = 1200U;
+    dev->scanouts[0].refresh_hz = 60U;
     dev->scanouts[1].enabled = false;
     dev->scanouts[1].width = 1920U;
     dev->scanouts[1].height = 1080U;
+    dev->scanouts[1].refresh_hz = 60U;
 
     if (cfg->mode == HENGE_GPU_BACKEND_VIRGL_3D) {
         dev->feature_bits = HENGE_VIRTIO_GPU_F_VIRGL |
@@ -320,6 +327,8 @@ void henge_virtio_gpu_reset(HengeVirtioGpuDevice *dev) {
     }
     dev->flush_count = 0ULL;
     dev->cmd_count = 0ULL;
+    dev->vram_used_bytes = 0ULL;
+    henge_gpu_telemetry_set_vram_tracked_bytes(0ULL);
     pthread_mutex_unlock(&dev->lock);
 }
 
@@ -417,6 +426,35 @@ uint32_t henge_virtio_gpu_context_attached_resources(const HengeVirtioGpuDevice 
     return count;
 }
 
+uint64_t henge_virtio_gpu_vram_used_bytes(const HengeVirtioGpuDevice *dev) {
+    if (dev == NULL) {
+        return 0ULL;
+    }
+    HengeVirtioGpuDevice *mut = (HengeVirtioGpuDevice *)dev;
+    pthread_mutex_lock(&mut->lock);
+    uint64_t used = dev->vram_used_bytes;
+    pthread_mutex_unlock(&mut->lock);
+    return used;
+}
+
+int henge_virtio_gpu_set_refresh_hz(HengeVirtioGpuDevice *dev,
+                                    uint32_t scanout_id,
+                                    uint32_t refresh_hz) {
+    if (dev == NULL || scanout_id >= HENGE_VIRTIO_GPU_MAX_SCANOUTS) {
+        return -1;
+    }
+    uint32_t clamped = 60U;
+    if (refresh_hz <= 30U) {
+        clamped = 30U;
+    } else if (refresh_hz >= 120U) {
+        clamped = 120U;
+    }
+    pthread_mutex_lock(&dev->lock);
+    dev->scanouts[scanout_id].refresh_hz = clamped;
+    pthread_mutex_unlock(&dev->lock);
+    return 0;
+}
+
 int henge_virtio_gpu_set_display_mode(HengeVirtioGpuDevice *dev,
                                       uint32_t scanout_id,
                                       uint32_t width,
@@ -469,11 +507,15 @@ int henge_virtio_gpu_get_edid(const HengeVirtioGpuDevice *dev,
     }
     uint32_t width = 1920U;
     uint32_t height = 1200U;
+    uint32_t refresh_hz = 60U;
     HengeVirtioGpuDevice *mut = (HengeVirtioGpuDevice *)dev;
     pthread_mutex_lock(&mut->lock);
     if (dev->scanouts[scanout_id].width > 0U && dev->scanouts[scanout_id].height > 0U) {
         width = dev->scanouts[scanout_id].width;
         height = dev->scanouts[scanout_id].height;
+    }
+    if (dev->scanouts[scanout_id].refresh_hz >= 30U && dev->scanouts[scanout_id].refresh_hz <= 120U) {
+        refresh_hz = dev->scanouts[scanout_id].refresh_hz;
     }
     pthread_mutex_unlock(&mut->lock);
 
@@ -542,14 +584,14 @@ int henge_virtio_gpu_get_edid(const HengeVirtioGpuDevice *dev,
         out_edid[i] = 0x01U;
     }
 
-    /* Detailed Timing Descriptor #1 (bytes 54..71): width x height @ 60 Hz */
+    /* Detailed Timing Descriptor #1 (bytes 54..71): width x height @ refresh_hz */
     uint32_t hblank = 160U;
     uint32_t vblank = 35U;
     uint32_t hfp = 48U;
     uint32_t hsync = 32U;
     uint32_t vfp = 3U;
     uint32_t vsync = 6U;
-    uint64_t pclk_10khz = ((uint64_t)(width + hblank) * (uint64_t)(height + vblank) * 60ULL) / 10000ULL;
+    uint64_t pclk_10khz = ((uint64_t)(width + hblank) * (uint64_t)(height + vblank) * (uint64_t)refresh_hz) / 10000ULL;
     if (pclk_10khz == 0ULL) pclk_10khz = 1ULL;
     if (pclk_10khz > 65535ULL) pclk_10khz = 65535ULL;
 
@@ -960,13 +1002,20 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
             }
             uint8_t *pixels = NULL;
             uint32_t stride = 0U;
-            if (!is_3d) {
-                uint64_t total_bytes = (uint64_t)width * (uint64_t)height * 4ULL;
-                if (total_bytes == 0ULL || total_bytes > HENGE_VIRTIO_GPU_MAX_2D_BYTES) {
+            uint64_t est_bytes = (uint64_t)width * (uint64_t)height * 4ULL;
+            if (is_3d) {
+                uint64_t vram_cap = (uint64_t)dev->cfg.vram_mib * 1024ULL * 1024ULL;
+                uint64_t avail_mem = henge_available_memory_bytes();
+                if (!henge_gpu_check_vram_budget(est_bytes, dev->vram_used_bytes, vram_cap, avail_mem)) {
                     resp = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
                     break;
                 }
-                pixels = calloc(1U, (size_t)total_bytes);
+            } else {
+                if (est_bytes == 0ULL || est_bytes > HENGE_VIRTIO_GPU_MAX_2D_BYTES) {
+                    resp = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
+                    break;
+                }
+                pixels = calloc(1U, (size_t)est_bytes);
                 if (pixels == NULL) {
                     resp = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
                     break;
@@ -987,9 +1036,12 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
             free_res->dirty_y0 = 0U;
             free_res->dirty_x1 = 0U;
             free_res->dirty_y1 = 0U;
+            free_res->vram_bytes = est_bytes;
             free_res->pixels = pixels;
             free_res->backing = NULL;
             free_res->backing_count = 0U;
+            dev->vram_used_bytes += est_bytes;
+            henge_gpu_telemetry_set_vram_tracked_bytes(dev->vram_used_bytes);
             break;
         }
 
@@ -1019,6 +1071,12 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
                     dev->scanouts[s].cursor_position_gen++;
                 }
             }
+            if (dev->vram_used_bytes >= res->vram_bytes) {
+                dev->vram_used_bytes -= res->vram_bytes;
+            } else {
+                dev->vram_used_bytes = 0ULL;
+            }
+            henge_gpu_telemetry_set_vram_tracked_bytes(dev->vram_used_bytes);
             free_resource_buffers_locked(res);
             memset(res, 0, sizeof(*res));
             break;

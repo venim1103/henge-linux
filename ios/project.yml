@@ -168,6 +168,10 @@ targets:
           - "-framework"
           - "Metal"
           - "-framework"
+          - "IOSurface"
+          - "-framework"
+          - "CoreFoundation"
+          - "-framework"
           - "QuartzCore"
           - "-framework"
           - "SafariServices"
@@ -191,6 +195,8 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     frameworks:
       - sdk: Metal.framework
+      - sdk: IOSurface.framework
+      - sdk: CoreFoundation.framework
       - sdk: QuartzCore.framework
       - sdk: AudioToolbox.framework
       - sdk: AVFAudio.framework

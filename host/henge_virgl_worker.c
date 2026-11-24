@@ -30,9 +30,10 @@
 #define HENGE_VIRGL_MAX_BACKING     4096U
 
 typedef enum {
-    HENGE_WORK_CMD   = 0,
-    HENGE_WORK_RESET = 1,
-    HENGE_WORK_DRAIN = 2
+    HENGE_WORK_CMD    = 0,
+    HENGE_WORK_RESET  = 1,
+    HENGE_WORK_DRAIN  = 2,
+    HENGE_WORK_MEMPR  = 3
 } HengeWorkKind;
 
 typedef struct HengeWorkNode {
@@ -105,6 +106,11 @@ struct HengeVirglWorker {
     uint64_t                 cmds_completed;
     uint64_t                 fences_retired;
     uint64_t                 resets_processed;
+    uint64_t                 flushes_3d;
+
+    /* Zero-copy double-buffered IOSurface swapchains per scanout. */
+    HengeGpuSwapchain       *swapchains[HENGE_VIRTIO_GPU_MAX_SCANOUTS];
+    uint64_t                 swapchain_signal_seq;
 
 #if HENGE_WORKER_HAS_VIRGL
     HengeVirglIovEntry      *iov_head;
@@ -403,15 +409,19 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                 write_ctrl_hdr(stack_resp, resp_type, node->flags, node->fence_id, node->ctx_id, node->ring_idx);
                 break;
             }
-            uint32_t dw = 1024U, dh = 768U;
-            bool den = true;
-            henge_virtio_gpu_get_display_info(w->gpu, 0U, &dw, &dh, &den);
             resp_type = HENGE_VIRTIO_GPU_RESP_OK_DISPLAY_INFO;
             write_ctrl_hdr(heap_resp, resp_type, node->flags, node->fence_id, node->ctx_id, node->ring_idx);
-            memcpy(heap_resp + 24U + 8U, &dw, 4U);
-            memcpy(heap_resp + 24U + 12U, &dh, 4U);
-            uint32_t en32 = den ? 1U : 0U;
-            memcpy(heap_resp + 24U + 16U, &en32, 4U);
+            for (uint32_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+                uint32_t dw = 0U, dh = 0U;
+                bool den = false;
+                if (henge_virtio_gpu_get_display_info(w->gpu, s, &dw, &dh, &den) == 0) {
+                    size_t off = 24U + (size_t)s * 24U;
+                    memcpy(heap_resp + off + 8U, &dw, 4U);
+                    memcpy(heap_resp + off + 12U, &dh, 4U);
+                    uint32_t en32 = den ? 1U : 0U;
+                    memcpy(heap_resp + off + 16U, &en32, 4U);
+                }
+            }
             resp_ptr = heap_resp;
             resp_len = 24U + 16U * 24U;
             break;
@@ -860,8 +870,14 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                 resp_type = (uint32_t)henge_virtio_gpu_process_ctrl(
                     w->gpu, node->cmd_type, node->ctx_id, res_id, scanout_id, rw, rh, 0U, NULL, 0U);
                 if (resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA &&
-                    scanout_id == 0U && w->on_display_event != NULL) {
-                    w->on_display_event(w->callback_opaque, 0U, false, true);
+                    scanout_id < HENGE_VIRTIO_GPU_MAX_SCANOUTS) {
+                    if (w->virgl_initialized && res_id != 0U && rw > 0U && rh > 0U &&
+                        w->swapchains[scanout_id] != NULL) {
+                        (void)henge_gpu_swapchain_resize(w->swapchains[scanout_id], rw, rh, false);
+                    }
+                    if (scanout_id == 0U && w->on_display_event != NULL) {
+                        w->on_display_event(w->callback_opaque, 0U, false, true);
+                    }
                 }
             }
             write_ctrl_hdr(stack_resp, resp_type, node->flags, node->fence_id, node->ctx_id, node->ring_idx);
@@ -877,10 +893,28 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                 uint32_t res_id = read_le32(node->payload + 16U);
                 resp_type = (uint32_t)henge_virtio_gpu_process_ctrl(
                     w->gpu, node->cmd_type, node->ctx_id, res_id, 0U, rw, rh, 0U, NULL, 0U);
-                if (resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA &&
-                    res_id == henge_virtio_gpu_scanout_resource(w->gpu, 0U) &&
-                    w->on_display_event != NULL) {
-                    w->on_display_event(w->callback_opaque, 0U, false, false);
+                if (resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA) {
+                    if (w->virgl_initialized) {
+                        pthread_mutex_lock(&w->mu);
+                        w->flushes_3d++;
+                        pthread_mutex_unlock(&w->mu);
+                        henge_gpu_telemetry_inc_3d_flushes();
+                        for (uint32_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+                            if (res_id == henge_virtio_gpu_scanout_resource(w->gpu, s) &&
+                                w->swapchains[s] != NULL) {
+                                uint32_t slot_idx = 0U;
+                                HengeGpuSwapchainSlot slot;
+                                if (henge_gpu_swapchain_acquire_back(w->swapchains[s], &slot_idx, &slot) == 0) {
+                                    uint64_t sig = ++w->swapchain_signal_seq;
+                                    (void)henge_gpu_swapchain_publish(w->swapchains[s], slot_idx, NULL, sig, slot.is_srgb);
+                                }
+                            }
+                        }
+                    }
+                    if (res_id == henge_virtio_gpu_scanout_resource(w->gpu, 0U) &&
+                        w->on_display_event != NULL) {
+                        w->on_display_event(w->callback_opaque, 0U, false, false);
+                    }
                 }
             }
             write_ctrl_hdr(stack_resp, resp_type, node->flags, node->fence_id, node->ctx_id, node->ring_idx);
@@ -977,6 +1011,12 @@ static void *virgl_worker_thread_main(void *arg) {
 
         if (node->kind == HENGE_WORK_RESET) {
             flush_stale_fences(w, node->generation, false);
+            for (uint32_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+                if (w->swapchains[s] != NULL) {
+                    henge_gpu_swapchain_destroy(w->swapchains[s]);
+                    w->swapchains[s] = henge_gpu_swapchain_create();
+                }
+            }
 #if HENGE_WORKER_HAS_VIRGL
             if (w->virgl_initialized) {
                 virgl_renderer_reset();
@@ -986,6 +1026,13 @@ static void *virgl_worker_thread_main(void *arg) {
             pthread_mutex_lock(&w->mu);
             w->resets_processed++;
             pthread_mutex_unlock(&w->mu);
+        } else if (node->kind == HENGE_WORK_MEMPR) {
+#if HENGE_WORKER_HAS_VIRGL
+            if (w->virgl_initialized) {
+                virgl_renderer_poll();
+                virgl_renderer_force_ctx_0();
+            }
+#endif
         } else if (node->kind == HENGE_WORK_DRAIN) {
 #if HENGE_WORKER_HAS_VIRGL
             if (w->virgl_initialized) {
@@ -1046,6 +1093,9 @@ HengeVirglWorker *henge_virgl_worker_create(const HengeVirglWorkerConfig *cfg) {
     w->callback_opaque = cfg->callback_opaque;
     w->on_complete = cfg->on_complete;
     w->on_display_event = cfg->on_display_event;
+    for (uint32_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+        w->swapchains[s] = henge_gpu_swapchain_create();
+    }
 
     if (pthread_create(&w->thread, NULL, virgl_worker_thread_main, w) != 0) {
         pthread_mutex_destroy(&w->fence_mu);
@@ -1088,6 +1138,10 @@ void henge_virgl_worker_destroy(HengeVirglWorker *worker) {
         free_work_node(node);
     }
     flush_stale_fences(worker, 0ULL, true);
+    for (uint32_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+        henge_gpu_swapchain_destroy(worker->swapchains[s]);
+        worker->swapchains[s] = NULL;
+    }
 
     pthread_mutex_destroy(&worker->fence_mu);
     pthread_cond_destroy(&worker->drain_cv);
@@ -1272,6 +1326,7 @@ void henge_virgl_worker_get_stats(const HengeVirglWorker *worker,
     out_stats->cmds_completed = mut->cmds_completed;
     out_stats->fences_retired = mut->fences_retired;
     out_stats->resets_processed = mut->resets_processed;
+    out_stats->flushes_3d = mut->flushes_3d;
     out_stats->pending_queue_depth = mut->q_depth;
     out_stats->virgl_initialized = mut->virgl_initialized;
     pthread_mutex_unlock(&mut->mu);
@@ -1279,6 +1334,46 @@ void henge_virgl_worker_get_stats(const HengeVirglWorker *worker,
     pthread_mutex_lock(&mut->fence_mu);
     out_stats->pending_fence_count = mut->fence_count;
     pthread_mutex_unlock(&mut->fence_mu);
+}
+
+int henge_virgl_worker_get_front_surface(const HengeVirglWorker *worker,
+                                         uint32_t scanout_id,
+                                         HengeGpuSwapchainSlot *out_slot) {
+    if (worker == NULL || out_slot == NULL || scanout_id >= HENGE_VIRTIO_GPU_MAX_SCANOUTS) {
+        return -1;
+    }
+    if (worker->swapchains[scanout_id] == NULL) {
+        return -1;
+    }
+    return henge_gpu_swapchain_get_front(worker->swapchains[scanout_id], out_slot);
+}
+
+int henge_virgl_worker_notify_memory_pressure(HengeVirglWorker *worker) {
+    if (worker == NULL) {
+        return 0;
+    }
+    HengeWorkNode *node = calloc(1U, sizeof(*node));
+    if (node == NULL) {
+        return -1;
+    }
+    node->kind = HENGE_WORK_MEMPR;
+    pthread_mutex_lock(&worker->mu);
+    if (worker->stop) {
+        pthread_mutex_unlock(&worker->mu);
+        free_work_node(node);
+        return 0;
+    }
+    if (worker->q_tail == NULL) {
+        worker->q_head = node;
+        worker->q_tail = node;
+    } else {
+        worker->q_tail->next = node;
+        worker->q_tail = node;
+    }
+    worker->q_depth++;
+    pthread_cond_signal(&worker->cv);
+    pthread_mutex_unlock(&worker->mu);
+    return 0;
 }
 
 void henge_virgl_register_active_worker(HengeVirglWorker *worker) {
@@ -1300,6 +1395,15 @@ void henge_virgl_drain_active_worker(uint32_t timeout_ms) {
     HengeVirglWorker *w = g_active_worker;
     if (w != NULL) {
         (void)henge_virgl_worker_drain(w, timeout_ms);
+    }
+    pthread_mutex_unlock(&g_active_worker_mu);
+}
+
+void henge_virgl_notify_active_memory_pressure(void) {
+    pthread_mutex_lock(&g_active_worker_mu);
+    HengeVirglWorker *w = g_active_worker;
+    if (w != NULL) {
+        (void)henge_virgl_worker_notify_memory_pressure(w);
     }
     pthread_mutex_unlock(&g_active_worker_mu);
 }

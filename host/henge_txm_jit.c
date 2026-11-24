@@ -259,12 +259,29 @@ uint64_t henge_available_memory_bytes(void) {
 #endif
 }
 
-uint32_t henge_recommended_guest_ram_mib(size_t jit_pool_bytes) {
+bool henge_is_entitled_high_memory(void) {
+    uint64_t avail = henge_available_memory_bytes();
+    return avail >= (3840ULL * 1024ULL * 1024ULL);
+}
+
+uint32_t henge_gpu_ram_reserve_mib(int gpu_backend_mode, uint64_t avail_memory_bytes) {
+    if (gpu_backend_mode == 1) { /* VirGL 3D Metal */
+        /* Reserve +768 MiB on entitled high-memory devices, +448 MiB on standard ledger. */
+        return (avail_memory_bytes >= (4096ULL * 1024ULL * 1024ULL)) ? 768U : 448U;
+    }
+    if (gpu_backend_mode == 2) { /* Enhanced 2D VirtIO-GPU KMS */
+        return 32U;
+    }
+    return 0U;
+}
+
+uint32_t henge_recommended_guest_ram_mib_for_gpu(size_t jit_pool_bytes, int gpu_backend_mode) {
     uint64_t avail = henge_available_memory_bytes();
     if (avail == 0ULL) {
-        return 1664U;
+        return (gpu_backend_mode == 1) ? 1280U : 1664U;
     }
-    const uint64_t headroom = 576ULL * 1024ULL * 1024ULL;
+    const uint64_t gpu_reserve = (uint64_t)henge_gpu_ram_reserve_mib(gpu_backend_mode, avail) * 1024ULL * 1024ULL;
+    const uint64_t headroom = (576ULL * 1024ULL * 1024ULL) + gpu_reserve;
     /* When the persistent RX/RW JIT pool is already allocated, its footprint is
      * already accounted for in os_proc_available_memory(); do not subtract twice. */
     const uint64_t pending_jit = atomic_load_explicit(&g_pool_live, memory_order_acquire)
@@ -283,6 +300,10 @@ uint32_t henge_recommended_guest_ram_mib(size_t jit_pool_bytes) {
         return HENGE_MAX_GUEST_RAM_MIB;
     }
     return (uint32_t)stepped_mib;
+}
+
+uint32_t henge_recommended_guest_ram_mib(size_t jit_pool_bytes) {
+    return henge_recommended_guest_ram_mib_for_gpu(jit_pool_bytes, 0);
 }
 
 static void set_jit_status(const char *fmt, ...) {

@@ -10,6 +10,7 @@ enum ExternalDisplayResolutionPreset: String, CaseIterable, Identifiable, Sendab
     case hd900 = "1600x900"
     case fhd1080 = "1920x1080"
     case qhd1440 = "2560x1440"
+    case uhd4k = "3840x2160"
 
     var id: String { rawValue }
 
@@ -20,6 +21,7 @@ enum ExternalDisplayResolutionPreset: String, CaseIterable, Identifiable, Sendab
         case .hd900: return "1600 × 900 (900p)"
         case .fhd1080: return "1920 × 1080 (1080p)"
         case .qhd1440: return "2560 × 1440 (1440p)"
+        case .uhd4k: return "3840 × 2160 (4K UHD)"
         }
     }
 
@@ -30,6 +32,7 @@ enum ExternalDisplayResolutionPreset: String, CaseIterable, Identifiable, Sendab
         case .hd900: return "900p"
         case .fhd1080: return "1080p"
         case .qhd1440: return "1440p"
+        case .uhd4k: return "4K"
         }
     }
 
@@ -43,18 +46,21 @@ enum ExternalDisplayResolutionPreset: String, CaseIterable, Identifiable, Sendab
             return (1920, 1080)
         case .qhd1440:
             return (2560, 1440)
+        case .uhd4k:
+            return (3840, 2160)
         case .auto:
             let rawW = max(Int(nativeSize.width.rounded()), 640)
             let rawH = max(Int(nativeSize.height.rounded()), 480)
             let landW = max(rawW, rawH)
             let landH = min(rawW, rawH)
-            // Keep Auto within 1920x1200 so 2D VirtIO-GPU software blits stay
-            // crisp and fluid on 4K monitors while matching exact aspect ratio.
-            if landW <= 1920 && landH <= 1200 {
+            // With Phase 0.3.0 dirty-rect uploads & Metal hardware cursor, Auto
+            // scales smoothly up to 1440p (2560x1440) on 4K monitors while matching
+            // exact aspect ratio (users can still select explicit 4K UHD above).
+            if landW <= 2560 && landH <= 1440 {
                 return (max(landW & ~1, 640), max(landH & ~1, 480))
             }
-            let scaleW = 1920.0 / Double(landW)
-            let scaleH = 1200.0 / Double(landH)
+            let scaleW = 2560.0 / Double(landW)
+            let scaleH = 1440.0 / Double(landH)
             let scale = min(scaleW, scaleH)
             let w = max(Int((Double(landW) * scale).rounded()) & ~1, 640)
             let h = max(Int((Double(landH) * scale).rounded()) & ~1, 480)

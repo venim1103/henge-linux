@@ -54,7 +54,10 @@ bool henge_jit_requires_txm_low_va(void);
 /* Live Jetsam-aware memory and adaptive JIT pool sizing (os_proc_available_memory). */
 size_t henge_recommended_jit_pool_bytes(void);
 uint64_t henge_available_memory_bytes(void);
+bool henge_is_entitled_high_memory(void);
 uint32_t henge_recommended_guest_ram_mib(size_t jit_pool_bytes);
+uint32_t henge_recommended_guest_ram_mib_for_gpu(size_t jit_pool_bytes, int gpu_backend_mode);
+uint32_t henge_gpu_ram_reserve_mib(int gpu_backend_mode, uint64_t avail_memory_bytes);
 
 /* Return true iff [base, base + size) lies within TXM's safe low-VA bounds. */
 bool henge_txm_is_valid_jit_range(uintptr_t base, size_t size);

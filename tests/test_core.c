@@ -5,6 +5,7 @@
 
 #include "henge_platform.h"
 #include "henge_txm_jit.h"
+#include "henge_gpu_surface.h"
 #include "henge_virtio_gpu.h"
 #include "henge_virgl_worker.h"
 #include "henge_qcow2.h"
@@ -1238,6 +1239,125 @@ static void test_virgl_async_worker(void) {
     pthread_mutex_destroy(&sink.mu);
 }
 
+static void test_phase030c_swapchain_jetsam_cache_telemetry(void) {
+    /* 1. Double-buffered IOSurface swapchain RAII resize, 16-byte stride alignment, and flip. */
+    HengeGpuSwapchain *sc = henge_gpu_swapchain_create();
+    HENGE_CHECK(sc != NULL);
+    HENGE_CHECK(henge_gpu_swapchain_slot_count(sc) == 0U);
+    HENGE_CHECK(henge_gpu_swapchain_resize(sc, 1921U, 1080U, true) == 0);
+    HENGE_CHECK(henge_gpu_swapchain_slot_count(sc) == HENGE_GPU_SWAPCHAIN_SLOTS);
+    uint32_t slot0 = 99U, slot1 = 99U;
+    HengeGpuSwapchainSlot info0, info1, front;
+    HENGE_CHECK(henge_gpu_swapchain_acquire_back(sc, &slot0, &info0) == 0);
+    HENGE_CHECK(slot0 == 0U && info0.iosurface != NULL && (info0.bytes_per_row & 15U) == 0U);
+    HENGE_CHECK(info0.bytes_per_row >= 1921U * 4U && info0.is_srgb);
+    HENGE_CHECK(henge_gpu_swapchain_publish(sc, slot0, NULL, 11ULL, true) == 0);
+    HENGE_CHECK(henge_gpu_swapchain_get_front(sc, &front) == 0);
+    HENGE_CHECK(front.signal_value == 11ULL && front.iosurface == info0.iosurface);
+    HENGE_CHECK(henge_gpu_swapchain_acquire_back(sc, &slot1, &info1) == 0);
+    HENGE_CHECK(slot1 == 1U && info1.iosurface != info0.iosurface);
+    HENGE_CHECK(henge_gpu_swapchain_publish(sc, slot1, NULL, 12ULL, false) == 0);
+    HENGE_CHECK(henge_gpu_swapchain_get_front(sc, &front) == 0);
+    HENGE_CHECK(front.signal_value == 12ULL && !front.is_srgb);
+    /* Resize tears down prior surfaces and resets front state cleanly. */
+    HENGE_CHECK(henge_gpu_swapchain_resize(sc, 2560U, 1440U, false) == 0);
+    HENGE_CHECK(henge_gpu_swapchain_get_front(sc, &front) == -1);
+    henge_gpu_swapchain_destroy(sc);
+
+    /* 2. Jetsam VRAM caps, 320 MiB emergency floor, GPU RAM reserves, and 3D OOM enforcement. */
+    HENGE_CHECK(henge_gpu_default_vram_cap_mib(8ULL << 30, 3350ULL << 20) == HENGE_GPU_VRAM_CAP_STANDARD_MIB);
+    HENGE_CHECK(henge_gpu_default_vram_cap_mib(8ULL << 30, 5120ULL << 20) == HENGE_GPU_VRAM_CAP_ENTITLED_MIB);
+    HENGE_CHECK(henge_gpu_default_vram_cap_mib(12ULL << 30, 6144ULL << 20) == HENGE_GPU_VRAM_CAP_HIGHMEM_MIB);
+    HENGE_CHECK(henge_gpu_ram_reserve_mib(1, 3350ULL << 20) == 448U);
+    HENGE_CHECK(henge_gpu_ram_reserve_mib(1, 5120ULL << 20) == 768U);
+    HENGE_CHECK(henge_gpu_ram_reserve_mib(2, 3350ULL << 20) == 32U);
+    HENGE_CHECK(henge_gpu_check_vram_budget(16ULL << 20, 0ULL, 256ULL << 20, 1024ULL << 20));
+    /* Exceeding VRAM cap fails cleanly. */
+    HENGE_CHECK(!henge_gpu_check_vram_budget(64ULL << 20, 224ULL << 20, 256ULL << 20, 2048ULL << 20));
+    /* Dropping below 320 MiB emergency floor fails cleanly. */
+    HENGE_CHECK(!henge_gpu_check_vram_budget(64ULL << 20, 0ULL, 512ULL << 20, 350ULL << 20));
+
+    HengeVirtioGpuConfig vcfg;
+    HENGE_CHECK(henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_VIRGL_3D, 64U, &vcfg) == 0);
+    HengeVirtioGpuDevice *vgpu = henge_virtio_gpu_create(&vcfg);
+    HENGE_CHECK(vgpu != NULL);
+    /* 4096x2048x4 = 32 MiB -> first two succeed (64 MiB), third hits VRAM cap -> OUT_OF_MEMORY. */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        vgpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, 0U, 1U, 0U, 4096U, 2048U,
+        HENGE_VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        vgpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, 0U, 2U, 0U, 4096U, 2048U,
+        HENGE_VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_vram_used_bytes(vgpu) == (64ULL << 20));
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        vgpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, 0U, 3U, 0U, 4096U, 2048U,
+        HENGE_VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY);
+    /* Unreferencing resource 1 reclaims VRAM so resource 3 now succeeds. */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        vgpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF, 0U, 1U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_vram_used_bytes(vgpu) == (32ULL << 20));
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        vgpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, 0U, 3U, 0U, 4096U, 2048U,
+        HENGE_VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+
+    /* 3. EDID 60 Hz vs 120 Hz ProMotion Detailed Timing Descriptor pixel clock. */
+    HENGE_CHECK(henge_virtio_gpu_set_display_mode(vgpu, 0U, 1280U, 720U, true) == 0);
+    HENGE_CHECK(henge_virtio_gpu_set_refresh_hz(vgpu, 0U, 60U) == 0);
+    uint8_t edid60[128], edid120[128];
+    HENGE_CHECK(henge_virtio_gpu_get_edid(vgpu, 0U, edid60) == 0);
+    HENGE_CHECK(henge_virtio_gpu_set_refresh_hz(vgpu, 0U, 120U) == 0);
+    HENGE_CHECK(henge_virtio_gpu_get_edid(vgpu, 0U, edid120) == 0);
+    uint16_t pclk60 = (uint16_t)(edid60[54] | ((uint16_t)edid60[55] << 8));
+    uint16_t pclk120 = (uint16_t)(edid120[54] | ((uint16_t)edid120[55] << 8));
+    HENGE_CHECK(pclk120 >= (uint16_t)(pclk60 * 2U - 2U) && pclk120 <= (uint16_t)(pclk60 * 2U + 2U));
+    henge_virtio_gpu_destroy(vgpu);
+
+    /* 4. Bounded LRU shader disk cache (put, size query, get, eviction, clear). */
+    const char *cache_dir = "build/test_shader_cache";
+    HENGE_CHECK(henge_shader_cache_init(cache_dir, "henge-test-v0.3.0", 2048U) == 0);
+    HENGE_CHECK(henge_shader_cache_is_ready());
+    HENGE_CHECK(henge_shader_cache_clear() == 0);
+    uint8_t blobA[1024], blobB[1024], blobC[1024], outBuf[1024];
+    memset(blobA, 0xA1, sizeof(blobA));
+    memset(blobB, 0xB2, sizeof(blobB));
+    memset(blobC, 0xC3, sizeof(blobC));
+    HENGE_CHECK(henge_shader_cache_put("keyA", 4U, blobA, sizeof(blobA)) == 0);
+    HENGE_CHECK(henge_shader_cache_put("keyB", 4U, blobB, sizeof(blobB)) == 0);
+    HENGE_CHECK(henge_shader_cache_get("keyA", 4U, NULL, 0U) == sizeof(blobA));
+    HENGE_CHECK(henge_shader_cache_get("keyA", 4U, outBuf, sizeof(outBuf)) == sizeof(blobA));
+    HENGE_CHECK(memcmp(outBuf, blobA, sizeof(blobA)) == 0);
+    /* Third 1 KiB blob exceeds 2 KiB cap and triggers LRU eviction down to <= 2048 B. */
+    HENGE_CHECK(henge_shader_cache_put("keyC", 4U, blobC, sizeof(blobC)) == 0);
+    HengeShaderCacheStats cstats;
+    henge_shader_cache_get_stats(&cstats);
+    HENGE_CHECK(cstats.ready && cstats.total_bytes <= 2048U && cstats.evictions >= 1ULL);
+    HENGE_CHECK(henge_shader_cache_clear() == 0);
+    henge_shader_cache_get_stats(&cstats);
+    HENGE_CHECK(cstats.entry_count == 0U && cstats.total_bytes == 0ULL);
+
+    /* 5. Thermal step-down pacing & lock-free FPS telemetry atomics. */
+    henge_gpu_telemetry_reset();
+    henge_gpu_telemetry_set_active_backend(1U);
+    henge_gpu_telemetry_set_target_refresh_hz(120U);
+    henge_gpu_telemetry_set_thermal_state(HENGE_THERMAL_NOMINAL);
+    HENGE_CHECK(henge_gpu_telemetry_effective_refresh_hz() == 120U);
+    henge_gpu_telemetry_set_thermal_state(HENGE_THERMAL_SERIOUS);
+    HENGE_CHECK(henge_gpu_telemetry_effective_refresh_hz() == 40U);
+    henge_gpu_telemetry_set_thermal_state(HENGE_THERMAL_CRITICAL);
+    HENGE_CHECK(henge_gpu_telemetry_effective_refresh_hz() == 30U);
+    henge_gpu_telemetry_set_thermal_state(HENGE_THERMAL_NOMINAL);
+    henge_gpu_telemetry_set_target_refresh_hz(60U);
+    for (uint64_t i = 0ULL; i <= 30ULL; i++) {
+        henge_gpu_telemetry_record_frame(1000000000ULL + i * 16666667ULL);
+    }
+    HengeGpuTelemetrySnapshot tsnap;
+    henge_gpu_telemetry_get_snapshot(&tsnap);
+    HENGE_CHECK(tsnap.active_backend == 1U && tsnap.effective_refresh_hz == 60U);
+    HENGE_CHECK(tsnap.total_frames_presented == 31ULL);
+    HENGE_CHECK(tsnap.fps_tenths >= 550U && tsnap.fps_tenths <= 650U);
+}
+
 int main(void) {
     test_unix_socket_path_bounds();
     test_mmu_granule_decoding();
@@ -1247,6 +1367,7 @@ int main(void) {
     test_txm_jit_bounds_and_blessing();
     test_virtio_gpu_backends();
     test_virgl_async_worker();
+    test_phase030c_swapchain_jetsam_cache_telemetry();
     test_console_log_capture();
     test_qcow2_and_storage_tools();
     test_cidata_fat16_generator();

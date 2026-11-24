@@ -173,29 +173,29 @@ static int serve_henge(Conn *c, Request *r) {
     # 2. devices/fb_metal.m: serialize Metal drawable acquisition/commit on willResignActive
     fb_metal_m = upstream / "devices/fb_metal.m"
     fb_text = fb_metal_m.read_text(encoding="utf-8")
-    if '#include "henge_platform.h"' not in fb_text:
+    if '#include "henge_gpu_surface.h"' not in fb_text:
         if '#import "fb_metal.h"\n' in fb_text:
             patch_file(
                 fb_metal_m,
-                '#include "henge_platform.h"',
+                '#include "henge_gpu_surface.h"',
                 '#import "fb_metal.h"\n',
-                '#import "fb_metal.h"\n#include "henge_platform.h"\n',
+                '#import "fb_metal.h"\n#include <time.h>\n#include "henge_platform.h"\n#include "henge_gpu_surface.h"\n',
             )
         elif '#include "fb_metal.h"\n' in fb_text:
             patch_file(
                 fb_metal_m,
-                '#include "henge_platform.h"',
+                '#include "henge_gpu_surface.h"',
                 '#include "fb_metal.h"\n',
-                '#include "fb_metal.h"\n#include "henge_platform.h"\n',
+                '#include "fb_metal.h"\n#include <time.h>\n#include "henge_platform.h"\n#include "henge_gpu_surface.h"\n',
             )
         else:
-            fb_metal_m.write_text('#include "henge_platform.h"\n' + fb_text, encoding="utf-8")
-            print(f"[patch] {fb_metal_m}: prepended henge_platform.h")
+            fb_metal_m.write_text('#include <time.h>\n#include "henge_platform.h"\n#include "henge_gpu_surface.h"\n' + fb_text, encoding="utf-8")
+            print(f"[patch] {fb_metal_m}: prepended henge_platform.h + henge_gpu_surface.h")
     else:
         print(f"[patch] {fb_metal_m}: header already applied")
     patch_file(
         fb_metal_m,
-        "cursorPipeline;",
+        "srgbPipeline;",
         """    _Atomic(uint64_t) framesPresented;
     uint64_t lastHash;
     CGSize lastDrawableSize;
@@ -205,7 +205,14 @@ static int serve_henge(Conn *c, Request *r) {
     uint64_t lastHashOdd;
     uint32_t hashParity;
     uint64_t lastVgpuEpoch;
+    uint64_t lastPresentNs;
     BOOL vgpuForceFullUpload;
+    id<MTLRenderPipelineState> srgbPipeline;
+    BOOL srgbPipelineFailed;
+    id<MTLTexture> ioSurfaceTexture;
+    void *lastIoSurfaceRef;
+    uint32_t ioTexW;
+    uint32_t ioTexH;
     id<MTLRenderPipelineState> cursorPipeline;
     BOOL cursorPipelineFailed;
     id<MTLTexture> cursorTexture;
@@ -309,10 +316,59 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
     )
     patch_file(
         fb_metal_m,
-        "ensureCursorPipelineLocked",
+        "ensureSrgbPipelineLocked",
         """- (void)tick {
     @autoreleasepool {""",
-        """- (BOOL)ensureCursorPipelineLocked {
+        """- (BOOL)ensureSrgbPipelineLocked {
+    if (srgbPipeline) return YES;
+    if (srgbPipelineFailed || !device) return NO;
+    static NSString *const kHengeSrgbShaderSource =
+        @"#include <metal_stdlib>\\n"
+        @"using namespace metal;\\n"
+        @"struct HengeSrgbOut {\\n"
+        @"    float4 pos [[position]];\\n"
+        @"    float2 uv;\\n"
+        @"};\\n"
+        @"vertex HengeSrgbOut henge_srgb_vs(uint vid [[vertex_id]],\\n"
+        @"                                  constant float2 &scale [[buffer(0)]]) {\\n"
+        @"    float2 pos[4] = { float2(-1, 1), float2(1, 1), float2(-1, -1), float2(1, -1) };\\n"
+        @"    float2 uv[4]  = { float2(0, 0),  float2(1, 0), float2(0, 1),   float2(1, 1) };\\n"
+        @"    HengeSrgbOut o;\\n"
+        @"    o.pos = float4(pos[vid] * scale, 0.0f, 1.0f);\\n"
+        @"    o.uv = uv[vid];\\n"
+        @"    return o;\\n"
+        @"}\\n"
+        @"fragment float4 henge_srgb_fs(HengeSrgbOut in [[stage_in]],\\n"
+        @"                              texture2d<float> tex [[texture(0)]]) {\\n"
+        @"    constexpr sampler s(mag_filter::linear, min_filter::linear, address::clamp_to_edge);\\n"
+        @"    float4 c = tex.sample(s, in.uv);\\n"
+        @"    float3 lin = clamp(c.rgb, 0.0f, 1.0f);\\n"
+        @"    float3 lo = lin * 12.92f;\\n"
+        @"    float3 hi = 1.055f * pow(lin, float3(1.0f / 2.4f)) - 0.055f;\\n"
+        @"    float3 enc = select(hi, lo, lin <= float3(0.0031308f));\\n"
+        @"    return float4(enc, 1.0f);\\n"
+        @"}\\n";
+    NSError *err = nil;
+    id<MTLLibrary> lib = [device newLibraryWithSource:kHengeSrgbShaderSource options:nil error:&err];
+    id<MTLFunction> vf = lib ? [lib newFunctionWithName:@"henge_srgb_vs"] : nil;
+    id<MTLFunction> ff = lib ? [lib newFunctionWithName:@"henge_srgb_fs"] : nil;
+    if (!vf || !ff) {
+        srgbPipelineFailed = YES;
+        return NO;
+    }
+    MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = vf;
+    desc.fragmentFunction = ff;
+    desc.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    srgbPipeline = [device newRenderPipelineStateWithDescriptor:desc error:&err];
+    if (!srgbPipeline) {
+        srgbPipelineFailed = YES;
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)ensureCursorPipelineLocked {
     if (cursorPipeline) return YES;
     if (cursorPipelineFailed || !device) return NO;
     static NSString *const kHengeCursorShaderSource =
@@ -519,6 +575,16 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
             CGSize dsize = curLayer.drawableSize;
             if (dsize.width < 4 || dsize.height < 4) return;
 
+            uint64_t nowNs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+            uint64_t minIntervalNs = henge_gpu_telemetry_min_frame_interval_ns();
+            if (vgpuMode && lastPresentNs > 0ull && nowNs > lastPresentNs &&
+                (nowNs - lastPresentNs) < minIntervalNs) {
+                if (vgpuSnap.epoch != lastVgpuEpoch) {
+                    atomic_store_explicit(&presentPending, 1, memory_order_release);
+                }
+                return;
+            }
+
             BOOL sizeChanged = !CGSizeEqualToSize(dsize, lastDrawableSize);
             uint32_t parity = 0u;
             uint64_t hval = 0ull;
@@ -551,55 +617,93 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
                 semAcquired = YES;
             }
 
-            BOOL recreatedTex = NO;
-            if (!texture || texW != w || texH != h) {
-                MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                                                              width:w
-                                                                                             height:h
-                                                                                          mipmapped:NO];
-                td.usage = MTLTextureUsageShaderRead;
-                texture = [device newTextureWithDescriptor:td];
-                if (!texture) {
-                    texW = 0;
-                    texH = 0;
-                    return;
+            id<MTLTexture> uploadTex = nil;
+            id<MTLSharedEvent> waitSharedEvent = nil;
+            uint64_t waitSignalValue = 0ull;
+            BOOL useSrgb = (vgpuMode && vgpuSnap.is_srgb != 0);
+
+            if (vgpuMode && vgpuSnap.iosurface != NULL &&
+                vgpuSnap.iosurface_w >= 4u && vgpuSnap.iosurface_h >= 4u) {
+                /* Zero-copy IOSurfaceRef consumer path (Phase 0.3.0-C). */
+                if (!ioSurfaceTexture || lastIoSurfaceRef != vgpuSnap.iosurface ||
+                    ioTexW != vgpuSnap.iosurface_w || ioTexH != vgpuSnap.iosurface_h) {
+                    MTLTextureDescriptor *itd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                                   width:vgpuSnap.iosurface_w
+                                                                                                  height:vgpuSnap.iosurface_h
+                                                                                               mipmapped:NO];
+                    itd.usage = MTLTextureUsageShaderRead;
+                    ioSurfaceTexture = [device newTextureWithDescriptor:itd
+                                                              iosurface:(IOSurfaceRef)vgpuSnap.iosurface
+                                                                  plane:0];
+                    lastIoSurfaceRef = ioSurfaceTexture ? vgpuSnap.iosurface : NULL;
+                    ioTexW = ioSurfaceTexture ? vgpuSnap.iosurface_w : 0u;
+                    ioTexH = ioSurfaceTexture ? vgpuSnap.iosurface_h : 0u;
                 }
-                texW = w;
-                texH = h;
-                recreatedTex = YES;
+                if (ioSurfaceTexture) {
+                    uploadTex = ioSurfaceTexture;
+                    w = vgpuSnap.iosurface_w;
+                    h = vgpuSnap.iosurface_h;
+                    if (vgpuSnap.shared_event != NULL && vgpuSnap.signal_value > 0ull) {
+                        waitSharedEvent = (__bridge id<MTLSharedEvent>)vgpuSnap.shared_event;
+                        waitSignalValue = vgpuSnap.signal_value;
+                    }
+                }
             }
 
-            if (vgpuMode) {
-                uint32_t dx = 0u, dy = 0u, dw = 0u, dh = 0u;
-                int dfull = 0;
-                int hasDirty = hv_fb_display_consume_vgpu_dirty(fb, &dx, &dy, &dw, &dh, &dfull);
-                if (recreatedTex || vgpuForceFullUpload || (hasDirty && dfull)) {
+            if (!uploadTex) {
+                BOOL recreatedTex = NO;
+                if (!texture || texW != w || texH != h) {
+                    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                                  width:w
+                                                                                                 height:h
+                                                                                              mipmapped:NO];
+                    td.usage = MTLTextureUsageShaderRead;
+                    texture = [device newTextureWithDescriptor:td];
+                    if (!texture) {
+                        texW = 0;
+                        texH = 0;
+                        return;
+                    }
+                    texW = w;
+                    texH = h;
+                    recreatedTex = YES;
+                }
+
+                if (vgpuMode) {
+                    uint32_t dx = 0u, dy = 0u, dw = 0u, dh = 0u;
+                    int dfull = 0;
+                    int hasDirty = hv_fb_display_consume_vgpu_dirty(fb, &dx, &dy, &dw, &dh, &dfull);
+                    if (recreatedTex || vgpuForceFullUpload || (hasDirty && dfull)) {
+                        [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+                                   mipmapLevel:0
+                                     withBytes:px
+                                   bytesPerRow:stride];
+                        vgpuForceFullUpload = NO;
+                    } else if (hasDirty && dw > 0u && dh > 0u) {
+                        if (dx < w && dy < h) {
+                            if (dw > w - dx) dw = w - dx;
+                            if (dh > h - dy) dh = h - dy;
+                            if (dw > 0u && dh > 0u) {
+                                const uint8_t *src = px + (size_t)dy * stride + (size_t)dx * 4u;
+                                [texture replaceRegion:MTLRegionMake2D(dx, dy, dw, dh)
+                                           mipmapLevel:0
+                                             withBytes:src
+                                           bytesPerRow:stride];
+                            }
+                        }
+                    }
+                } else {
                     [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
                                mipmapLevel:0
                                  withBytes:px
                                bytesPerRow:stride];
-                    vgpuForceFullUpload = NO;
-                } else if (hasDirty && dw > 0u && dh > 0u) {
-                    if (dx < w && dy < h) {
-                        if (dw > w - dx) dw = w - dx;
-                        if (dh > h - dy) dh = h - dy;
-                        if (dw > 0u && dh > 0u) {
-                            const uint8_t *src = px + (size_t)dy * stride + (size_t)dx * 4u;
-                            [texture replaceRegion:MTLRegionMake2D(dx, dy, dw, dh)
-                                       mipmapLevel:0
-                                         withBytes:src
-                                       bytesPerRow:stride];
-                        }
-                    }
                 }
-            } else {
-                [texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
-                           mipmapLevel:0
-                             withBytes:px
-                           bytesPerRow:stride];
+                uploadTex = texture;
             }
-
-            id<MTLTexture> uploadTex = texture;
+            id<MTLRenderPipelineState> activePipe = pipeline;
+            if (useSrgb && [self ensureSrgbPipelineLocked] && srgbPipeline) {
+                activePipe = srgbPipeline;
+            }
             id<MTLTexture> uploadCursorTex = nil;
             id<MTLRenderPipelineState> curCursorPipe = nil;
             BOOL drawCursor = NO;
@@ -663,7 +767,8 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
 
             os_unfair_lock_lock(&lock);
             unfairLocked = YES;
-            if (!fb || layer != curLayer || curLayer.hidden || texture != uploadTex || !queue || !pipeline) {
+            BOOL validTex = (uploadTex == texture || uploadTex == ioSurfaceTexture);
+            if (!fb || layer != curLayer || curLayer.hidden || !validTex || !queue || !activePipe) {
                 return;
             }
 
@@ -684,10 +789,14 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
             rp.colorAttachments[0].storeAction = MTLStoreActionStore;
 
             id<MTLCommandBuffer> cb = [queue commandBuffer];
-            id<MTLRenderCommandEncoder> enc = cb ? [cb renderCommandEncoderWithDescriptor:rp] : nil;
-            if (!cb || !enc) return;
+            if (!cb) return;
+            if (waitSharedEvent != nil && waitSignalValue > 0ull) {
+                [cb encodeWaitForEvent:waitSharedEvent value:waitSignalValue];
+            }
+            id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+            if (!enc) return;
 
-            [enc setRenderPipelineState:pipeline];
+            [enc setRenderPipelineState:activePipe];
             [enc setVertexBytes:scale length:sizeof(scale) atIndex:0];
             [enc setFragmentTexture:uploadTex atIndex:0];
             [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
@@ -741,8 +850,11 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
                 if (parity) lastHashOdd = hval;
                 else lastHashEven = hval;
             }
+            lastPresentNs = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
             lastDrawableSize = dsize;
             hengelinux_set_presented_fb_size(w, h);
+            henge_gpu_telemetry_record_frame(lastPresentNs);
+            henge_gpu_telemetry_set_metal_allocated_bytes((uint64_t)[device currentAllocatedSize]);
             atomic_fetch_add_explicit(&framesPresented, 1, memory_order_relaxed);
         } @finally {
             if (unfairLocked) os_unfair_lock_unlock(&lock);
@@ -789,6 +901,11 @@ void hv_fb_metal_destroy(HvFbDisplay *fb) {
         p->texture = nil;
         p->texW = 0;
         p->texH = 0;
+        p->ioSurfaceTexture = nil;
+        p->lastIoSurfaceRef = NULL;
+        p->ioTexW = 0;
+        p->ioTexH = 0;
+        p->srgbPipeline = nil;
         p->cursorTexture = nil;
         p->cursorTexW = 0;
         p->cursorTexH = 0;
@@ -1285,6 +1402,7 @@ void hv_winvirt_set_disk1_blk_size(uint32_t blk_size);
 void hv_winvirt_set_virtio_gpu(int enable);
 void hv_winvirt_set_virtio_gpu_config(int enable, int backend_mode, uint32_t vram_mib);
 void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t height);
+void hv_winvirt_set_virtio_gpu_scanout(HvWinVirt *b, uint32_t scanout_id, uint32_t width, uint32_t height, int enabled, uint32_t refresh_hz);
 uint64_t hv_winvirt_get_virtio_gpu_flushes(const HvWinVirt *b);
 uint32_t hv_winvirt_get_virtio_gpu_scanout_res(const HvWinVirt *b, uint32_t scanout_id);
 int hv_winvirt_is_virtio_gpu_virgl_ready(const HvWinVirt *b);""",
@@ -1349,6 +1467,18 @@ static void vgpu_sync_scanout0(HvVirtioGpuPci *g, int force_full) {
     hengelinux_render_lock();
     if (henge_virtio_gpu_get_scanout_frame(g->gpu, 0u, &px, &w, &h, &stride) == 0 && px != NULL) {
         hv_fb_display_set_host_buffer(g->fb, px, w, h, stride, 0x34325258u /* XR24 */);
+        if (g->worker != NULL) {
+            HengeGpuSwapchainSlot sc_slot;
+            if (henge_virgl_worker_get_front_surface(g->worker, 0u, &sc_slot) == 0 &&
+                sc_slot.iosurface != NULL && sc_slot.width > 0u && sc_slot.height > 0u) {
+                hv_fb_display_set_iosurface(g->fb, sc_slot.iosurface, sc_slot.width, sc_slot.height,
+                                            sc_slot.shared_event, sc_slot.signal_value, sc_slot.is_srgb ? 1 : 0);
+            } else {
+                hv_fb_display_set_iosurface(g->fb, NULL, 0u, 0u, NULL, 0ull, 0);
+            }
+        } else {
+            hv_fb_display_set_iosurface(g->fb, NULL, 0u, 0u, NULL, 0ull, 0);
+        }
         HengeGpuDirtyRect dirty;
         if (henge_virtio_gpu_consume_scanout_dirty(g->gpu, 0u, &dirty) == 0) {
             if (force_full || dirty.full) {
@@ -1430,6 +1560,7 @@ static void vgpu_reset(HvVirtio *v) {
     hengelinux_render_lock();
     if (g->fb) {
         hv_fb_display_set_host_buffer(g->fb, NULL, 0u, 0u, 0u, 0u);
+        hv_fb_display_set_iosurface(g->fb, NULL, 0u, 0u, NULL, 0ull, 0);
         hv_fb_display_set_cursor(g->fb, NULL, 0u, 0u, 0u, 0, 0, 0, 0, 0, 0ull, 0ull);
     }
     henge_virtio_gpu_reset(g->gpu);
@@ -1634,18 +1765,22 @@ static void vgpu_notify(HvVirtio *v, int q) {
         } else if (type == HENGE_VIRTIO_GPU_CMD_GET_DISPLAY_INFO) {
             uint8_t resp[24 + 16 * 24];
             memset(resp, 0, sizeof resp);
-            uint32_t w = 1280, h = 800;
-            bool en = true;
-            henge_virtio_gpu_get_display_info(g->gpu, 0u, &w, &h, &en);
             resp_type = HENGE_VIRTIO_GPU_RESP_OK_DISPLAY_INFO;
             memcpy(resp + 0, &resp_type, 4);
             uint32_t rflags = flags & 1u;
             memcpy(resp + 4, &rflags, 4);
             memcpy(resp + 8, &fence_id, 8);
-            memcpy(resp + 24 + 8, &w, 4);
-            memcpy(resp + 24 + 12, &h, 4);
-            uint32_t enabled32 = en ? 1u : 0u;
-            memcpy(resp + 24 + 16, &enabled32, 4);
+            for (uint32_t s = 0u; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+                uint32_t w = 0u, h = 0u;
+                bool en = false;
+                if (henge_virtio_gpu_get_display_info(g->gpu, s, &w, &h, &en) == 0) {
+                    size_t off = 24u + (size_t)s * 24u;
+                    memcpy(resp + off + 8, &w, 4);
+                    memcpy(resp + off + 12, &h, 4);
+                    uint32_t enabled32 = en ? 1u : 0u;
+                    memcpy(resp + off + 16, &enabled32, 4);
+                }
+            }
             written = hv_virtq_write(v, &e, 0, resp, (uint32_t)sizeof resp);
             hv_virtq_push(v, q, &e, written);
             any = 1;
@@ -1859,12 +1994,12 @@ static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, Hv
     g->vio.config_write = vgpu_config_write;
     g->vio.on_reset = vgpu_reset;
     g->vio.config_len = 16;
-    uint32_t num_scanouts = 1u;
+    uint32_t num_scanouts = HENGE_VIRTIO_GPU_MAX_SCANOUTS;
     memcpy(g->vio.config + 8, &num_scanouts, 4);
     memcpy(g->vio.config + 12, &num_capsets, 4);
     hv_pcie_attach(bus, &g->vio.pci);
-    fprintf(stderr, "winvm: virtio-gpu (0x1af4:0x1050, mode=%d, virgl=%d, capsets=%u, vram=%u MiB, EDID 1024x768) attached on PCIe\\n",
-            (int)mode, (g->worker != NULL) ? 1 : 0, num_capsets, vram_mib);
+    fprintf(stderr, "winvm: virtio-gpu (0x1af4:0x1050, mode=%d, virgl=%d, scanouts=%u, capsets=%u, vram=%u MiB, EDID 1024x768) attached on PCIe\\n",
+            (int)mode, (g->worker != NULL) ? 1 : 0, num_scanouts, num_capsets, vram_mib);
     return g;
 }
 
@@ -1977,25 +2112,31 @@ int hv_winvirt_is_virtio_gpu_virgl_ready(const HvWinVirt *b) {
     return 0;
 }
 
-void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t height) {
-    if (!b || !b->m || !b->vgpu || !b->vgpu->gpu) return;
-    if (width < 320u) width = 320u;
-    if (width > 4096u) width = 4096u;
-    if (height < 240u) height = 240u;
-    if (height > 4096u) height = 4096u;
-    width &= ~1u;
-    height &= ~1u;
+void hv_winvirt_set_virtio_gpu_scanout(HvWinVirt *b, uint32_t scanout_id, uint32_t width, uint32_t height, int enabled, uint32_t refresh_hz) {
+    if (!b || !b->m || !b->vgpu || !b->vgpu->gpu || scanout_id >= HENGE_VIRTIO_GPU_MAX_SCANOUTS) return;
+    if (enabled) {
+        if (width < 320u) width = 320u;
+        if (width > 4096u) width = 4096u;
+        if (height < 240u) height = 240u;
+        if (height > 4096u) height = 4096u;
+        width &= ~1u;
+        height &= ~1u;
+    }
 
     hv_dev_lock(b->m);
     HvVirtioGpuPci *g = b->vgpu;
+    if (refresh_hz >= 30u) {
+        henge_virtio_gpu_set_refresh_hz(g->gpu, scanout_id, refresh_hz);
+    }
     uint32_t cur_w = 0u, cur_h = 0u;
     bool cur_en = false;
-    if (henge_virtio_gpu_get_display_info(g->gpu, 0u, &cur_w, &cur_h, &cur_en) == 0 &&
-        cur_en && cur_w == width && cur_h == height) {
-        hv_dev_unlock(b->m);
-        return;
+    int mode_changed = 1;
+    if (henge_virtio_gpu_get_display_info(g->gpu, scanout_id, &cur_w, &cur_h, &cur_en) == 0 &&
+        cur_en == (enabled != 0) && (!enabled || (cur_w == width && cur_h == height)) &&
+        refresh_hz == 0u) {
+        mode_changed = 0;
     }
-    if (henge_virtio_gpu_set_display_mode(g->gpu, 0u, width, height, true) == 0) {
+    if (mode_changed && henge_virtio_gpu_set_display_mode(g->gpu, scanout_id, width, height, enabled != 0) == 0) {
         if ((g->vio.status & 4u) != 0u) {
             uint32_t ev = 0u;
             memcpy(&ev, g->vio.config, 4);
@@ -2007,7 +2148,13 @@ void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t heigh
         }
     }
     hv_dev_unlock(b->m);
-    hv_machine_kick_all(b->m);
+    if (mode_changed) {
+        hv_machine_kick_all(b->m);
+    }
+}
+
+void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t height) {
+    hv_winvirt_set_virtio_gpu_scanout(b, 0u, width, height, 1, 0u);
 }
 
 static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
@@ -2080,14 +2227,23 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
 #define HENGE_WINVM_HAS_V3_GPU 1
 #define HENGE_WINVM_HAS_V4_RESIZE 1
 #define HENGE_WINVM_HAS_V5_GPU_CONFIG 1
+#define HENGE_WINVM_HAS_V6_DUAL_SCANOUT 1
 void hv_winvm_set_virtio_gpu_size(uint32_t width, uint32_t height);
+void hv_winvm_set_virtio_gpu_scanout(uint32_t scanout_id, uint32_t width, uint32_t height, int enabled, uint32_t refresh_hz);
 uint64_t hv_winvm_virtio_gpu_flushes(void);
 uint32_t hv_winvm_virtio_gpu_scanout_res(uint32_t scanout_id);
 int hv_winvm_virtio_gpu_virgl_ready(void);
-void hv_winvm_request_display_refresh(void);""",
+void hv_winvm_request_display_refresh(void);
+void hv_winvm_notify_memory_warning(void);""",
     )
 
     winvm_c = upstream / "host/winvm.c"
+    patch_file(
+        winvm_c,
+        '#include "henge_virgl_worker.h"',
+        '#include "winvm.h"\n',
+        '#include "winvm.h"\n#include "henge_virgl_worker.h"\n',
+    )
     patch_file(
         winvm_c,
         "hv_winvirt_set_virtio_gpu_config(",
@@ -2235,6 +2391,15 @@ void hv_winvm_stop(void) {
         "void hv_winvm_power_button(void) {",
         """void hv_winvm_set_virtio_gpu_size(uint32_t width, uint32_t height) {
     hv_winvirt_set_virtio_gpu_size(&board, width, height);
+}
+
+void hv_winvm_set_virtio_gpu_scanout(uint32_t scanout_id, uint32_t width, uint32_t height, int enabled, uint32_t refresh_hz) {
+    if (!atomic_load_explicit(&vm_initialized, memory_order_acquire)) return;
+    hv_winvirt_set_virtio_gpu_scanout(&board, scanout_id, width, height, enabled, refresh_hz);
+}
+
+void hv_winvm_notify_memory_warning(void) {
+    henge_virgl_notify_active_memory_pressure();
 }
 
 uint64_t hv_winvm_virtio_gpu_flushes(void) {
@@ -2410,7 +2575,13 @@ void hv_winvm_send_ctrl_alt_del(void) {
     int32_t vgpu_cursor_hot_y;
     int vgpu_cursor_visible;
     uint64_t vgpu_cursor_tex_gen;
-    uint64_t vgpu_cursor_pos_gen;""",
+    uint64_t vgpu_cursor_pos_gen;
+    void *vgpu_iosurface;
+    uint32_t vgpu_iosurface_w;
+    uint32_t vgpu_iosurface_h;
+    void *vgpu_shared_event;
+    uint64_t vgpu_signal_value;
+    int vgpu_is_srgb;""",
     )
     patch_file(
         fb_display_h,
@@ -2444,10 +2615,17 @@ void hv_fb_metal_destroy(HvFbDisplay *fb);""",
     int32_t cursor_hot_y;
     uint64_t cursor_tex_gen;
     uint64_t cursor_pos_gen;
+    void *iosurface;
+    uint32_t iosurface_w;
+    uint32_t iosurface_h;
+    void *shared_event;
+    uint64_t signal_value;
+    int is_srgb;
 } HvFbVgpuSnapshot;
 
 int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride);
 void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uint32_t width, uint32_t height, uint32_t stride, uint32_t fourcc);
+void hv_fb_display_set_iosurface(HvFbDisplay *fb, void *iosurface, uint32_t width, uint32_t height, void *shared_event, uint64_t signal_value, int is_srgb);
 void hv_fb_display_mark_vgpu_dirty(HvFbDisplay *fb, uint32_t x, uint32_t y, uint32_t w, uint32_t h, int full);
 void hv_fb_display_set_cursor(HvFbDisplay *fb, const uint8_t *host_ptr, uint32_t width, uint32_t height, uint32_t stride, int32_t x, int32_t y, int32_t hot_x, int32_t hot_y, int visible, uint64_t tex_gen, uint64_t pos_gen);
 int hv_fb_display_peek_vgpu(HvFbDisplay *fb, HvFbVgpuSnapshot *out);
@@ -2530,6 +2708,22 @@ void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uin
         fb->vgpu_dirty_y0 = 0u;
         fb->vgpu_dirty_x1 = 0u;
         fb->vgpu_dirty_y1 = 0u;
+        fb->vgpu_epoch++;
+    }
+    pthread_mutex_unlock(&fb->mu);
+}
+
+void hv_fb_display_set_iosurface(HvFbDisplay *fb, void *iosurface, uint32_t width, uint32_t height,
+                                 void *shared_event, uint64_t signal_value, int is_srgb) {
+    if (!fb) return;
+    pthread_mutex_lock(&fb->mu);
+    fb->vgpu_iosurface = iosurface;
+    fb->vgpu_iosurface_w = iosurface ? width : 0u;
+    fb->vgpu_iosurface_h = iosurface ? height : 0u;
+    fb->vgpu_shared_event = iosurface ? shared_event : NULL;
+    fb->vgpu_signal_value = iosurface ? signal_value : 0ull;
+    fb->vgpu_is_srgb = is_srgb ? 1 : 0;
+    if (iosurface) {
         fb->vgpu_epoch++;
     }
     pthread_mutex_unlock(&fb->mu);
@@ -2622,6 +2816,12 @@ int hv_fb_display_peek_vgpu(HvFbDisplay *fb, HvFbVgpuSnapshot *out) {
     out->cursor_hot_y = fb->vgpu_cursor_hot_y;
     out->cursor_tex_gen = fb->vgpu_cursor_tex_gen;
     out->cursor_pos_gen = fb->vgpu_cursor_pos_gen;
+    out->iosurface = fb->vgpu_iosurface;
+    out->iosurface_w = fb->vgpu_iosurface_w;
+    out->iosurface_h = fb->vgpu_iosurface_h;
+    out->shared_event = fb->vgpu_shared_event;
+    out->signal_value = fb->vgpu_signal_value;
+    out->is_srgb = fb->vgpu_is_srgb;
     pthread_mutex_unlock(&fb->mu);
     return 0;
 }
