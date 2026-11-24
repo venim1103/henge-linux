@@ -31,6 +31,7 @@ NS_SWIFT_UI_ACTOR
 
 /// Read or clear captured PL011 serial (`ttyAMA0`) + HengeVM engine diagnostic logs.
 - (NSString *)copyConsoleLog;
+- (NSString *)copySavedBootLogTail;
 - (void)clearConsoleLog;
 - (NSString *)diagnosticSnapshot;
 

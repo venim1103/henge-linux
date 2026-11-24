@@ -1249,7 +1249,7 @@ static void test_phase030c_swapchain_jetsam_cache_telemetry(void) {
     uint32_t slot0 = 99U, slot1 = 99U;
     HengeGpuSwapchainSlot info0, info1, front;
     HENGE_CHECK(henge_gpu_swapchain_acquire_back(sc, &slot0, &info0) == 0);
-    HENGE_CHECK(slot0 == 0U && info0.iosurface != NULL && (info0.bytes_per_row & 15U) == 0U);
+    HENGE_CHECK(slot0 == 0U && info0.iosurface != NULL && (info0.bytes_per_row & 63U) == 0U);
     HENGE_CHECK(info0.bytes_per_row >= 1921U * 4U && info0.is_srgb);
     HENGE_CHECK(henge_gpu_swapchain_publish(sc, slot0, NULL, 11ULL, true) == 0);
     HENGE_CHECK(henge_gpu_swapchain_get_front(sc, &front) == 0);

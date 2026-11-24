@@ -270,6 +270,35 @@ static void henge_on_vm_exit(int reason) {
     return str;
 }
 
+- (NSString *)copySavedBootLogTail {
+    if (_bootLogPathStr.empty()) {
+        return @"";
+    }
+    NSString *path = [NSString stringWithUTF8String:_bootLogPathStr.c_str()];
+    if (path.length == 0) {
+        return @"";
+    }
+    NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (fh == nil) {
+        return @"";
+    }
+    unsigned long long fileSize = [fh seekToEndOfFile];
+    const unsigned long long kMaxTailBytes = 65536ULL;
+    if (fileSize > kMaxTailBytes) {
+        [fh seekToFileOffset:(fileSize - kMaxTailBytes)];
+    } else {
+        [fh seekToFileOffset:0ULL];
+    }
+    NSData *data = [fh readDataToEndOfFile];
+    [fh closeFile];
+    if (data.length == 0) {
+        return @"";
+    }
+    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+        ?: [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding]
+        ?: @"";
+}
+
 - (void)clearConsoleLog {
     hengelinux_clear_console_log();
 }

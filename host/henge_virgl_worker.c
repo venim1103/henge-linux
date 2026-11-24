@@ -90,7 +90,8 @@ typedef struct {
 
 #define HENGE_VIRGL_MAX_QUEUE_DEPTH 4096U
 #define HENGE_VIRGL_MAX_PAYLOAD_LEN (16U * 1024U * 1024U)
-#define HENGE_VIRGL_MAX_BACKING     4096U
+#define HENGE_VIRGL_MAX_BACKING     16384U
+#define HENGE_VIRGL_THREAD_STACK_SZ (8U * 1024U * 1024U)
 
 typedef enum {
     HENGE_WORK_CMD    = 0,
@@ -570,14 +571,19 @@ static bool angle_blit_scanout_to_iosurface(HengeVirglWorker *w,
         EGLSurface pbuf = eglCreatePbufferFromClientBuffer(
             w->egl_dpy, EGL_IOSURFACE_ANGLE, slot->iosurface, w->egl_cfg, surf_attrs);
         if (pbuf == EGL_NO_SURFACE) {
+            fprintf(stderr, "virgl-worker: eglCreatePbufferFromClientBuffer failed (err=0x%x, %ux%u)\n",
+                    (unsigned)eglGetError(), slot->width, slot->height);
+            virgl_renderer_force_ctx_0();
             return false;
         }
         GLuint dst_tex = 0U;
         glGenTextures(1, &dst_tex);
         glBindTexture(GL_TEXTURE_2D, dst_tex);
         if (!eglBindTexImage(w->egl_dpy, pbuf, EGL_BACK_BUFFER)) {
+            fprintf(stderr, "virgl-worker: eglBindTexImage failed (err=0x%x)\n", (unsigned)eglGetError());
             glDeleteTextures(1, &dst_tex);
             eglDestroySurface(w->egl_dpy, pbuf);
+            virgl_renderer_force_ctx_0();
             return false;
         }
         GLuint dst_fbo = 0U;
@@ -595,6 +601,22 @@ static bool angle_blit_scanout_to_iosurface(HengeVirglWorker *w,
     glBindFramebuffer(GL_READ_FRAMEBUFFER, w->blit_src_fbo);
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rinfo.tex_id, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, b->fbo_id);
+
+    GLenum read_status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+    GLenum draw_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+    if (read_status != GL_FRAMEBUFFER_COMPLETE || draw_status != GL_FRAMEBUFFER_COMPLETE) {
+        static int logged_fbo = 0;
+        if (logged_fbo < 4) {
+            logged_fbo++;
+            fprintf(stderr, "virgl-worker: incomplete blit FBO (read=0x%x draw=0x%x res=%u tex=%u)\n",
+                    (unsigned)read_status, (unsigned)draw_status, res_id, rinfo.tex_id);
+        }
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        virgl_renderer_force_ctx_0();
+        return false;
+    }
+
     GLint sw = (rinfo.width > 0U) ? (GLint)rinfo.width : (GLint)slot->width;
     GLint sh = (rinfo.height > 0U) ? (GLint)rinfo.height : (GLint)slot->height;
     glBlitFramebuffer(0, 0, sw, sh,
@@ -603,27 +625,13 @@ static bool angle_blit_scanout_to_iosurface(HengeVirglWorker *w,
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
-    uint64_t next_sig = ++w->swapchain_signal_seq;
-    void *shared_ev = NULL;
-    if (w->egl_copy_shared_event != NULL) {
-        const EGLAttrib sync_attrs[] = {
-            EGL_SYNC_METAL_SHARED_EVENT_SIGNALED_VALUE_LO_ANGLE, (EGLAttrib)(next_sig & 0xFFFFFFFFULL),
-            EGL_SYNC_METAL_SHARED_EVENT_SIGNALED_VALUE_HI_ANGLE, (EGLAttrib)(next_sig >> 32),
-            EGL_NONE
-        };
-        EGLSync sync = eglCreateSync(w->egl_dpy, EGL_SYNC_METAL_SHARED_EVENT_ANGLE, sync_attrs);
-        if (sync != EGL_NO_SYNC) {
-            glFlush();
-            shared_ev = w->egl_copy_shared_event(w->egl_dpy, sync);
-            eglDestroySync(w->egl_dpy, sync);
-        } else {
-            glFlush();
-        }
-    } else {
-        glFlush();
-    }
+    /* Guarantee IOSurface backing store completion before Metal consumer samples it,
+     * then restore virglrenderer's ctx0 so subsequent Gallium commands stay current. */
+    glFinish();
+    virgl_renderer_force_ctx_0();
 
-    if (out_shared_event != NULL) *out_shared_event = shared_ev;
+    uint64_t next_sig = ++w->swapchain_signal_seq;
+    if (out_shared_event != NULL) *out_shared_event = NULL;
     if (out_signal_value != NULL) *out_signal_value = next_sig;
     return true;
 }
@@ -1079,12 +1087,17 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                 if (w->virgl_initialized && node->backing_count > 0U && node->backing != NULL) {
                     struct iovec *iovs = calloc((size_t)node->backing_count, sizeof(*iovs));
                     if (iovs != NULL) {
+                        int valid_iovs = 0;
                         for (uint32_t i = 0U; i < node->backing_count; i++) {
-                            iovs[i].iov_base = (void *)(uintptr_t)node->backing[i].host_ptr;
-                            iovs[i].iov_len = (size_t)node->backing[i].length;
+                            if (node->backing[i].host_ptr != NULL && node->backing[i].length > 0U) {
+                                iovs[valid_iovs].iov_base = (void *)(uintptr_t)node->backing[i].host_ptr;
+                                iovs[valid_iovs].iov_len = (size_t)node->backing[i].length;
+                                valid_iovs++;
+                            }
                         }
-                        if (virgl_renderer_resource_attach_iov((int)res_id, iovs, (int)node->backing_count) == 0) {
-                            virgl_iov_replace(w, res_id, iovs, (int)node->backing_count);
+                        if (valid_iovs > 0 &&
+                            virgl_renderer_resource_attach_iov((int)res_id, iovs, valid_iovs) == 0) {
+                            virgl_iov_replace(w, res_id, iovs, valid_iovs);
                         } else {
                             free(iovs);
                         }
@@ -1309,11 +1322,9 @@ static void *virgl_worker_thread_main(void *arg) {
         cbs.version = 1;
         cbs.write_fence = virgl_cb_write_fence;
 
-        int flags = VIRGL_RENDERER_USE_GLES |
-                    VIRGL_RENDERER_THREAD_SYNC;
-#ifdef VIRGL_RENDERER_ASYNC_FENCE_CB
-        flags |= VIRGL_RENDERER_ASYNC_FENCE_CB;
-#endif
+        /* Keep all virglrenderer + ANGLE Metal GL calls strictly single-threaded on virgl_thread
+         * (VIRGL_RENDERER_THREAD_SYNC spawns a second thread that collides on EGLSurface). */
+        int flags = VIRGL_RENDERER_USE_GLES;
 #if HENGE_WORKER_HAS_ANGLE_EGL
         bool egl_ok = angle_init_metal_egl(w);
         if (egl_ok) {
@@ -1486,7 +1497,18 @@ HengeVirglWorker *henge_virgl_worker_create(const HengeVirglWorkerConfig *cfg) {
         w->swapchains[s] = henge_gpu_swapchain_create();
     }
 
-    if (pthread_create(&w->thread, NULL, virgl_worker_thread_main, w) != 0) {
+    /* iOS secondary pthreads default to a 512 KiB stack, which ANGLE's GLSL->MSL compiler
+     * and virglrenderer's TGSI translator easily overflow. Allocate an 8 MiB stack explicitly. */
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    (void)pthread_attr_setstacksize(&attr, HENGE_VIRGL_THREAD_STACK_SZ);
+    int create_rc = pthread_create(&w->thread, &attr, virgl_worker_thread_main, w);
+    pthread_attr_destroy(&attr);
+    if (create_rc != 0) {
+        for (uint32_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
+            henge_gpu_swapchain_destroy(w->swapchains[s]);
+            w->swapchains[s] = NULL;
+        }
         pthread_mutex_destroy(&w->fence_mu);
         pthread_cond_destroy(&w->drain_cv);
         pthread_cond_destroy(&w->cv);

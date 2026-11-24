@@ -666,9 +666,14 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
                                                                                                   height:vgpuSnap.iosurface_h
                                                                                                mipmapped:NO];
                     itd.usage = MTLTextureUsageShaderRead;
-                    ioSurfaceTexture = [device newTextureWithDescriptor:itd
-                                                              iosurface:(IOSurfaceRef)vgpuSnap.iosurface
-                                                                  plane:0];
+                    @try {
+                        ioSurfaceTexture = [device newTextureWithDescriptor:itd
+                                                                  iosurface:(IOSurfaceRef)vgpuSnap.iosurface
+                                                                      plane:0];
+                    } @catch (NSException *ex) {
+                        (void)ex;
+                        ioSurfaceTexture = nil;
+                    }
                     lastIoSurfaceRef = ioSurfaceTexture ? vgpuSnap.iosurface : NULL;
                     ioTexW = ioSurfaceTexture ? vgpuSnap.iosurface_w : 0u;
                     ioTexH = ioSurfaceTexture ? vgpuSnap.iosurface_h : 0u;
@@ -1648,7 +1653,7 @@ static int vgpu_enqueue_async_cmd(HvVirtio *v, HvVirtioGpuPci *g, int q, const H
         payload = stack_buf;
         payload_len = 8u;
         nr_entries = args[1];
-        if (nr_entries > 4096u) {
+        if (nr_entries > 16384u) {
             free(tag);
             return -1;
         }

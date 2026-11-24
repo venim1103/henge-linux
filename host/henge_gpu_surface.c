@@ -37,9 +37,9 @@ struct HengeGpuSwapchain {
     uint64_t              next_gen;
 };
 
-static uint32_t align_stride_16(uint32_t width) {
+static uint32_t align_stride_64(uint32_t width) {
     uint32_t raw = width * 4U;
-    return (raw + 15U) & ~15U;
+    return (raw + 63U) & ~63U;
 }
 
 static void release_surface_handle(void **surface_ptr) {
@@ -55,7 +55,13 @@ static void release_surface_handle(void **surface_ptr) {
 }
 
 static void *allocate_surface_handle(uint32_t width, uint32_t height, uint32_t *out_stride) {
-    uint32_t stride = align_stride_16(width);
+    uint32_t stride = align_stride_64(width);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    size_t aligned_bpr = IOSurfaceAlignProperty(kIOSurfaceBytesPerRow, (size_t)stride);
+    if (aligned_bpr >= (size_t)stride && aligned_bpr <= 0x7FFFFFFFU) {
+        stride = (uint32_t)aligned_bpr;
+    }
+#endif
     if (out_stride != NULL) {
         *out_stride = stride;
     }
@@ -64,27 +70,30 @@ static void *allocate_surface_handle(uint32_t width, uint32_t height, uint32_t *
     int32_t h32 = (int32_t)height;
     int32_t bpe = 4;
     int32_t bpr = (int32_t)stride;
+    int32_t alloc_sz = (int32_t)((uint64_t)stride * (uint64_t)height);
     int32_t pixfmt = (int32_t)'BGRA';
 
     CFNumberRef cfW = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &w32);
     CFNumberRef cfH = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &h32);
     CFNumberRef cfBpe = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &bpe);
     CFNumberRef cfBpr = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &bpr);
+    CFNumberRef cfAlloc = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &alloc_sz);
     CFNumberRef cfFmt = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &pixfmt);
 
-    const void *keys[5] = {
+    const void *keys[6] = {
         kIOSurfaceWidth,
         kIOSurfaceHeight,
         kIOSurfaceBytesPerElement,
         kIOSurfaceBytesPerRow,
+        kIOSurfaceAllocSize,
         kIOSurfacePixelFormat
     };
-    const void *vals[5] = { cfW, cfH, cfBpe, cfBpr, cfFmt };
+    const void *vals[6] = { cfW, cfH, cfBpe, cfBpr, cfAlloc, cfFmt };
 
     IOSurfaceRef surf = NULL;
-    if (cfW && cfH && cfBpe && cfBpr && cfFmt) {
+    if (cfW && cfH && cfBpe && cfBpr && cfAlloc && cfFmt) {
         CFDictionaryRef props = CFDictionaryCreate(
-            kCFAllocatorDefault, keys, vals, 5,
+            kCFAllocatorDefault, keys, vals, 6,
             &kCFTypeDictionaryKeyCallBacks,
             &kCFTypeDictionaryValueCallBacks);
         if (props != NULL) {
@@ -96,6 +105,7 @@ static void *allocate_surface_handle(uint32_t width, uint32_t height, uint32_t *
     if (cfH) CFRelease(cfH);
     if (cfBpe) CFRelease(cfBpe);
     if (cfBpr) CFRelease(cfBpr);
+    if (cfAlloc) CFRelease(cfAlloc);
     if (cfFmt) CFRelease(cfFmt);
     return (void *)surf;
 #else

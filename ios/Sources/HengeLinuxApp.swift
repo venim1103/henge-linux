@@ -1486,6 +1486,7 @@ struct DebugConsoleSheetView: View {
         case all = "All"
         case engine = "Engine"
         case serial = "Guest Serial"
+        case saved = "Saved Log"
         var id: String { rawValue }
     }
 
@@ -1594,23 +1595,31 @@ struct DebugConsoleSheetView: View {
             return
         }
         lastObservedBytes = currentBytes
-        let raw = bridge.copyConsoleLog()
+        let raw = (filter == .saved) ? bridge.copySavedBootLogTail() : bridge.copyConsoleLog()
         let cleaned = showRawEscapeCodes ? raw : Self.sanitizeTerminalOutput(raw)
         switch filter {
-        case .all:
+        case .all, .saved:
             logText = cleaned
         case .engine:
             logText = cleaned
                 .split(separator: "\n", omittingEmptySubsequences: false)
                 .filter { line in
-                    line.hasPrefix("[bridge]") || line.hasPrefix("winvm:") || line.hasPrefix("hengevm:")
+                    line.hasPrefix("[bridge]") ||
+                    line.hasPrefix("winvm:") ||
+                    line.hasPrefix("hengevm:") ||
+                    line.hasPrefix("virgl-worker:") ||
+                    line.contains("vrend") ||
+                    line.contains("ANGLE")
                 }
                 .joined(separator: "\n")
         case .serial:
             logText = cleaned
                 .split(separator: "\n", omittingEmptySubsequences: false)
                 .filter { line in
-                    !(line.hasPrefix("[bridge]") || line.hasPrefix("winvm:") || line.hasPrefix("hengevm:"))
+                    !(line.hasPrefix("[bridge]") ||
+                      line.hasPrefix("winvm:") ||
+                      line.hasPrefix("hengevm:") ||
+                      line.hasPrefix("virgl-worker:"))
                 }
                 .joined(separator: "\n")
         }
