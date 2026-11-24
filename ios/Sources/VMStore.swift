@@ -14,6 +14,9 @@ struct VMConfig: Codable, Identifiable, Equatable, Hashable {
     var primaryDiskFileName: String
     var secondaryMediaFileName: String?
     var targetDiskSizeGiB: Int? = nil
+    var vramCapMiB: Int? = nil
+    var refreshRateHz: Int? = nil
+    var dualScanoutEnabled: Bool? = nil
 
     static let distroOptions: [(tag: String, label: String)] = [
         ("arch", "Arch Linux"),

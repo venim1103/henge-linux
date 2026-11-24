@@ -223,6 +223,8 @@ static int serve_henge(Conn *c, Request *r) {
     _Atomic(int) tickInProgress;
     _Atomic(int) presentScheduled;
     _Atomic(int) presentPending;
+    _Atomic(int) waitingForSem;
+    _Atomic(int) pacingScheduled;
     dispatch_semaphore_t inFlightSem;
     CGSize lastDrawableSize;
 }""",
@@ -453,6 +455,25 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
     });
 }
 
+- (void)schedulePresentAfterNs:(uint64_t)delayNs {
+    if (hengelinux_is_render_paused() || hengelinux_is_display_presentation_paused()) return;
+    if (delayNs < 1000000ull) delayNs = 1000000ull; /* >= 1 ms floor to prevent spin */
+    if (delayNs > 100000000ull) delayNs = 100000000ull;
+    if (atomic_exchange_explicit(&pacingScheduled, 1, memory_order_acq_rel) != 0) return;
+    dispatch_queue_t q = presentQueue;
+    if (!q) {
+        atomic_store_explicit(&pacingScheduled, 0, memory_order_release);
+        return;
+    }
+    __weak HvFbMetalPresenter *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)delayNs), q, ^{
+        HvFbMetalPresenter *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        atomic_store_explicit(&strongSelf->pacingScheduled, 0, memory_order_release);
+        [strongSelf tick];
+    });
+}
+
 - (void)tick {
     if (hengelinux_is_render_paused() || hengelinux_is_display_presentation_paused()) return;
     if (atomic_exchange_explicit(&tickInProgress, 1, memory_order_acq_rel) != 0) {
@@ -580,7 +601,8 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
             if (vgpuMode && lastPresentNs > 0ull && nowNs > lastPresentNs &&
                 (nowNs - lastPresentNs) < minIntervalNs) {
                 if (vgpuSnap.epoch != lastVgpuEpoch) {
-                    atomic_store_explicit(&presentPending, 1, memory_order_release);
+                    uint64_t remaining = minIntervalNs - (nowNs - lastPresentNs);
+                    [self schedulePresentAfterNs:remaining];
                 }
                 return;
             }
@@ -610,7 +632,7 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
             if (sem) {
                 if (dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW) != 0) {
                     if (vgpuMode) {
-                        atomic_store_explicit(&presentPending, 1, memory_order_release);
+                        atomic_store_explicit(&waitingForSem, 1, memory_order_release);
                     }
                     return;
                 }
@@ -834,9 +856,12 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
                 [cb addCompletedHandler:^(__unused id<MTLCommandBuffer> buf) {
                     dispatch_semaphore_signal(cbSem);
                     HvFbMetalPresenter *strongSelf = weakSelf;
-                    if (strongSelf &&
-                        atomic_exchange_explicit(&strongSelf->presentPending, 0, memory_order_acq_rel) != 0) {
-                        [strongSelf schedulePresent];
+                    if (strongSelf) {
+                        int hadSemWait = atomic_exchange_explicit(&strongSelf->waitingForSem, 0, memory_order_acq_rel);
+                        int hadPending = atomic_exchange_explicit(&strongSelf->presentPending, 0, memory_order_acq_rel);
+                        if (hadSemWait != 0 || hadPending != 0) {
+                            [strongSelf schedulePresent];
+                        }
                     }
                 }];
                 semAcquired = NO;

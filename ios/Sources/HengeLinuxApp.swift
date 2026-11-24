@@ -80,6 +80,9 @@ struct HengeLinuxApp: App {
     @State private var cidataHostname: String = "hengelinux"
     @State private var showCidataSheet: Bool = false
     @State private var showExpandDiskSheet: Bool = false
+    @State private var showGraphicsSheet: Bool = false
+    @State private var gpuRecoveryVMName: String? = nil
+    @State private var gpuRecoveryVMID: String? = nil
     @State private var expandDiskGiB: Int = 16
     @State private var fileImportMode: FileImportMode = .pairingPlist
     @State private var bootWarning: String?
@@ -104,6 +107,8 @@ struct HengeLinuxApp: App {
                         posture: $posture,
                         bootWarning: bootWarning,
                         onStopSession: {
+                            UserDefaults.standard.set(false, forKey: "hengeGpuInitInProgress")
+                            UserDefaults.standard.removeObject(forKey: "hengeGpuInitMachineID")
                             if HengeVMBridge.shared.isRunning {
                                 HengeVMBridge.shared.stopGuest()
                             }
@@ -138,6 +143,43 @@ struct HengeLinuxApp: App {
             }
             .sheet(isPresented: $showDebugConsole) {
                 DebugConsoleSheetView()
+            }
+            .sheet(isPresented: $showGraphicsSheet) {
+                let activeVM = vmStore.selectedMachine
+                GraphicsDisplayConfigSheet(
+                    vmName: activeVM.name,
+                    distroTag: activeVM.distroTag,
+                    gpuBackend: $jitClient.gpuBackend,
+                    vramCapMiB: Binding(
+                        get: { vmStore.selectedMachine.vramCapMiB ?? 0 },
+                        set: { newVal in
+                            var copy = vmStore.selectedMachine
+                            copy.vramCapMiB = (newVal > 0) ? newVal : nil
+                            vmStore.updateMachine(copy)
+                            HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, newVal)))
+                        }
+                    ),
+                    refreshRateHz: Binding(
+                        get: { vmStore.selectedMachine.refreshRateHz ?? 60 },
+                        set: { newVal in
+                            var copy = vmStore.selectedMachine
+                            copy.refreshRateHz = newVal
+                            vmStore.updateMachine(copy)
+                            HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, newVal)))
+                        }
+                    ),
+                    dualScanoutEnabled: Binding(
+                        get: { vmStore.selectedMachine.dualScanoutEnabled ?? false },
+                        set: { newVal in
+                            var copy = vmStore.selectedMachine
+                            copy.dualScanoutEnabled = newVal
+                            vmStore.updateMachine(copy)
+                            externalDisplay.dualScanoutEnabled = newVal
+                        }
+                    ),
+                    externalDisplay: externalDisplay,
+                    oledAutoDimSeconds: $oledAutoDimSeconds
+                )
             }
             .sheet(isPresented: $showNewVMSheet) {
                 NavigationStack {
@@ -341,6 +383,8 @@ struct HengeLinuxApp: App {
             .onReceive(bridgePollTimer) { _ in
                 guard isRunning else { return }
                 if !HengeVMBridge.shared.isRunning {
+                    UserDefaults.standard.set(false, forKey: "hengeGpuInitInProgress")
+                    UserDefaults.standard.removeObject(forKey: "hengeGpuInitMachineID")
                     isRunning = false
                     safariURL = nil
                     jitClient.prepareForReboot()
@@ -364,6 +408,14 @@ struct HengeLinuxApp: App {
                     lastPushedClipboard = guestClip
                     UIPasteboard.general.string = guestClip
                     lastPasteboardChangeCount = UIPasteboard.general.changeCount
+                }
+                if UserDefaults.standard.bool(forKey: "hengeGpuInitInProgress") {
+                    var tsnap = HengeGpuTelemetrySnapshot()
+                    henge_gpu_telemetry_get_snapshot(&tsnap)
+                    if tsnap.virgl_3d_flushes >= 5 {
+                        UserDefaults.standard.set(false, forKey: "hengeGpuInitInProgress")
+                        UserDefaults.standard.removeObject(forKey: "hengeGpuInitMachineID")
+                    }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
@@ -397,11 +449,26 @@ struct HengeLinuxApp: App {
                 HengeVMBridge.shared.pushHostClipboard(hostClip)
             }
             .onAppear {
+                let defaults = UserDefaults.standard
+                if defaults.bool(forKey: "hengeGpuInitInProgress") {
+                    defaults.set(false, forKey: "hengeGpuInitInProgress")
+                    let crashedID = defaults.string(forKey: "hengeGpuInitMachineID")
+                    defaults.removeObject(forKey: "hengeGpuInitMachineID")
+                    if let crashedID, var crashedVM = vmStore.machines.first(where: { $0.id == crashedID }) {
+                        crashedVM.gpuBackend = 2 /* Auto-fallback to Enhanced 2D VirtIO-GPU KMS */
+                        vmStore.updateMachine(crashedVM)
+                        gpuRecoveryVMName = crashedVM.name
+                        gpuRecoveryVMID = crashedVM.id
+                    }
+                }
                 let vm = vmStore.selectedMachine
                 if vm.ramMiB >= Int(HENGE_MIN_GUEST_RAM_MIB) && vm.ramMiB <= Int(HENGE_MAX_GUEST_RAM_MIB) {
                     customGuestRamMiB = vm.ramMiB
                 }
                 jitClient.gpuBackend = GpuDisplayBackend.from(modeCode: vm.gpuBackend)
+                externalDisplay.dualScanoutEnabled = vm.dualScanoutEnabled ?? false
+                HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, vm.vramCapMiB ?? 0)))
+                HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, vm.refreshRateHz ?? 60)))
                 if ramInputText.isEmpty {
                     ramInputText = "\(effectiveRamMiB)"
                 }
@@ -410,7 +477,18 @@ struct HengeLinuxApp: App {
                 let vm = vmStore.selectedMachine
                 customGuestRamMiB = min(max(vm.ramMiB, Int(HENGE_MIN_GUEST_RAM_MIB)), Int(HENGE_MAX_GUEST_RAM_MIB))
                 jitClient.gpuBackend = GpuDisplayBackend.from(modeCode: vm.gpuBackend)
+                externalDisplay.dualScanoutEnabled = vm.dualScanoutEnabled ?? false
+                HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, vm.vramCapMiB ?? 0)))
+                HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, vm.refreshRateHz ?? 60)))
                 ramInputText = "\(effectiveRamMiB)"
+            }
+            .onChange(of: jitClient.gpuBackend) { _, newBackend in
+                var vm = vmStore.selectedMachine
+                let code = Int(newBackend.modeCode)
+                if vm.gpuBackend != code {
+                    vm.gpuBackend = code
+                    vmStore.updateMachine(vm)
+                }
             }
             .onChange(of: isRunning) { _, running in
                 UIApplication.shared.isIdleTimerDisabled = running
@@ -475,6 +553,33 @@ struct HengeLinuxApp: App {
     private var launcherView: some View {
         NavigationStack {
             List {
+                if let recName = gpuRecoveryVMName {
+                    Section {
+                        GpuRecoveryDiagnosticBanner(
+                            vmName: recName,
+                            onRetry3D: {
+                                if let recID = gpuRecoveryVMID,
+                                   var vm = vmStore.machines.first(where: { $0.id == recID }) {
+                                    vm.gpuBackend = 1
+                                    vmStore.updateMachine(vm)
+                                    if vmStore.selectedMachine.id == recID {
+                                        jitClient.gpuBackend = .virgl3D
+                                    }
+                                }
+                                gpuRecoveryVMName = nil
+                                gpuRecoveryVMID = nil
+                            },
+                            onViewLogs: {
+                                showDebugConsole = true
+                            },
+                            onDismiss: {
+                                gpuRecoveryVMName = nil
+                                gpuRecoveryVMID = nil
+                            }
+                        )
+                    }
+                }
+
                 Section("Virtual Machines (`Documents/Machines/`)") {
                     ForEach(vmStore.machines) { vm in
                         Button {
@@ -652,11 +757,33 @@ struct HengeLinuxApp: App {
                         Text(ramAdvisoryText)
                             .font(.caption2)
                             .foregroundStyle(effectiveRamMiB > safeRecommendedRamMiB ? .orange : .secondary)
+
+                        JetsamMemoryBreakdownBar(
+                            guestRamMiB: Int(effectiveRamMiB),
+                            jitPoolMiB: SelfDebugJITClient.recommendedJitPoolMiB,
+                            gpuBackendMode: Int(jitClient.gpuBackend.modeCode),
+                            refreshToken: memoryRefreshTick
+                        )
                     }
                     .padding(.vertical, 4)
                 }
 
                 Section("Graphics & JIT Engine") {
+                    Button {
+                        showGraphicsSheet = true
+                    } label: {
+                        HStack {
+                            Label("Graphics & Display Settings", systemImage: "display.2")
+                            Spacer()
+                            Text(jitClient.gpuBackend == .virgl3D ? "VirGL 3D" : (jitClient.gpuBackend == .virtioGpu2D ? "2D KMS" : "2D GOP"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
                     Picker("Display Adapter", selection: $jitClient.gpuBackend) {
                         ForEach(GpuDisplayBackend.allCases) { backend in
                             Text(backend.rawValue).tag(backend)
@@ -924,6 +1051,13 @@ struct HengeLinuxApp: App {
                                 return
                             }
                             let gpuMode: Int32 = jitClient.gpuBackend.modeCode
+                            externalDisplay.dualScanoutEnabled = activeVM.dualScanoutEnabled ?? false
+                            HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, activeVM.vramCapMiB ?? 0)))
+                            HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, activeVM.refreshRateHz ?? 60)))
+                            if gpuMode == 1 && henge_virtio_gpu_has_virglrenderer() {
+                                UserDefaults.standard.set(true, forKey: "hengeGpuInitInProgress")
+                                UserDefaults.standard.set(activeVM.id, forKey: "hengeGpuInitMachineID")
+                            }
                             AudioSessionManager.shared.activate()
                             externalDisplay.setVMRunning(true)
                             do {
@@ -948,7 +1082,10 @@ struct HengeLinuxApp: App {
                                 }
                                 bootErrorAlert = nil
                                 isRunning = true
+                                externalDisplay.syncActiveDisplayLayer()
                             } catch {
+                                UserDefaults.standard.set(false, forKey: "hengeGpuInitInProgress")
+                                UserDefaults.standard.removeObject(forKey: "hengeGpuInitMachineID")
                                 externalDisplay.setVMRunning(false)
                                 AudioSessionManager.shared.deactivate()
                                 bootWarning = error.localizedDescription
@@ -1258,7 +1395,10 @@ struct HengeLinuxApp: App {
 
     private var safeRecommendedRamMiB: UInt32 {
         _ = memoryRefreshTick
-        return henge_recommended_guest_ram_mib(henge_recommended_jit_pool_bytes())
+        return henge_recommended_guest_ram_mib_for_gpu(
+            henge_recommended_jit_pool_bytes(),
+            jitClient.gpuBackend.modeCode
+        )
     }
 
     private var ramAdvisoryText: String {

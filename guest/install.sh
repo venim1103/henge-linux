@@ -401,30 +401,62 @@ if [ "$DISTRO_ID" = "ubuntu" ] && [ "$SKIP_NETWORK" -eq 0 ] && command -v apt-ge
     fi
 fi
 
-# 9. Install distro-aware henge-install-desktop helper (one-command LXQt + SDDM setup)
+# 9. Install distro-aware henge-install-desktop helper (Wayland GLES2 labwc + LXQt or X11)
 cat <<'EOF' > "$BIN_DIR/henge-install-desktop"
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Install lightweight LXQt + Openbox + SDDM desktop across supported ARM64 distros.
+# Install lightweight LXQt + labwc (Wayland GLES2 for VirGL 3D) and Openbox/Xorg + SDDM
+# across all supported ARM64 Linux distros.
+# Usage: sudo henge-install-desktop [--wayland|--x11]
 set -eu
 
 if [ "$(id -u)" -ne 0 ]; then
-    printf 'Run with sudo: sudo henge-install-desktop\n' >&2
+    printf 'Run with sudo: sudo henge-install-desktop [--wayland|--x11]\n' >&2
     exit 1
+fi
+
+SESSION_PREF="auto"
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --wayland) SESSION_PREF="wayland" ;;
+        --x11)     SESSION_PREF="x11" ;;
+        -h|--help)
+            printf 'Usage: sudo henge-install-desktop [--wayland|--x11]\n'
+            exit 0
+            ;;
+        *)
+            printf '[henge-desktop] Unknown option: %s\n' "$1" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+if [ "$SESSION_PREF" = "auto" ]; then
+    if [ -e /dev/dri/renderD128 ]; then
+        SESSION_PREF="wayland"
+    else
+        SESSION_PREF="x11"
+    fi
 fi
 
 DISTRO="unknown"
 if [ -r /etc/os-release ]; then
     DISTRO="$(awk -F= '/^ID=/{gsub(/"/, "", $2); print tolower($2); exit}' /etc/os-release 2>/dev/null || printf 'unknown')"
 fi
-printf '[henge-desktop] Detected distro: %s\n' "$DISTRO"
+printf '[henge-desktop] Detected distro: %s (session=%s)\n' "$DISTRO" "$SESSION_PREF"
 
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
         lxqt-core openbox sddm xorg xserver-xorg-video-fbdev qterminal pcmanfm-qt \
-        lxqt-themes breeze-icon-theme dbus-x11 scrot
+        lxqt-themes breeze-icon-theme dbus-x11 scrot \
+        libgl1-mesa-dri libegl-mesa0 libgles2 mesa-utils
+    if [ "$SESSION_PREF" = "wayland" ]; then
+        apt-get install -y --no-install-recommends labwc xwayland wayland-protocols 2>/dev/null || true
+        apt-get install -y --no-install-recommends lxqt-wayland-session 2>/dev/null || true
+    fi
     if [ "$DISTRO" = "ubuntu" ]; then
         if apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" 2>/dev/null; then
             update-initramfs -u >/dev/null 2>&1 || true
@@ -435,29 +467,48 @@ if command -v apt-get >/dev/null 2>&1; then
 elif command -v dnf >/dev/null 2>&1; then
     dnf install -y --setopt=install_weak_deps=False \
         lxqt-session lxqt-panel lxqt-runner lxqt-config lxqt-themes openbox \
-        sddm qterminal pcmanfm-qt xorg-x11-server-Xorg xorg-x11-drv-fbdev dbus-x11
+        sddm qterminal pcmanfm-qt xorg-x11-server-Xorg xorg-x11-drv-fbdev dbus-x11 \
+        mesa-dri-drivers mesa-libEGL mesa-libGLES
+    if [ "$SESSION_PREF" = "wayland" ]; then
+        dnf install -y --setopt=install_weak_deps=False labwc lxqt-wayland-session xorg-x11-server-Xwayland 2>/dev/null || true
+    fi
     systemctl set-default graphical.target >/dev/null 2>&1 || true
     systemctl enable sddm >/dev/null 2>&1 || true
 elif command -v zypper >/dev/null 2>&1; then
     zypper --non-interactive install --no-recommends \
         lxqt-session lxqt-panel lxqt-config openbox sddm qterminal pcmanfm-qt \
-        xorg-x11-server xf86-video-fbdev
+        xorg-x11-server xf86-video-fbdev Mesa-dri Mesa-gallium Mesa-libEGL1
+    if [ "$SESSION_PREF" = "wayland" ]; then
+        zypper --non-interactive install --no-recommends labwc lxqt-wayland-session xwayland 2>/dev/null || true
+    fi
     systemctl set-default graphical.target >/dev/null 2>&1 || true
     systemctl enable sddm >/dev/null 2>&1 || true
 elif command -v apk >/dev/null 2>&1; then
     apk update
-    apk add xorg-server xf86-video-fbdev xf86-input-libinput eudev mesa-dri-gallium \
+    apk add xorg-server xf86-video-fbdev xf86-input-libinput eudev \
+        mesa-dri-gallium mesa-egl mesa-gles \
         lxqt-desktop openbox qterminal pcmanfm-qt sddm dbus-x11 font-dejavu
+    if [ "$SESSION_PREF" = "wayland" ]; then
+        apk add labwc seatd xwayland 2>/dev/null || true
+        rc-update add seatd default >/dev/null 2>&1 || true
+    fi
     setup-devd udev >/dev/null 2>&1 || true
     rc-update add dbus default >/dev/null 2>&1 || true
     rc-update add sddm default >/dev/null 2>&1 || true
 elif command -v pacman >/dev/null 2>&1; then
     pacman -Sy --noconfirm --needed \
-        xorg-server xf86-video-fbdev lxqt openbox sddm qterminal pcmanfm-qt breeze-icons
+        xorg-server xf86-video-fbdev mesa mesa-utils \
+        lxqt openbox sddm qterminal pcmanfm-qt breeze-icons
+    if [ "$SESSION_PREF" = "wayland" ]; then
+        pacman -S --noconfirm --needed labwc lxqt-wayland-session xorg-xwayland 2>/dev/null || true
+    fi
     systemctl set-default graphical.target >/dev/null 2>&1 || true
     systemctl enable sddm >/dev/null 2>&1 || true
 elif command -v xbps-install >/dev/null 2>&1; then
-    xbps-install -Sy xorg-minimal xf86-video-fbdev lxqt openbox sddm qterminal pcmanfm-qt dbus
+    xbps-install -Sy xorg-minimal xf86-video-fbdev mesa-dri lxqt openbox sddm qterminal pcmanfm-qt dbus
+    if [ "$SESSION_PREF" = "wayland" ]; then
+        xbps-install -y labwc xorg-server-xwayland 2>/dev/null || true
+    fi
     ln -sf /etc/sv/dbus /var/service/dbus 2>/dev/null || true
     ln -sf /etc/sv/sddm /var/service/sddm 2>/dev/null || true
 else
@@ -465,7 +516,9 @@ else
     exit 1
 fi
 
-if [ -e /dev/dri/card0 ]; then
+if [ -x /usr/local/sbin/henge-xorg-autodetect ]; then
+    /usr/local/sbin/henge-xorg-autodetect || true
+elif [ -e /dev/dri/card0 ]; then
     rm -f /etc/X11/xorg.conf.d/10-fbdev.conf
     printf '[henge-desktop] /dev/dri/card0 detected; using native KMS modesetting.\n'
 else
@@ -492,29 +545,66 @@ UEOF
     fi
 fi
 
-printf '[henge-desktop] LXQt installed! Reboot now with: sudo reboot\n'
+printf '[henge-desktop] Desktop installed (%s)! Reboot now with: sudo reboot\n' "$SESSION_PREF"
 EOF
 chmod 0755 "$BIN_DIR/henge-install-desktop"
 
-# 10. Install boot-time Xorg GPU auto-selector so switching between 2D UEFI GOP
-#     and VirtIO-GPU KMS never leaves a stale 10-fbdev.conf causing a black screen
+# 10. Install boot-time 3-state GPU auto-detector (VirGL 3D renderD128 vs 2D KMS card0 vs 2D GOP fb0)
 cat <<'EOF' > "$SBIN_DIR/henge-xorg-autodetect"
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Keep /etc/X11/xorg.conf.d/10-fbdev.conf synchronized with /dev/dri/card0.
+# Synchronize Xorg and wlroots (labwc/sway) renderer config with live VirtIO-GPU state:
+#   1. /dev/dri/renderD128 present -> VirGL 3D (modesetting Glamor + WLR_RENDERER=gles2)
+#   2. /dev/dri/card0 only         -> Enhanced 2D KMS (modesetting AccelMethod=none + WLR_RENDERER=pixman)
+#   3. /dev/fb0 only               -> 2D UEFI GOP (10-fbdev.conf + CanGraphical=yes udev rule)
 set -eu
-[ -d /etc/X11 ] || exit 0
-if [ -e /dev/dri/card0 ]; then
-    rm -f /etc/X11/xorg.conf.d/10-fbdev.conf
+
+mkdir -p /etc/profile.d
+if [ -e /dev/dri/renderD128 ]; then
+    cat <<'PEOF' > /etc/profile.d/henge-gpu.sh
+export WLR_RENDERER=gles2
+export WLR_NO_HARDWARE_CURSORS=0
+PEOF
+    if [ -d /etc/X11 ]; then
+        mkdir -p /etc/X11/xorg.conf.d
+        rm -f /etc/X11/xorg.conf.d/10-fbdev.conf
+        cat <<'XEOF' > /etc/X11/xorg.conf.d/20-henge-kms.conf
+Section "Device"
+    Identifier "HengeVirGL"
+    Driver "modesetting"
+    Option "AccelMethod" "glamor"
+EndSection
+XEOF
+    fi
+elif [ -e /dev/dri/card0 ]; then
+    cat <<'PEOF' > /etc/profile.d/henge-gpu.sh
+export WLR_RENDERER=pixman
+export WLR_NO_HARDWARE_CURSORS=0
+PEOF
+    if [ -d /etc/X11 ]; then
+        mkdir -p /etc/X11/xorg.conf.d
+        rm -f /etc/X11/xorg.conf.d/10-fbdev.conf
+        cat <<'XEOF' > /etc/X11/xorg.conf.d/20-henge-kms.conf
+Section "Device"
+    Identifier "HengeKMS2D"
+    Driver "modesetting"
+    Option "AccelMethod" "none"
+EndSection
+XEOF
+    fi
 elif [ -e /dev/fb0 ]; then
-    mkdir -p /etc/X11/xorg.conf.d
-    cat <<'XEOF' > /etc/X11/xorg.conf.d/10-fbdev.conf
+    rm -f /etc/profile.d/henge-gpu.sh
+    if [ -d /etc/X11 ]; then
+        mkdir -p /etc/X11/xorg.conf.d
+        rm -f /etc/X11/xorg.conf.d/20-henge-kms.conf
+        cat <<'XEOF' > /etc/X11/xorg.conf.d/10-fbdev.conf
 Section "Device"
     Identifier "EFIFB"
     Driver "fbdev"
     Option "fbdev" "/dev/fb0"
 EndSection
 XEOF
+    fi
 fi
 EOF
 chmod 0755 "$SBIN_DIR/henge-xorg-autodetect"

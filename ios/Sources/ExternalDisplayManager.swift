@@ -246,6 +246,12 @@ final class ExternalDisplayManager: ObservableObject {
     @Published private(set) var activeExternalGuestHeight: Int = 1080
     @Published private(set) var isVMRunning: Bool = false
     @Published private(set) var isLocalScreenSaverActive: Bool = false
+    @Published var dualScanoutEnabled: Bool = false {
+        didSet {
+            guard oldValue != dualScanoutEnabled else { return }
+            syncActiveDisplayLayer()
+        }
+    }
 
     private weak var externalViewController: ExternalDisplayViewController?
     private weak var localDisplayLayer: CAMetalLayer?
@@ -330,6 +336,9 @@ final class ExternalDisplayManager: ObservableObject {
         }
         externalNativeSize = .zero
         isExternalDisplayConnected = false
+        if isVMRunning {
+            HengeVMBridge.shared.updateScanout(1, width: 1920, height: 1080, enabled: false, refreshHz: 0)
+        }
         HengeVMBridge.shared.setDisplayPresentationPaused(isVMRunning && isLocalScreenSaverActive)
     }
 
@@ -358,6 +367,15 @@ final class ExternalDisplayManager: ObservableObject {
             width: UInt32(target.width),
             height: UInt32(target.height)
         )
+        if dualScanoutEnabled {
+            HengeVMBridge.shared.updateScanout(
+                1,
+                width: UInt32(target.width),
+                height: UInt32(target.height),
+                enabled: true,
+                refreshHz: 0
+            )
+        }
     }
 
     func syncActiveDisplayLayer() {
@@ -379,6 +397,13 @@ final class ExternalDisplayManager: ObservableObject {
                     width: UInt32(target.width),
                     height: UInt32(target.height)
                 )
+                HengeVMBridge.shared.updateScanout(
+                    1,
+                    width: UInt32(target.width),
+                    height: UInt32(target.height),
+                    enabled: dualScanoutEnabled,
+                    refreshHz: 0
+                )
             } else {
                 extVC.updateStandbyMessage(
                     "HengeLinux · External Display Ready (\(target.width)×\(target.height))\nBoot a Linux VM on your iPhone"
@@ -386,6 +411,9 @@ final class ExternalDisplayManager: ObservableObject {
                 HengeVMBridge.shared.detachDisplayLayer(ifMatching: extVC.surfaceView.metalLayer)
             }
         } else {
+            if isVMRunning {
+                HengeVMBridge.shared.updateScanout(1, width: 1920, height: 1080, enabled: false, refreshHz: 0)
+            }
             if let extVC = externalViewController {
                 extVC.updateStandbyMessage(
                     isVMRunning

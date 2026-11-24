@@ -32,6 +32,7 @@ struct SessionView: View {
     }
 
     @AppStorage("oledScreenSaverAutoDimSeconds") private var autoDimSeconds: Int = 0
+    @AppStorage("showPerformanceHUD") private var showPerformanceHUD: Bool = false
     @State private var activeTab: SessionTab = .display
     @State private var showModifierBar: Bool = true
     @State private var showExternalMousepad: Bool = true
@@ -156,6 +157,15 @@ struct SessionView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
+                    .overlay(alignment: .topTrailing) {
+                        if showPerformanceHUD && activeTab == .display && !isScreenSaverActive {
+                            LivePerformanceHUDPill {
+                                activateScreenSaver()
+                            }
+                            .padding(.top, 8)
+                            .padding(.trailing, 8)
+                        }
+                    }
                 }
                 .padding(.bottom, effectiveKeyboardHeight)
                 .frame(width: totalW, height: totalH, alignment: .top)
@@ -454,6 +464,16 @@ struct SessionView: View {
             }
 
             Spacer(minLength: 4)
+
+            Button {
+                showPerformanceHUD.toggle()
+            } label: {
+                Image(systemName: showPerformanceHUD ? "gauge.with.dots.needle.67percent" : "gauge.with.dots.needle.0percent")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .tint(showPerformanceHUD ? .blue : .secondary)
+            .accessibilityLabel(showPerformanceHUD ? "Hide Performance HUD" : "Show Performance HUD")
 
             Button {
                 activateScreenSaver()
