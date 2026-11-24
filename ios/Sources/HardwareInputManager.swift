@@ -76,6 +76,15 @@ final class HardwareInputManager: ObservableObject {
             }
         })
         observers.append(nc.addObserver(
+            forName: .GCMouseDidBecomeCurrent,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshConnectedDevices()
+            }
+        })
+        observers.append(nc.addObserver(
             forName: .GCMouseDidDisconnect,
             object: nil,
             queue: .main
@@ -110,7 +119,10 @@ final class HardwareInputManager: ObservableObject {
             isHardwareKeyboardConnected = false
         }
 
-        let mice = GCMouse.mice()
+        var mice = GCMouse.mice()
+        if let current = GCMouse.current, !mice.contains(where: { $0 === current }) {
+            mice.append(current)
+        }
         let hasMouse = !mice.isEmpty
         if isHardwareMouseConnected != hasMouse {
             isHardwareMouseConnected = hasMouse

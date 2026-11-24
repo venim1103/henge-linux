@@ -34,6 +34,7 @@ struct SessionView: View {
     @AppStorage("oledScreenSaverAutoDimSeconds") private var autoDimSeconds: Int = 0
     @State private var activeTab: SessionTab = .display
     @State private var showModifierBar: Bool = true
+    @State private var showExternalMousepad: Bool = true
     @State private var showDebugConsole: Bool = false
     @State private var focusSoftwareKeyboard: Bool = false
     @State private var focusTerminalKeyboard: Bool = false
@@ -88,7 +89,7 @@ struct SessionView: View {
                                     MetalFramebufferRepresentable(
                                         lifecycle: lifecycle,
                                         focusKeyboard: $focusSoftwareKeyboard,
-                                        isActiveDisplayTab: activeTab == .display && !isScreenSaverActive && !showDebugConsole,
+                                        isActiveDisplayTab: activeTab == .display && !showDebugConsole,
                                         suppressSoftwareKeyboard: !focusSoftwareKeyboard || activeTab != .display || isScreenSaverActive,
                                         allowGuestResize: !isSoftwareKeyboardVisible && !isClamshellPosture && activeTab == .display && !externalDisplay.isRenderingOnExternalDisplay,
                                         layoutTrigger: "\(posture)-\(showModifierBar)-\(activeTab == .display)-\(externalDisplay.isRenderingOnExternalDisplay)-\(isLandscape)-\(Int(effectiveKeyboardHeight))",
@@ -293,7 +294,10 @@ struct SessionView: View {
     }
 
     private func syncHardwareInputSessionState() {
-        hardwareInput.isDisplaySessionActive = (activeTab == .display) && !isScreenSaverActive && !showDebugConsole
+        // Keep physical USB/Bluetooth keyboard and mouse active during the OLED
+        // Screen Saver so users can keep typing/mousing on an external monitor
+        // while the iPhone screen stays black.
+        hardwareInput.isDisplaySessionActive = (activeTab == .display) && !showDebugConsole
     }
 
     private func configureHardwareInputCallbacks() {
@@ -419,8 +423,20 @@ struct SessionView: View {
             .pickerStyle(.segmented)
             .frame(width: 92)
 
-            if activeTab == .display && !externalDisplay.isRenderingOnExternalDisplay {
-                HingeSensorView(posture: $posture)
+            if activeTab == .display {
+                if externalDisplay.isRenderingOnExternalDisplay {
+                    Button {
+                        showExternalMousepad.toggle()
+                    } label: {
+                        Image(systemName: showExternalMousepad ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .tint(showExternalMousepad ? .blue : .secondary)
+                    .accessibilityLabel(showExternalMousepad ? "Hide Mousepad" : "Show Mousepad")
+                } else {
+                    HingeSensorView(posture: $posture)
+                }
             }
 
             if externalDisplay.isExternalDisplayConnected {
@@ -646,9 +662,27 @@ struct SessionView: View {
             .padding(.horizontal, 12)
             .padding(.top, compact ? 4 : 8)
 
-            deck6x3Grid(compact: compact)
-                .padding(.horizontal, 10)
-                .padding(.bottom, showModifierBar ? 2 : (compact ? 4 : 10))
+            if showExternalMousepad {
+                deck6x3Grid(compact: compact)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, showModifierBar ? 2 : (compact ? 4 : 10))
+            } else {
+                VStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    if !compact {
+                        Text("Mousepad hidden")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        Button("Show Mousepad") {
+                            showExternalMousepad = true
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
 
             if showModifierBar {
                 compactModifierStrip(compact: compact)
