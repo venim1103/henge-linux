@@ -164,6 +164,8 @@ targets:
           - "-framework"
           - "AudioToolbox"
           - "-framework"
+          - "AVFAudio"
+          - "-framework"
           - "Metal"
           - "-framework"
           - "QuartzCore"
@@ -191,5 +193,6 @@ targets:
       - sdk: Metal.framework
       - sdk: QuartzCore.framework
       - sdk: AudioToolbox.framework
+      - sdk: AVFAudio.framework
       - sdk: SafariServices.framework
       - sdk: GameController.framework

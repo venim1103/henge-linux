@@ -414,6 +414,11 @@ struct HengeLinuxApp: App {
             }
             .onChange(of: isRunning) { _, running in
                 UIApplication.shared.isIdleTimerDisabled = running
+                if running {
+                    AudioSessionManager.shared.activate()
+                } else {
+                    AudioSessionManager.shared.deactivate()
+                }
                 if externalDisplay.isVMRunning != running {
                     externalDisplay.setVMRunning(running)
                 }
@@ -919,6 +924,7 @@ struct HengeLinuxApp: App {
                                 return
                             }
                             let gpuMode: Int32 = jitClient.gpuBackend.modeCode
+                            AudioSessionManager.shared.activate()
                             externalDisplay.setVMRunning(true)
                             do {
                                 try HengeVMBridge.shared.startGuest(
@@ -944,6 +950,7 @@ struct HengeLinuxApp: App {
                                 isRunning = true
                             } catch {
                                 externalDisplay.setVMRunning(false)
+                                AudioSessionManager.shared.deactivate()
                                 bootWarning = error.localizedDescription
                                 bootErrorAlert = error.localizedDescription
                                 isRunning = false
