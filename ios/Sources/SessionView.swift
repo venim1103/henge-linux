@@ -9,6 +9,7 @@ struct SessionView: View {
     let profile: MachineProfile
     @ObservedObject var lifecycle: MetalLifecycleGuard
     @ObservedObject var externalDisplay: ExternalDisplayManager
+    @ObservedObject private var hardwareInput = HardwareInputManager.shared
     @Binding var posture: DevicePosture
     let bootWarning: String?
     let onStopSession: () -> Void
@@ -44,6 +45,7 @@ struct SessionView: View {
     @State private var cursorNormX: Double = 0.5
     @State private var cursorNormY: Double = 0.5
     @State private var heldMouseButtons: UInt8 = 0
+    @State private var hardwareMouseButtons: UInt8 = 0
     @State private var keyboardHeight: CGFloat = 0
     @State private var isScreenSaverActive: Bool = false
     @State private var savedScreenBrightness: CGFloat?
@@ -86,6 +88,7 @@ struct SessionView: View {
                                     MetalFramebufferRepresentable(
                                         lifecycle: lifecycle,
                                         focusKeyboard: $focusSoftwareKeyboard,
+                                        isActiveDisplayTab: activeTab == .display && !isScreenSaverActive && !showDebugConsole,
                                         suppressSoftwareKeyboard: !focusSoftwareKeyboard || activeTab != .display || isScreenSaverActive,
                                         allowGuestResize: !isSoftwareKeyboardVisible && !isClamshellPosture && activeTab == .display && !externalDisplay.isRenderingOnExternalDisplay,
                                         layoutTrigger: "\(posture)-\(showModifierBar)-\(activeTab == .display)-\(externalDisplay.isRenderingOnExternalDisplay)-\(isLandscape)-\(Int(effectiveKeyboardHeight))",
@@ -104,7 +107,6 @@ struct SessionView: View {
                                     )
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     .background(Color.black)
-                                    .allowsHitTesting(!externalDisplay.isRenderingOnExternalDisplay)
 
                                     if externalDisplay.isRenderingOnExternalDisplay {
                                         externalMonitorControlDeck(isLandscape: isLandscape)
@@ -252,18 +254,81 @@ struct SessionView: View {
             if keyboardHeight != 0 {
                 keyboardHeight = 0
             }
+            syncHardwareInputSessionState()
+        }
+        .onChange(of: isScreenSaverActive) { _, _ in
+            syncHardwareInputSessionState()
+        }
+        .onChange(of: showDebugConsole) { _, _ in
+            syncHardwareInputSessionState()
+        }
+        .onAppear {
+            configureHardwareInputCallbacks()
+            hardwareInput.refreshConnectedDevices()
+            syncHardwareInputSessionState()
         }
         .onDisappear {
+            hardwareInput.isDisplaySessionActive = false
+            hardwareInput.onActivity = nil
+            hardwareInput.onRelativePointerMove = nil
+            hardwareInput.onHardwareMouseButtonsChanged = nil
+            hardwareInput.onHardwareMouseWheel = nil
+            hardwareInput.onHardwareKeyTyped = nil
             if isScreenSaverActive {
                 deactivateScreenSaver()
             }
             pendingPaste = nil
             keyboardHeight = 0
             releaseActiveModifiers()
-            if heldMouseButtons != 0 {
+            if heldMouseButtons != 0 || hardwareMouseButtons != 0 {
                 heldMouseButtons = 0
+                hardwareMouseButtons = 0
                 HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: 0, wheel: 0)
             }
+        }
+    }
+
+    private var effectiveMouseButtons: UInt8 {
+        heldMouseButtons | hardwareMouseButtons
+    }
+
+    private func syncHardwareInputSessionState() {
+        hardwareInput.isDisplaySessionActive = (activeTab == .display) && !isScreenSaverActive && !showDebugConsole
+    }
+
+    private func configureHardwareInputCallbacks() {
+        hardwareInput.onActivity = {
+            lastUserActivityAt = Date()
+        }
+        hardwareInput.onRelativePointerMove = { dx, dy in
+            cursorNormX = min(max(cursorNormX + dx, 0), 1)
+            cursorNormY = min(max(cursorNormY + dy, 0), 1)
+            HengeVMBridge.shared.sendPointerNormX(
+                cursorNormX,
+                normY: cursorNormY,
+                buttons: effectiveMouseButtons,
+                wheel: 0
+            )
+        }
+        hardwareInput.onHardwareMouseButtonsChanged = { mask in
+            hardwareMouseButtons = mask
+            HengeVMBridge.shared.sendPointerNormX(
+                cursorNormX,
+                normY: cursorNormY,
+                buttons: effectiveMouseButtons,
+                wheel: 0
+            )
+        }
+        hardwareInput.onHardwareMouseWheel = { wheelStep in
+            HengeVMBridge.shared.sendPointerNormX(
+                cursorNormX,
+                normY: cursorNormY,
+                buttons: effectiveMouseButtons,
+                wheel: wheelStep
+            )
+        }
+        hardwareInput.onHardwareKeyTyped = {
+            releaseActiveModifiers()
         }
     }
 
@@ -657,7 +722,7 @@ struct SessionView: View {
                                     HengeVMBridge.shared.sendPointerNormX(
                                         cursorNormX,
                                         normY: cursorNormY,
-                                        buttons: heldMouseButtons,
+                                        buttons: effectiveMouseButtons,
                                         wheel: 0
                                     )
                                 },
@@ -671,7 +736,7 @@ struct SessionView: View {
                                     HengeVMBridge.shared.sendPointerNormX(
                                         cursorNormX,
                                         normY: cursorNormY,
-                                        buttons: heldMouseButtons,
+                                        buttons: effectiveMouseButtons,
                                         wheel: wheelStep
                                     )
                                 }
@@ -756,16 +821,16 @@ struct SessionView: View {
         HengeVMBridge.shared.sendPointerNormX(
             cursorNormX,
             normY: cursorNormY,
-            buttons: heldMouseButtons,
+            buttons: effectiveMouseButtons,
             wheel: 0
         )
     }
 
     private func pulseMouseButton(_ mask: UInt8) {
-        let downMask = heldMouseButtons | mask
+        let downMask = effectiveMouseButtons | mask
         HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: downMask, wheel: 0)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
-            HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: heldMouseButtons, wheel: 0)
+            HengeVMBridge.shared.sendPointerNormX(cursorNormX, normY: cursorNormY, buttons: effectiveMouseButtons, wheel: 0)
         }
     }
 
@@ -1162,7 +1227,7 @@ final class HengeSoftwareKeyboardProxyView: UITextView {
     }
 }
 
-final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDelegate {
+final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDelegate, UIGestureRecognizerDelegate {
     var onFocusChanged: ((Bool) -> Void)?
     var onCharacterTyped: (() -> Void)?
     var onPointerMoved: ((Double, Double) -> Void)?
@@ -1171,6 +1236,12 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
     /// the proxy resigns so UIKit collapses the keyboard safe area to 0, while
     /// `MetalDisplaySurfaceView` itself remains first responder for Bluetooth
     /// hardware keyboard `pressesBegan` events without triggering a keyboard.
+    var isActiveDisplayTab: Bool = true {
+        didSet {
+            guard oldValue != isActiveDisplayTab else { return }
+            scheduleSyncResponderState()
+        }
+    }
     var suppressSoftwareKeyboard: Bool = true {
         didSet {
             guard oldValue != suppressSoftwareKeyboard else { return }
@@ -1224,6 +1295,17 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
 
     private func syncResponderState() {
         guard window != nil else { return }
+        if !isActiveDisplayTab {
+            if softwareKeyboardProxy.isFirstResponder {
+                isProgrammaticResponderChange = true
+                _ = softwareKeyboardProxy.resignFirstResponder()
+                isProgrammaticResponderChange = false
+            }
+            if isFirstResponder {
+                _ = resignFirstResponder()
+            }
+            return
+        }
         if suppressSoftwareKeyboard {
             let wasShowing = softwareKeyboardProxy.isFirstResponder
             if wasShowing {
@@ -1289,6 +1371,7 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleCanvasTap(_:)))
         singleTap.numberOfTapsRequired = 1
         singleTap.numberOfTouchesRequired = 1
+        singleTap.delegate = self
 
         let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleCanvasRightClick(_:)))
         twoFingerTap.numberOfTapsRequired = 1
@@ -1301,6 +1384,7 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handleCanvasPan(_:)))
         pan.minimumNumberOfTouches = 1
         pan.maximumNumberOfTouches = 2
+        pan.delegate = self
         addGestureRecognizer(pan)
 
         let editMenu = UIEditMenuInteraction(delegate: self)
@@ -1311,12 +1395,28 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
         leftHold.minimumPressDuration = 0.22
         leftHold.allowableMovement = 18
         leftHold.numberOfTouchesRequired = 1
+        leftHold.delegate = self
         addGestureRecognizer(leftHold)
 
         let menuLongPress = UILongPressGestureRecognizer(target: self, action: #selector(handleCanvasLongPress(_:)))
         menuLongPress.minimumPressDuration = 0.45
         menuLongPress.numberOfTouchesRequired = 2
         addGestureRecognizer(menuLongPress)
+
+        // Indirect pointer (USB/Bluetooth mouse & iPad trackpad) fallback when GCMouse is not active.
+        let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleCanvasHover(_:)))
+        addGestureRecognizer(hover)
+
+        let secondaryClick = UITapGestureRecognizer(target: self, action: #selector(handleCanvasRightClick(_:)))
+        secondaryClick.numberOfTapsRequired = 1
+        secondaryClick.buttonMaskRequired = .secondary
+        secondaryClick.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        addGestureRecognizer(secondaryClick)
+
+        let indirectScroll = UIPanGestureRecognizer(target: self, action: #selector(handleIndirectScroll(_:)))
+        indirectScroll.allowedScrollTypesMask = .all
+        indirectScroll.allowedTouchTypes = []
+        addGestureRecognizer(indirectScroll)
     }
 
     override func didMoveToWindow() {
@@ -1434,6 +1534,9 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
     // MARK: - Hardware Keyboard (UIResponder presses)
 
     private func handleHardwarePresses(_ presses: Set<UIPress>, pressed: Bool) -> Bool {
+        if HardwareInputManager.shared.isCapturingDisplayKeyboard {
+            return true
+        }
         var handled = false
         for press in presses {
             if let key = press.key, let usage = Self.hidUsage(from: key.keyCode) {
@@ -1570,6 +1673,13 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
 
     // MARK: - Direct Canvas Touch / Pointer Gestures
 
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if touch.type == .indirectPointer && HardwareInputManager.shared.isCapturingDisplayMouse {
+            return false
+        }
+        return true
+    }
+
     private func normalizedPoint(_ pt: CGPoint) -> (Double, Double) {
         var fbW: UInt32 = 0
         var fbH: UInt32 = 0
@@ -1606,10 +1716,31 @@ final class MetalDisplaySurfaceView: UIView, @MainActor UIEditMenuInteractionDel
     }
 
     @objc private func handleCanvasRightClick(_ gr: UITapGestureRecognizer) {
+        if gr.buttonMaskRequired == .secondary && HardwareInputManager.shared.isCapturingDisplayMouse {
+            return
+        }
         let (nx, ny) = normalizedPoint(gr.location(in: self))
         HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 2, wheel: 0)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
             HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 0, wheel: 0)
+        }
+    }
+
+    @objc private func handleCanvasHover(_ gr: UIHoverGestureRecognizer) {
+        guard !HardwareInputManager.shared.isCapturingDisplayMouse else { return }
+        guard gr.state == .began || gr.state == .changed else { return }
+        let (nx, ny) = normalizedPoint(gr.location(in: self))
+        HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 0, wheel: 0)
+    }
+
+    @objc private func handleIndirectScroll(_ gr: UIPanGestureRecognizer) {
+        guard !HardwareInputManager.shared.isCapturingDisplayMouse else { return }
+        let (nx, ny) = normalizedPoint(gr.location(in: self))
+        let vy = gr.translation(in: self).y
+        let wheelStep = Int8(max(-5, min(5, Int(vy / 20.0))))
+        if wheelStep != 0 {
+            HengeVMBridge.shared.sendPointerNormX(nx, normY: ny, buttons: 0, wheel: wheelStep)
+            gr.setTranslation(.zero, in: self)
         }
     }
 
@@ -1823,6 +1954,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
 
     @ObservedObject var lifecycle: MetalLifecycleGuard
     @Binding var focusKeyboard: Bool
+    var isActiveDisplayTab: Bool = true
     var suppressSoftwareKeyboard: Bool
     var allowGuestResize: Bool = true
     var layoutTrigger: String = ""
@@ -1838,6 +1970,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MetalDisplaySurfaceView {
         let view = MetalDisplaySurfaceView(frame: .zero)
+        view.isActiveDisplayTab = isActiveDisplayTab
         view.suppressSoftwareKeyboard = suppressSoftwareKeyboard
         view.allowGuestResize = allowGuestResize
         view.onFocusChanged = { isFocused in
@@ -1864,6 +1997,7 @@ struct MetalFramebufferRepresentable: UIViewRepresentable {
         uiView.onCharacterTyped = onCharacterTyped
         uiView.onPointerMoved = onPointerMoved
         uiView.allowGuestResize = allowGuestResize
+        uiView.isActiveDisplayTab = isActiveDisplayTab
         uiView.suppressSoftwareKeyboard = suppressSoftwareKeyboard
         if context.coordinator.lastLayoutTrigger != layoutTrigger {
             context.coordinator.lastLayoutTrigger = layoutTrigger

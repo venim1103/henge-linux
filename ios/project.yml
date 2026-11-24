@@ -84,6 +84,7 @@ targets:
       properties:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        UIApplicationSupportsIndirectInputEvents: true
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations:

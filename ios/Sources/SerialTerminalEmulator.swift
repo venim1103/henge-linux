@@ -1273,6 +1273,9 @@ final class SerialTerminalCanvasView: UIView, @MainActor UIEditMenuInteractionDe
                     // Catch up any output buffered while on Display tab without
                     // firing stale DSR/DA replies into a live login prompt.
                     drainSerial(suppressReplies: true)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.syncKeyboardResponder()
+                    }
                 } else {
                     stopPolling()
                     if keyboardProxy.isFirstResponder {
