@@ -5,6 +5,7 @@
 #include "henge_platform.h"
 #include "henge_txm_jit.h"
 #include "henge_virtio_gpu.h"
+#include "henge_virgl_worker.h"
 #include "henge_qcow2.h"
 #include "henge_cidata.h"
 #import "HengeJITExtensionBridge.h"

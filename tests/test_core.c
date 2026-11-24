@@ -6,6 +6,7 @@
 #include "henge_platform.h"
 #include "henge_txm_jit.h"
 #include "henge_virtio_gpu.h"
+#include "henge_virgl_worker.h"
 #include "henge_qcow2.h"
 #include "henge_cidata.h"
 
@@ -1054,6 +1055,189 @@ static void test_touch_aspect_coordinate_mapping(void) {
     HENGE_CHECK(near_double(nx, 0.25, 1e-4) && near_double(ny, 0.25, 1e-4));
 }
 
+typedef struct {
+    pthread_mutex_t mu;
+    pthread_t       caller_tid;
+    uint32_t        completed_count;
+    uint32_t        off_thread_count;
+    uint32_t        display_events;
+    uint32_t        cursor_events;
+    uint32_t        last_resp_type;
+    uint32_t        last_rflags;
+    uint64_t        last_fence_id;
+    uint32_t        last_capset_id;
+    uint32_t        last_capset_max_ver;
+    uint32_t        last_capset_max_size;
+    size_t          last_resp_len;
+} VirglWorkerTestSink;
+
+static void test_virgl_on_complete(void *opaque,
+                                   void *cmd_tag,
+                                   uint64_t generation,
+                                   const uint8_t *resp_bytes,
+                                   size_t resp_len) {
+    VirglWorkerTestSink *sink = (VirglWorkerTestSink *)opaque;
+    (void)cmd_tag;
+    (void)generation;
+    pthread_mutex_lock(&sink->mu);
+    if (!pthread_equal(pthread_self(), sink->caller_tid)) {
+        sink->off_thread_count++;
+    }
+    sink->completed_count++;
+    sink->last_resp_len = resp_len;
+    if (resp_bytes != NULL && resp_len >= 24U) {
+        memcpy(&sink->last_resp_type, resp_bytes + 0U, 4U);
+        memcpy(&sink->last_rflags, resp_bytes + 4U, 4U);
+        memcpy(&sink->last_fence_id, resp_bytes + 8U, 8U);
+        if (sink->last_resp_type == HENGE_VIRTIO_GPU_RESP_OK_CAPSET_INFO && resp_len >= 40U) {
+            memcpy(&sink->last_capset_id, resp_bytes + 24U, 4U);
+            memcpy(&sink->last_capset_max_ver, resp_bytes + 28U, 4U);
+            memcpy(&sink->last_capset_max_size, resp_bytes + 32U, 4U);
+        }
+    }
+    pthread_mutex_unlock(&sink->mu);
+}
+
+static void test_virgl_on_display_event(void *opaque,
+                                        uint32_t scanout_id,
+                                        bool is_cursor,
+                                        bool force_full) {
+    VirglWorkerTestSink *sink = (VirglWorkerTestSink *)opaque;
+    (void)scanout_id;
+    (void)force_full;
+    pthread_mutex_lock(&sink->mu);
+    if (is_cursor) {
+        sink->cursor_events++;
+    } else {
+        sink->display_events++;
+    }
+    pthread_mutex_unlock(&sink->mu);
+}
+
+static void test_virgl_async_worker(void) {
+    HengeVirtioGpuConfig cfg;
+    HENGE_CHECK(henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_VIRGL_3D, 512U, &cfg) == 0);
+    HengeVirtioGpuDevice *gpu = henge_virtio_gpu_create(&cfg);
+    HENGE_CHECK(gpu != NULL);
+
+    VirglWorkerTestSink sink;
+    memset(&sink, 0, sizeof(sink));
+    pthread_mutex_init(&sink.mu, NULL);
+    sink.caller_tid = pthread_self();
+
+    HengeVirglWorkerConfig wcfg;
+    memset(&wcfg, 0, sizeof(wcfg));
+    wcfg.gpu = gpu;
+    wcfg.enable_virgl = true;
+    wcfg.vram_mib = 512U;
+    wcfg.callback_opaque = &sink;
+    wcfg.on_complete = test_virgl_on_complete;
+    wcfg.on_display_event = test_virgl_on_display_event;
+
+    HengeVirglWorker *worker = henge_virgl_worker_create(&wcfg);
+    HENGE_CHECK(worker != NULL);
+    henge_virgl_register_active_worker(worker);
+
+    /* 1. GET_CAPSET_INFO index 1 -> VIRGL2 */
+    uint32_t cap_idx_req[2] = { 1U, 0U };
+    HengeVirglCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.queue_index = 0U;
+    cmd.cmd_type = HENGE_VIRTIO_GPU_CMD_GET_CAPSET_INFO;
+    cmd.flags = HENGE_VIRTIO_GPU_FLAG_FENCE;
+    cmd.fence_id = 101ULL;
+    cmd.generation = 1ULL;
+    cmd.payload = (const uint8_t *)cap_idx_req;
+    cmd.payload_len = sizeof(cap_idx_req);
+    HENGE_CHECK(henge_virgl_worker_enqueue(worker, &cmd) == 0);
+    HENGE_CHECK(henge_virgl_worker_drain(worker, 2000U) == 0);
+    HENGE_CHECK(sink.last_resp_type == HENGE_VIRTIO_GPU_RESP_OK_CAPSET_INFO);
+    HENGE_CHECK(sink.last_fence_id == 101ULL && sink.last_rflags == HENGE_VIRTIO_GPU_FLAG_FENCE);
+    HENGE_CHECK(sink.last_capset_id == HENGE_VIRTIO_GPU_CAPSET_VIRGL2);
+    HENGE_CHECK(sink.last_capset_max_ver >= 1U && sink.last_capset_max_size >= 64U);
+
+    /* 2. GET_CAPSET for VIRGL2 */
+    uint32_t get_cap_req[2] = { HENGE_VIRTIO_GPU_CAPSET_VIRGL2, sink.last_capset_max_ver };
+    cmd.cmd_type = HENGE_VIRTIO_GPU_CMD_GET_CAPSET;
+    cmd.fence_id = 102ULL;
+    cmd.payload = (const uint8_t *)get_cap_req;
+    cmd.payload_len = sizeof(get_cap_req);
+    HENGE_CHECK(henge_virgl_worker_enqueue(worker, &cmd) == 0);
+    HENGE_CHECK(henge_virgl_worker_drain(worker, 2000U) == 0);
+    HENGE_CHECK(sink.last_resp_type == HENGE_VIRTIO_GPU_RESP_OK_CAPSET);
+    HENGE_CHECK(sink.last_resp_len >= 24U + 64U);
+
+    /* 3. CTX_CREATE -> RESOURCE_CREATE_3D -> ATTACH_BACKING -> CTX_ATTACH -> SUBMIT_3D (fenced) */
+    uint8_t ctx_req[72];
+    memset(ctx_req, 0, sizeof(ctx_req));
+    uint32_t name_len = 5U;
+    memcpy(ctx_req + 0U, &name_len, 4U);
+    memcpy(ctx_req + 8U, "labwc", 5U);
+    cmd.cmd_type = HENGE_VIRTIO_GPU_CMD_CTX_CREATE;
+    cmd.ctx_id = 7U;
+    cmd.fence_id = 103ULL;
+    cmd.payload = ctx_req;
+    cmd.payload_len = sizeof(ctx_req);
+    HENGE_CHECK(henge_virgl_worker_enqueue(worker, &cmd) == 0);
+
+    uint32_t res3d_req[12] = { 55U, 2U, HENGE_VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, 2U, 64U, 64U, 1U, 1U, 0U, 0U, 0U, 0U };
+    cmd.cmd_type = HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D;
+    cmd.fence_id = 104ULL;
+    cmd.payload = (const uint8_t *)res3d_req;
+    cmd.payload_len = sizeof(res3d_req);
+    HENGE_CHECK(henge_virgl_worker_enqueue(worker, &cmd) == 0);
+
+    uint8_t backing_mem[64];
+    memset(backing_mem, 0x3CU, sizeof(backing_mem));
+    HengeGpuBackingEntry bg = { .host_ptr = backing_mem, .guest_addr = 0x50000000ULL, .length = sizeof(backing_mem), .reserved = 0U };
+    uint32_t attach_req[2] = { 55U, 1U };
+    cmd.cmd_type = HENGE_VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+    cmd.fence_id = 105ULL;
+    cmd.payload = (const uint8_t *)attach_req;
+    cmd.payload_len = sizeof(attach_req);
+    cmd.backing = &bg;
+    cmd.backing_count = 1U;
+    HENGE_CHECK(henge_virgl_worker_enqueue(worker, &cmd) == 0);
+    cmd.backing = NULL;
+    cmd.backing_count = 0U;
+
+    uint32_t ctx_res_req[2] = { 55U, 0U };
+    cmd.cmd_type = HENGE_VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE;
+    cmd.fence_id = 106ULL;
+    cmd.payload = (const uint8_t *)ctx_res_req;
+    cmd.payload_len = sizeof(ctx_res_req);
+    HENGE_CHECK(henge_virgl_worker_enqueue(worker, &cmd) == 0);
+
+    uint32_t submit_req[3] = { 8U, 0x00000001U, 0xDEADBEEFU };
+    cmd.cmd_type = HENGE_VIRTIO_GPU_CMD_SUBMIT_3D;
+    cmd.fence_id = 107ULL;
+    cmd.payload = (const uint8_t *)submit_req;
+    cmd.payload_len = sizeof(submit_req);
+    HENGE_CHECK(henge_virgl_worker_enqueue(worker, &cmd) == 0);
+
+    /* 4. Drain via global active-worker hook (simulating MetalLifecycleGuard willResignActive). */
+    henge_virgl_drain_active_worker(2000U);
+    HENGE_CHECK(sink.last_resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(sink.last_fence_id == 107ULL);
+    HENGE_CHECK(sink.completed_count == 7U);
+    HENGE_CHECK(sink.off_thread_count == 7U);
+    HENGE_CHECK(henge_virtio_gpu_active_contexts(gpu) == 1U);
+    HENGE_CHECK(henge_virtio_gpu_context_attached_resources(gpu, 7U) == 1U);
+
+    /* 5. Reset barrier & stats check */
+    HENGE_CHECK(henge_virgl_worker_enqueue_reset(worker, 2ULL) == 0);
+    HENGE_CHECK(henge_virgl_worker_drain(worker, 2000U) == 0);
+    HengeVirglWorkerStats stats;
+    henge_virgl_worker_get_stats(worker, &stats);
+    HENGE_CHECK(stats.cmds_enqueued == 7ULL && stats.cmds_completed == 7ULL);
+    HENGE_CHECK(stats.fences_retired == 7ULL && stats.resets_processed == 1ULL);
+    HENGE_CHECK(stats.pending_queue_depth == 0U && stats.pending_fence_count == 0U);
+
+    henge_virgl_worker_destroy(worker);
+    henge_virtio_gpu_destroy(gpu);
+    pthread_mutex_destroy(&sink.mu);
+}
+
 int main(void) {
     test_unix_socket_path_bounds();
     test_mmu_granule_decoding();
@@ -1062,6 +1246,7 @@ int main(void) {
     test_multivcpu_counter_jump_atomicity();
     test_txm_jit_bounds_and_blessing();
     test_virtio_gpu_backends();
+    test_virgl_async_worker();
     test_console_log_capture();
     test_qcow2_and_storage_tools();
     test_cidata_fat16_generator();

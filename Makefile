@@ -32,7 +32,7 @@ $(TLB_STAMP): | $(BUILD_DIR)
 	@rm -f $(BUILD_DIR)/.tlb_bits_*
 	@touch $@
 
-HOST_SRCS := host/henge_platform.c host/henge_txm_jit.c host/henge_virtio_gpu.c host/henge_qcow2.c host/henge_cidata.c
+HOST_SRCS := host/henge_platform.c host/henge_txm_jit.c host/henge_virtio_gpu.c host/henge_virgl_worker.c host/henge_qcow2.c host/henge_cidata.c
 HOST_ASM  := $(if $(filter aarch64 arm64,$(UNAME_M)),host/henge_brk.S,)
 
 HOST_HAVE_ZSTD := $(shell pkg-config --exists libzstd 2>/dev/null && echo 1 || echo 0)
@@ -112,6 +112,7 @@ IOS_HOST_OBJS := \
 	$(BUILD_DIR)/ios/henge_txm_jit.o \
 	$(BUILD_DIR)/ios/henge_brk.o \
 	$(BUILD_DIR)/ios/henge_virtio_gpu.o \
+	$(BUILD_DIR)/ios/henge_virgl_worker.o \
 	$(BUILD_DIR)/ios/henge_qcow2.o \
 	$(BUILD_DIR)/ios/henge_cidata.o
 

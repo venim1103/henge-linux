@@ -48,6 +48,9 @@ final class MetalLifecycleGuard: ObservableObject {
         guard !isPaused else { return }
         isPaused = true
         hengelinux_set_render_paused(true)
+        // Synchronously drain the dedicated VirGL/ANGLE worker queue before
+        // UIKit revokes GPU privileges on willResignActive.
+        henge_virgl_drain_active_worker(250)
     }
 
     func resumeRendering() {

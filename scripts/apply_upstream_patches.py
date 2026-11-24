@@ -1293,9 +1293,9 @@ int hv_winvirt_is_virtio_gpu_virgl_ready(const HvWinVirt *b);""",
     winvirt_c = upstream / "devices/winvirt.c"
     patch_file(
         winvirt_c,
-        '#include "henge_virtio_gpu.h"',
+        '#include "henge_virgl_worker.h"',
         '#include "winvirt.h"\n',
-        '#include "winvirt.h"\n#include "henge_platform.h"\n#include "henge_virtio_gpu.h"\n#include "virtio.h"\n',
+        '#include "winvirt.h"\n#include <stdatomic.h>\n#include "henge_platform.h"\n#include "henge_virtio_gpu.h"\n#include "henge_virgl_worker.h"\n#include "virtio.h"\n',
     )
     patch_file(
         winvirt_c,
@@ -1314,8 +1314,16 @@ int hv_winvirt_is_virtio_gpu_virgl_ready(const HvWinVirt *b);""",
         """typedef struct HvVirtioGpuPci {
     HvVirtio vio;
     HengeVirtioGpuDevice *gpu;
+    HengeVirglWorker *worker;
     HvFbDisplay *fb;
+    _Atomic uint64_t vgpu_gen;
+    _Atomic int shutting_down;
 } HvVirtioGpuPci;
+
+typedef struct HvVirtioGpuAsyncTag {
+    HvVirtqElem elem;
+    int queue;
+} HvVirtioGpuAsyncTag;
 
 static void vgpu_sync_cursor0(HvVirtioGpuPci *g) {
     if (!g || !g->fb || !g->gpu) return;
@@ -1363,9 +1371,62 @@ static void vgpu_sync_scanout0(HvVirtioGpuPci *g, int force_full) {
     }
 }
 
+static void vgpu_worker_display_event(void *opaque, uint32_t scanout_id, bool is_cursor, bool force_full) {
+    HvVirtioGpuPci *g = (HvVirtioGpuPci *)opaque;
+    if (!g || atomic_load_explicit(&g->shutting_down, memory_order_acquire) != 0) return;
+    if (scanout_id != 0u) return;
+    if (is_cursor) {
+        vgpu_sync_cursor0(g);
+    } else {
+        vgpu_sync_scanout0(g, force_full ? 1 : 0);
+    }
+}
+
+static void vgpu_worker_complete(void *opaque,
+                                 void *cmd_tag,
+                                 uint64_t generation,
+                                 const uint8_t *resp_bytes,
+                                 size_t resp_len) {
+    HvVirtioGpuPci *g = (HvVirtioGpuPci *)opaque;
+    HvVirtioGpuAsyncTag *tag = (HvVirtioGpuAsyncTag *)cmd_tag;
+    if (!g || !tag) {
+        free(tag);
+        return;
+    }
+    if (resp_bytes == NULL || resp_len == 0u ||
+        atomic_load_explicit(&g->shutting_down, memory_order_acquire) != 0 ||
+        generation != atomic_load_explicit(&g->vgpu_gen, memory_order_acquire)) {
+        free(tag);
+        return;
+    }
+    HvMachine *m = g->vio.m;
+    if (!m) {
+        free(tag);
+        return;
+    }
+    hv_dev_lock(m);
+    int kick = 0;
+    if (atomic_load_explicit(&g->shutting_down, memory_order_acquire) == 0 &&
+        generation == atomic_load_explicit(&g->vgpu_gen, memory_order_acquire)) {
+        uint32_t written = hv_virtq_write(&g->vio, &tag->elem, 0, resp_bytes, (uint32_t)resp_len);
+        hv_virtq_push(&g->vio, tag->queue, &tag->elem, written);
+        hv_virtio_interrupt(&g->vio);
+        kick = 1;
+    }
+    hv_dev_unlock(m);
+    if (kick) {
+        hv_machine_kick_all(m);
+    }
+    free(tag);
+}
+
 static void vgpu_reset(HvVirtio *v) {
     HvVirtioGpuPci *g = v->dev;
     if (!g || !g->gpu) return;
+    uint64_t next_gen = atomic_fetch_add_explicit(&g->vgpu_gen, 1ull, memory_order_acq_rel) + 1ull;
+    if (g->worker) {
+        (void)henge_virgl_worker_enqueue_reset(g->worker, next_gen);
+    }
     hengelinux_render_lock();
     if (g->fb) {
         hv_fb_display_set_host_buffer(g->fb, NULL, 0u, 0u, 0u, 0u);
@@ -1386,6 +1447,145 @@ static void vgpu_config_write(HvVirtio *v, uint32_t off, uint64_t val, unsigned 
     }
 }
 
+static int vgpu_enqueue_async_cmd(HvVirtio *v, HvVirtioGpuPci *g, int q, const HvVirtqElem *e,
+                                  uint32_t type, uint32_t flags, uint64_t fence_id,
+                                  uint32_t ctx_id, uint8_t ring_idx) {
+    HvVirtioGpuAsyncTag *tag = calloc(1u, sizeof *tag);
+    if (!tag) return -1;
+    tag->elem = *e;
+    tag->queue = q;
+
+    uint8_t stack_buf[96];
+    uint8_t *heap_buf = NULL;
+    const uint8_t *payload = NULL;
+    size_t payload_len = 0u;
+    HengeGpuBackingEntry *entries = NULL;
+    uint32_t nr_entries = 0u;
+
+    if (q == 1) {
+        memset(stack_buf, 0, 32u);
+        hv_virtq_read(v, e, 24u, stack_buf, 32u);
+        payload = stack_buf;
+        payload_len = 32u;
+    } else if (type == HENGE_VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING) {
+        uint32_t args[2] = {0};
+        hv_virtq_read(v, e, 24u, args, 8u);
+        memcpy(stack_buf, args, 8u);
+        payload = stack_buf;
+        payload_len = 8u;
+        nr_entries = args[1];
+        if (nr_entries > 4096u) {
+            free(tag);
+            return -1;
+        }
+        if (nr_entries > 0u) {
+            entries = calloc(nr_entries, sizeof(*entries));
+            if (!entries) {
+                free(tag);
+                return -1;
+            }
+            for (uint32_t i = 0u; i < nr_entries; i++) {
+                uint8_t mem_ent[16];
+                memset(mem_ent, 0, sizeof mem_ent);
+                hv_virtq_read(v, e, 32u + i * 16u, mem_ent, 16u);
+                uint64_t addr = 0;
+                uint32_t len = 0;
+                memcpy(&addr, mem_ent + 0, 8);
+                memcpy(&len, mem_ent + 8, 4);
+                entries[i].guest_addr = addr;
+                entries[i].length = len;
+                entries[i].host_ptr = (len > 0u) ? (const uint8_t *)hv_phys_ptr(v->m, addr, len) : NULL;
+            }
+        }
+    } else if (type == HENGE_VIRTIO_GPU_CMD_SUBMIT_3D) {
+        uint32_t cmd_size = 0u;
+        hv_virtq_read(v, e, 24u, &cmd_size, 4u);
+        if (cmd_size > (16u * 1024u * 1024u) - 4u) {
+            free(tag);
+            return -1;
+        }
+        payload_len = 4u + (size_t)cmd_size;
+        heap_buf = malloc(payload_len);
+        if (!heap_buf) {
+            free(tag);
+            return -1;
+        }
+        memcpy(heap_buf, &cmd_size, 4u);
+        if (cmd_size > 0u) {
+            hv_virtq_read(v, e, 28u, heap_buf + 4u, cmd_size);
+        }
+        payload = heap_buf;
+    } else {
+        size_t need = 0u;
+        switch ((HengeVirtioGpuCmdType)type) {
+            case HENGE_VIRTIO_GPU_CMD_GET_EDID:
+            case HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF:
+            case HENGE_VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING:
+                need = 4u;
+                break;
+            case HENGE_VIRTIO_GPU_CMD_GET_CAPSET_INFO:
+            case HENGE_VIRTIO_GPU_CMD_GET_CAPSET:
+            case HENGE_VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE:
+            case HENGE_VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE:
+                need = 8u;
+                break;
+            case HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D:
+                need = 16u;
+                break;
+            case HENGE_VIRTIO_GPU_CMD_RESOURCE_FLUSH:
+                need = 20u;
+                break;
+            case HENGE_VIRTIO_GPU_CMD_SET_SCANOUT:
+                need = 24u;
+                break;
+            case HENGE_VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D:
+                need = 32u;
+                break;
+            case HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D:
+            case HENGE_VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D:
+            case HENGE_VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D:
+                need = 48u;
+                break;
+            case HENGE_VIRTIO_GPU_CMD_CTX_CREATE:
+                need = 72u;
+                break;
+            default:
+                need = 0u;
+                break;
+        }
+        if (need > 0u) {
+            memset(stack_buf, 0, need);
+            hv_virtq_read(v, e, 24u, stack_buf, (uint32_t)need);
+            payload = stack_buf;
+            payload_len = need;
+        }
+    }
+
+    HengeVirglCommand cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.queue_index = (uint32_t)q;
+    cmd.cmd_type = type;
+    cmd.flags = flags;
+    cmd.fence_id = fence_id;
+    cmd.ctx_id = ctx_id;
+    cmd.ring_idx = ring_idx;
+    cmd.generation = atomic_load_explicit(&g->vgpu_gen, memory_order_acquire);
+    cmd.cmd_tag = tag;
+    cmd.payload = payload;
+    cmd.payload_len = payload_len;
+    cmd.backing = entries;
+    cmd.backing_count = nr_entries;
+
+    int rc = henge_virgl_worker_enqueue(g->worker, &cmd);
+    free(entries);
+    free(heap_buf);
+    if (rc != 0) {
+        free(tag);
+        return -1;
+    }
+    return 0;
+}
+
 static void vgpu_notify(HvVirtio *v, int q) {
     HvVirtioGpuPci *g = v->dev;
     if (!g || !g->gpu) return;
@@ -1396,11 +1596,21 @@ static void vgpu_notify(HvVirtio *v, int q) {
         memset(hdr, 0, sizeof hdr);
         uint32_t type = 0, flags = 0, ctx_id = 0;
         uint64_t fence_id = 0;
+        uint8_t ring_idx = 0;
         if (hv_virtq_read(v, &e, 0, hdr, 24) == 24) {
             memcpy(&type, hdr + 0, 4);
             memcpy(&flags, hdr + 4, 4);
             memcpy(&fence_id, hdr + 8, 8);
             memcpy(&ctx_id, hdr + 16, 4);
+            ring_idx = hdr[20];
+        }
+
+        /* When the dedicated VirGL 3D worker thread is active, offload all ctrlq
+         * commands asynchronously so guest vCPUs never stall on shader compilation. */
+        if (g->worker != NULL && q == 0) {
+            if (vgpu_enqueue_async_cmd(v, g, q, &e, type, flags, fence_id, ctx_id, ring_idx) == 0) {
+                continue;
+            }
         }
 
         uint32_t resp_type = HENGE_VIRTIO_GPU_RESP_OK_NODATA;
@@ -1617,9 +1827,32 @@ static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, Hv
     }
     g->gpu = gpu;
     g->fb = fb;
-    /* Phase 0.3.0-A: advertise EDID on PCIe until libvirglrenderer worker lands in Phase 0.3.0-B. */
+    atomic_store_explicit(&g->vgpu_gen, 1ull, memory_order_relaxed);
+    atomic_store_explicit(&g->shutting_down, 0, memory_order_relaxed);
+
     uint64_t pci_features = HENGE_VIRTIO_GPU_F_EDID;
     uint32_t num_capsets = 0u;
+    if (mode == HENGE_GPU_BACKEND_VIRGL_3D && henge_virtio_gpu_has_virglrenderer()) {
+        HengeVirglWorkerConfig wcfg;
+        memset(&wcfg, 0, sizeof wcfg);
+        wcfg.gpu = gpu;
+        wcfg.enable_virgl = true;
+        wcfg.vram_mib = vram_mib;
+        wcfg.callback_opaque = g;
+        wcfg.on_complete = vgpu_worker_complete;
+        wcfg.on_display_event = vgpu_worker_display_event;
+        g->worker = henge_virgl_worker_create(&wcfg);
+        if (g->worker && henge_virgl_worker_is_virgl_active(g->worker)) {
+            pci_features = HENGE_VIRTIO_GPU_F_VIRGL |
+                           HENGE_VIRTIO_GPU_F_EDID |
+                           HENGE_VIRTIO_GPU_F_RESOURCE_UUID;
+            num_capsets = henge_virgl_worker_num_capsets(g->worker);
+            henge_virgl_register_active_worker(g->worker);
+        } else if (g->worker) {
+            henge_virgl_worker_destroy(g->worker);
+            g->worker = NULL;
+        }
+    }
     hv_virtio_init(&g->vio, m, 16, 0x038000, 2, pci_features);
     g->vio.dev = g;
     g->vio.notify = vgpu_notify;
@@ -1630,8 +1863,8 @@ static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, Hv
     memcpy(g->vio.config + 8, &num_scanouts, 4);
     memcpy(g->vio.config + 12, &num_capsets, 4);
     hv_pcie_attach(bus, &g->vio.pci);
-    fprintf(stderr, "winvm: virtio-gpu (0x1af4:0x1050, mode=%d, vram=%u MiB, EDID 1024x768) attached on PCIe\\n",
-            (int)mode, vram_mib);
+    fprintf(stderr, "winvm: virtio-gpu (0x1af4:0x1050, mode=%d, virgl=%d, capsets=%u, vram=%u MiB, EDID 1024x768) attached on PCIe\\n",
+            (int)mode, (g->worker != NULL) ? 1 : 0, num_capsets, vram_mib);
     return g;
 }
 
@@ -1640,6 +1873,11 @@ void hv_pl011_detach(HvPl011 *u);
 void hv_winvirt_destroy(HvWinVirt *b) {
     if (!b) return;
     if (b->vgpu) {
+        atomic_store_explicit(&b->vgpu->shutting_down, 1, memory_order_release);
+        if (b->vgpu->worker) {
+            henge_virgl_worker_destroy(b->vgpu->worker);
+            b->vgpu->worker = NULL;
+        }
         hengelinux_render_lock();
         if (b->fb) {
             hv_fb_display_set_host_buffer(b->fb, NULL, 0u, 0u, 0u, 0u);
@@ -1733,7 +1971,10 @@ uint32_t hv_winvirt_get_virtio_gpu_scanout_res(const HvWinVirt *b, uint32_t scan
 
 int hv_winvirt_is_virtio_gpu_virgl_ready(const HvWinVirt *b) {
     if (!b || !b->vgpu || !b->vgpu->gpu) return 0;
-    return henge_virtio_gpu_is_virgl_ready(b->vgpu->gpu) ? 1 : 0;
+    if (b->vgpu->worker) {
+        return henge_virgl_worker_is_virgl_active(b->vgpu->worker) ? 1 : 0;
+    }
+    return 0;
 }
 
 void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t height) {
