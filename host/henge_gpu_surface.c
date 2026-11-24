@@ -109,8 +109,19 @@ static void *allocate_surface_handle(uint32_t width, uint32_t height, uint32_t *
 #endif
 }
 
+static void release_shared_event_handle(void **ev_ptr) {
+    if (ev_ptr == NULL || *ev_ptr == NULL) {
+        return;
+    }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    CFRelease((CFTypeRef)(*ev_ptr));
+#endif
+    *ev_ptr = NULL;
+}
+
 static void teardown_slots_locked(HengeGpuSwapchain *sc) {
     for (uint32_t i = 0U; i < HENGE_GPU_SWAPCHAIN_SLOTS; i++) {
+        release_shared_event_handle(&sc->slots[i].shared_event);
         release_surface_handle(&sc->slots[i].iosurface);
         memset(&sc->slots[i], 0, sizeof(sc->slots[i]));
     }
@@ -219,6 +230,9 @@ int henge_gpu_swapchain_publish(HengeGpuSwapchain *sc,
     if (sc->slots[slot_idx].iosurface == NULL) {
         pthread_mutex_unlock(&sc->mu);
         return -1;
+    }
+    if (sc->slots[slot_idx].shared_event != shared_event) {
+        release_shared_event_handle(&sc->slots[slot_idx].shared_event);
     }
     sc->slots[slot_idx].shared_event = shared_event;
     sc->slots[slot_idx].signal_value = signal_value;

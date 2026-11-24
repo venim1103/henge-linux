@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.2.5)'
+        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.3.0)'
         required: true
-        default: 'v0.2.5'
+        default: 'v0.3.0'
         type: string
 
 concurrency:
@@ -45,10 +45,11 @@ jobs:
       - name: Validate guest C console & scripts
         run: |
           gcc -O2 -Wall -Wextra -Werror guest/henge_dual_console.c -o build/henge-dual-console
-          python3 -m py_compile guest/henge-xdg-open scripts/apply_upstream_patches.py
+          python3 -m py_compile guest/henge-xdg-open scripts/apply_upstream_patches.py scripts/patch_gpu_deps.py
           bash -n guest/setup-arch-bridge.sh
           bash -n scripts/sync_upstream.sh
           bash -n scripts/build_ios_deps.sh
+          bash -n scripts/build_ios_gpu_deps.sh
           bash -n scripts/provision_archlinux_arm64.sh
           bash -n scripts/build_prebuilt_archlinux_arm64.sh
           bash scripts/build_prebuilt_archlinux_arm64.sh --dry-run
@@ -81,7 +82,7 @@ jobs:
     name: Build Unsigned iOS IPA (macOS)
     needs: [guest-agent-arm64]
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Download static ARM64 guest agent into app bundle resources
@@ -97,17 +98,29 @@ jobs:
           xcodebuild -version | tee .xcode-version
       - name: Install XcodeGen & iOS static dependency build tools
         run: |
-          brew install xcodegen meson ninja pkg-config
-          brew list --versions xcodegen meson ninja pkg-config
+          brew install xcodegen meson ninja pkg-config scons
+          brew list --versions xcodegen meson ninja pkg-config scons
       - name: Sync & patch upstream WindowsiOS engine
         run: bash scripts/sync_upstream.sh
-      - name: Restore cached iOS static dependencies (libffi, glib, libslirp)
+      - name: Restore cached iOS static dependencies (libffi, glib, libslirp, zstd)
         uses: actions/cache@3edfce9056124e459a23f683a21433670d47daca # @actions/cache 6.2.0
         with:
           path: .upstream/WindowsiOS/ios/deps
           key: ios-arm64-deps-ios18-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/sync_upstream.sh', 'scripts/build_ios_deps.sh') }}
-      - name: Build or validate iOS static dependencies (libffi, glib, libslirp)
-        run: IOS_MIN_VERSION=18.0 bash scripts/build_ios_deps.sh
+      - name: Restore cached iOS static 3D GPU dependencies (ANGLE, libepoxy, virglrenderer)
+        id: gpu-cache
+        uses: actions/cache/restore@3edfce9056124e459a23f683a21433670d47daca # @actions/cache 6.2.0
+        with:
+          path: .upstream/WindowsiOS/ios/gpu-deps
+          key: ios-arm64-gpu-deps-ios18-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/build_ios_gpu_deps.sh', 'scripts/patch_gpu_deps.py') }}
+      - name: Build or validate iOS static dependencies (base + 3D GPU stack)
+        run: BUILD_GPU_DEPS=1 IOS_MIN_VERSION=18.0 bash scripts/build_ios_deps.sh
+      - name: Save cached iOS static 3D GPU dependencies immediately
+        if: steps.gpu-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@3edfce9056124e459a23f683a21433670d47daca # @actions/cache 6.2.0
+        with:
+          path: .upstream/WindowsiOS/ios/gpu-deps
+          key: ios-arm64-gpu-deps-ios18-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/build_ios_gpu_deps.sh', 'scripts/patch_gpu_deps.py') }}
       - name: Run macOS platform tests & build full ios-lib
         run: make REQUIRE_UPSTREAM=1 IOS_MIN_VERSION=18.0 test-core hvsparse ios-lib
       - name: Generate Xcode project
@@ -229,11 +242,12 @@ jobs:
           Built from commit \`${SHORT_SHA}\` on ${BUILD_DATE}. Full-system ARM64 (\`aarch64\`) multi-distro Linux virtualization on non-jailbroken iOS 18.0 – iOS 27+ devices without \`Hypervisor.framework\`.
 
           ### Highlights
-          - **Native External Monitor Output & OLED Burn-In Screen Saver:** Added a dedicated \`UIWindowSceneSessionRoleExternalDisplayNonInteractive\` Metal scene (\`ExternalDisplayManager.swift\`, \`UIApplicationSupportsMultipleScenes: true\`) for USB-C / HDMI / AirPlay displays with live VirtIO-GPU KMS resolution presets (\`Auto\`, \`720p\`, \`900p\`, \`1080p\`, \`1440p\`), a 6×3 iPhone External Monitor Control Deck (with hide/show mousepad toggle), deadlock-free \`nextDrawable\` / HDMI hotplug & rotation handling, VM keep-awake (\`isIdleTimerDisabled\`), and a pure \`#000000\` OLED Screen Saver with configurable auto-dim (\`Manual / 1m / 3m / 5m\`), drifting clock/thermal status, and brightness restoration on double-tap wake.
-          - **Immediate Physical Keyboard, USB/Bluetooth Mouse & iPhone Speaker Audio:** Added \`HardwareInputManager.swift\` (\`GCKeyboard\` + \`GCMouse\` bridge with \`UIApplicationSupportsIndirectInputEvents: true\`) so physical USB/Bluetooth keyboards and mice work immediately without toggling the on-screen keyboard—and stay active during the OLED Screen Saver—plus immediate \`ttyAMA0\` hardware keyboard focus, UIKit indirect pointer fallback, and \`AudioSessionManager.swift\` (\`AVAudioSession\` \`.playAndRecord\` + \`.defaultToSpeaker\`) enabling iPhone stereo speaker output alongside Bluetooth/AirPlay handoff and interruption recovery.
-          - **Native VT100 / xterm-256color \`ttyAMA0\` Serial Terminal & \`fbdev\` Seat Fix:** Replaced the basic log view with a CoreGraphics VT100/xterm-256color terminal emulator (\`SerialTerminalEmulator.swift\`) backed by a dedicated 128 KiB pure-guest PL011 ring, supporting SGR colons, alternate screen, wide chars, SGR mouse, \`Fit CxR\` (\`stty\` + \`henge-resize\` DSR sync), and a \`systemd-logind\` udev \`master-of-seat\` rule (\`CanGraphical=yes\`) for UEFI GOP \`fbdev\` desktops.
-          - **Native iPhone Keyboard Repeat, \`🌐\` Switcher & Aspect-Fit Touchscreen Mapping:** Upgraded both Display and \`ttyAMA0\` to a shared \`UITextView\` keyboard proxy (\`HengeSoftwareKeyboardProxyView\`) enabling native iOS \`⌫\` hold-to-repeat and restoring the \`🌐\` language switcher and left/right one-handed keyboards; fixed direct touchscreen cursor offsets by inverting \`fb_metal.m\` letterbox/pillarbox scaling (\`henge_map_touch_to_guest_norm\`).
-          - **6×3 Split Trackpad Deck, Unified Special-Keys Bar & Landscape Layout:** Redesigned the Split Deck into a 6×3 grid with an isotropic square trackpad, double-width \`L\` / \`R\` holdable buttons, and 10 surrounding special keys (\`Esc\`, \`Tab\`, \`Bck\`, \`Alt\`, \`↑↓←→\`, \`␣\`, \`↵\`); unified the Display and \`ttyAMA0\` special-keys bars with non-mousepad keys up front (\`PgUp\`, \`PgDn\`, \`Home\`, \`End\`, \`Ins\`, \`Del\`, \`Ctrl\`, \`Shift\`, \`Alt\`, \`Paste\`, \`^C/^D/^Z\`) and hold-to-repeat on \`Space\`, \`Tab\`, \`Bck\`, \`Del\`, \`Esc\`, \`Home\`, \`End\`, \`PgUp\`, \`PgDn\`, and arrows; fixed landscape top-bar overflow with side-by-side adaptive Display + Mousepad layout.
+          - **Two-Tier Metal GPU Acceleration (Enhanced 2D VirtIO-GPU KMS + Async Zero-Copy VirGL 3D via ANGLE Metal):**
+            - **Enhanced 2D KMS:** Unified \`HengeVirtioGpuDevice\` ownership across \`HengeVMBridge.mm\` and \`devices/winvirt.c\`, replaced CPU full-frame cursor \`memcpy\` with a native alpha-blended Metal cursor quad, added \`TRANSFER_TO_HOST_2D\` dirty-rect partial \`[texture replaceRegion:]\` uploads, bypassed 60 Hz frame hashing in VirtIO-GPU mode, and paused local Metal presentation during OLED Screen Saver when no external monitor is attached.
+            - **Async VirGL 3D Metal Stack:** Cross-compiled static \`arm64-apple-ios18.0\` archives for Metal-only Google **ANGLE** (\`chromium/7578\` with deterministic \`RescopeGlobalVariables.cpp\`), **libepoxy** \`1.5.10\` (direct static ANGLE dispatch), and **libvirglrenderer** \`1.2.0\` (\`MAX_SAMPLES=4\` MSAA + \`VIRGL_FORMAT_A8_UNORM\` fixes), running on a dedicated asynchronous \`virgl_thread\` (\`host/henge_virgl_worker.{h,c}\`) with zero-copy \`IOSurfaceRef\` + \`MTLSharedEvent\` swapchains, explicit sRGB fragment encoding, and a 64 MiB LRU disk shader cache (\`Library/Caches/HengeShaders/\`).
+            - **Jetsam VRAM Governance, Thermal Step-Down & Dual-Scanout:** Added GPU-aware RAM reserves (\`+448 MiB\` standard / \`+768 MiB\` entitled), per-VM VRAM caps (\`256 / 512 / 1,024 MiB\`) + \`320 MiB\` Jetsam floor returning \`VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY\`, \`ProcessInfo.thermalState\` pacing (\`.serious\` -> \`40 Hz\`, \`.critical\` -> \`30 Hz\`), opt-in 120 Hz ProMotion EDID, 4K/1440p external monitor presets, and \`num_scanouts = 2\` dual-display support.
+          - **v0.3.0 SwiftUI UI Overhaul & Wayland GLES2 Guest Desktop:** Added \`GraphicsAndTelemetryUI.swift\` with the stacked **Unified VM Memory & Jetsam Bar**, **Per-VM Graphics & Display Sheet** (mode cards, VRAM ceiling, 30/60/120 Hz refresh, dual-scanout, shader cache clear), opt-in **Live Performance HUD Pill** (live FPS, backend, GPU VRAM, thermal state), and 5-frame **3D Crash-Sentinel Auto-Recovery Banner**; upgraded \`guest/install.sh\` (\`henge-install-desktop [--wayland|--x11]\` + 3-state \`henge-xorg-autodetect\`) for \`labwc\` + LXQt Wayland (\`WLR_RENDERER=gles2\`).
+          - **All v0.2.5 Features Preserved:** External USB-C/HDMI Metal scene, OLED Screen Saver, \`GCKeyboard\`/\`GCMouse\` hardware input, \`AVAudioSession\` stereo speaker routing, native VT100 \`ttyAMA0\` terminal, 6×3 split trackpad deck, unified special-keys bar, and adaptive landscape layout.
 
           ### Quick Setup (iOS 18.0+)
           1. Download and sign **\`HengeLinux-unsigned.ipa\`** with **SideStore** or **AltStore**.

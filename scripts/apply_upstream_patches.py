@@ -581,12 +581,22 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
             hengelinux_render_lock();
             renderLocked = YES;
             if (hengelinux_is_render_paused() || hengelinux_is_display_presentation_paused() || !fb) return;
-            if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
-            if (!px || w < 4 || h < 4 || w > 8192 || h > 8192 || stride < w * 4u) return;
 
             HvFbVgpuSnapshot vgpuSnap;
             memset(&vgpuSnap, 0, sizeof vgpuSnap);
             BOOL vgpuMode = (hv_fb_display_peek_vgpu(fb, &vgpuSnap) == 0 && vgpuSnap.active != 0);
+            BOOL hasIoSurface = (vgpuMode && vgpuSnap.iosurface != NULL &&
+                                 vgpuSnap.iosurface_w >= 4u && vgpuSnap.iosurface_h >= 4u &&
+                                 vgpuSnap.iosurface_w <= 8192u && vgpuSnap.iosurface_h <= 8192u);
+            if (hasIoSurface) {
+                px = NULL;
+                w = vgpuSnap.iosurface_w;
+                h = vgpuSnap.iosurface_h;
+                stride = 0u;
+            } else {
+                if (hv_fb_display_get_frame(fb, &px, &w, &h, &stride) != 0) return;
+                if (!px || w < 4 || h < 4 || w > 8192 || h > 8192 || stride < w * 4u) return;
+            }
 
             os_unfair_lock_lock(&lock);
             unfairLocked = YES;
@@ -612,9 +622,11 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
             uint64_t hval = 0ull;
 
             if (vgpuMode) {
-                BOOL needsPresent = (vgpuSnap.epoch != lastVgpuEpoch) ||
-                                    sizeChanged || !texture || texW != w || texH != h ||
-                                    vgpuForceFullUpload;
+                BOOL surfaceDirty = hasIoSurface
+                    ? (!ioSurfaceTexture || lastIoSurfaceRef != vgpuSnap.iosurface ||
+                       ioTexW != w || ioTexH != h)
+                    : (!texture || texW != w || texH != h || vgpuForceFullUpload);
+                BOOL needsPresent = (vgpuSnap.epoch != lastVgpuEpoch) || sizeChanged || surfaceDirty;
                 if (!needsPresent) return;
             } else {
                 lastVgpuEpoch = 0ull;
@@ -673,6 +685,7 @@ static uint64_t quick_frame_hash_parity(const uint8_t *px, uint32_t w, uint32_t 
             }
 
             if (!uploadTex) {
+                if (!px || stride < w * 4u) return;
                 BOOL recreatedTex = NO;
                 if (!texture || texW != w || texH != h) {
                     MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -1489,21 +1502,24 @@ static void vgpu_sync_scanout0(HvVirtioGpuPci *g, int force_full) {
     const uint8_t *px = NULL;
     uint32_t w = 0, h = 0, stride = 0;
     int wake = 0;
+    int has_iosurface = 0;
     hengelinux_render_lock();
-    if (henge_virtio_gpu_get_scanout_frame(g->gpu, 0u, &px, &w, &h, &stride) == 0 && px != NULL) {
-        hv_fb_display_set_host_buffer(g->fb, px, w, h, stride, 0x34325258u /* XR24 */);
-        if (g->worker != NULL) {
-            HengeGpuSwapchainSlot sc_slot;
-            if (henge_virgl_worker_get_front_surface(g->worker, 0u, &sc_slot) == 0 &&
-                sc_slot.iosurface != NULL && sc_slot.width > 0u && sc_slot.height > 0u) {
-                hv_fb_display_set_iosurface(g->fb, sc_slot.iosurface, sc_slot.width, sc_slot.height,
-                                            sc_slot.shared_event, sc_slot.signal_value, sc_slot.is_srgb ? 1 : 0);
-            } else {
-                hv_fb_display_set_iosurface(g->fb, NULL, 0u, 0u, NULL, 0ull, 0);
-            }
+    if (g->worker != NULL) {
+        HengeGpuSwapchainSlot sc_slot;
+        if (henge_virgl_worker_get_front_surface(g->worker, 0u, &sc_slot) == 0 &&
+            sc_slot.iosurface != NULL && sc_slot.width > 0u && sc_slot.height > 0u) {
+            hv_fb_display_set_iosurface(g->fb, sc_slot.iosurface, sc_slot.width, sc_slot.height,
+                                        sc_slot.shared_event, sc_slot.signal_value, sc_slot.is_srgb ? 1 : 0);
+            has_iosurface = 1;
+            wake = 1;
         } else {
             hv_fb_display_set_iosurface(g->fb, NULL, 0u, 0u, NULL, 0ull, 0);
         }
+    } else {
+        hv_fb_display_set_iosurface(g->fb, NULL, 0u, 0u, NULL, 0ull, 0);
+    }
+    if (henge_virtio_gpu_get_scanout_frame(g->gpu, 0u, &px, &w, &h, &stride) == 0 && px != NULL) {
+        hv_fb_display_set_host_buffer(g->fb, px, w, h, stride, 0x34325258u /* XR24 */);
         HengeGpuDirtyRect dirty;
         if (henge_virtio_gpu_consume_scanout_dirty(g->gpu, 0u, &dirty) == 0) {
             if (force_full || dirty.full) {
@@ -1518,6 +1534,8 @@ static void vgpu_sync_scanout0(HvVirtioGpuPci *g, int force_full) {
         }
         wake = 1;
     } else {
+        /* Clear stale 2D host pointer; hv_fb_display_set_host_buffer keeps vgpu_active=1 if IOSurface is live. */
+        (void)has_iosurface;
         hv_fb_display_set_host_buffer(g->fb, NULL, 0u, 0u, 0u, 0u);
     }
     hengelinux_render_unlock();
@@ -2041,6 +2059,7 @@ void hv_winvirt_destroy(HvWinVirt *b) {
         hengelinux_render_lock();
         if (b->fb) {
             hv_fb_display_set_host_buffer(b->fb, NULL, 0u, 0u, 0u, 0u);
+            hv_fb_display_set_iosurface(b->fb, NULL, 0u, 0u, NULL, 0ull, 0);
             hv_fb_display_set_cursor(b->fb, NULL, 0u, 0u, 0u, 0, 0, 0, 0, 0, 0ull, 0ull);
         }
         henge_virtio_gpu_destroy(b->vgpu->gpu);
@@ -2675,7 +2694,23 @@ int hv_fb_display_consume_vgpu_dirty(HvFbDisplay *fb, uint32_t *out_x, uint32_t 
     pthread_mutex_unlock(&fb->mu);
     return 0;
 }""",
-        """int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride) {
+        """#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+#endif
+
+static void henge_fb_cf_replace(void **slot, void *next_val) {
+    if (!slot || *slot == next_val) return;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    if (next_val) CFRetain((CFTypeRef)next_val);
+    if (*slot) CFRelease((CFTypeRef)(*slot));
+#endif
+    *slot = next_val;
+}
+
+int hv_fb_display_get_frame(HvFbDisplay *fb, const uint8_t **pixels, uint32_t *w, uint32_t *h, uint32_t *stride) {
     if (!fb) return -1;
     pthread_mutex_lock(&fb->mu);
     if (fb->vgpu_active && fb->vgpu_host && fb->vgpu_width && fb->vgpu_height) {
@@ -2726,7 +2761,7 @@ void hv_fb_display_set_host_buffer(HvFbDisplay *fb, const uint8_t *host_ptr, uin
         fb->vgpu_height = 0;
         fb->vgpu_stride = 0;
         fb->vgpu_fourcc = 0;
-        fb->vgpu_active = 0;
+        fb->vgpu_active = (fb->vgpu_iosurface != NULL) ? 1 : 0;
         fb->vgpu_dirty_valid = 0;
         fb->vgpu_dirty_full = 0;
         fb->vgpu_dirty_x0 = 0u;
@@ -2742,12 +2777,13 @@ void hv_fb_display_set_iosurface(HvFbDisplay *fb, void *iosurface, uint32_t widt
                                  void *shared_event, uint64_t signal_value, int is_srgb) {
     if (!fb) return;
     pthread_mutex_lock(&fb->mu);
-    fb->vgpu_iosurface = iosurface;
+    henge_fb_cf_replace(&fb->vgpu_iosurface, iosurface);
     fb->vgpu_iosurface_w = iosurface ? width : 0u;
     fb->vgpu_iosurface_h = iosurface ? height : 0u;
-    fb->vgpu_shared_event = iosurface ? shared_event : NULL;
+    henge_fb_cf_replace(&fb->vgpu_shared_event, iosurface ? shared_event : NULL);
     fb->vgpu_signal_value = iosurface ? signal_value : 0ull;
     fb->vgpu_is_srgb = is_srgb ? 1 : 0;
+    fb->vgpu_active = (fb->vgpu_iosurface != NULL || fb->vgpu_host != NULL) ? 1 : 0;
     if (iosurface) {
         fb->vgpu_epoch++;
     }

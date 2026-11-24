@@ -131,9 +131,10 @@ UPSTREAM_ALL_OBJS  := \
 ifeq ($(UNAME_S),Darwin)
 IOS_SDK := $(shell xcrun --sdk iphoneos --show-sdk-path)
 IOS_ZSTD_CFLAGS := $(if $(wildcard $(UPSTREAM_DIR)/ios/deps/include/zstd.h),-DHENGE_HAVE_ZSTD=1 -I$(UPSTREAM_DIR)/ios/deps/include,)
+IOS_GPU_CFLAGS := $(if $(wildcard $(UPSTREAM_DIR)/ios/gpu-deps/include/virglrenderer.h),-I$(UPSTREAM_DIR)/ios/gpu-deps/include -I$(UPSTREAM_DIR)/ios/gpu-deps/include/virgl -DEGL_EGL_PROTOTYPES=1 -DGL_GLES_PROTOTYPES=1 -DKHRONOS_STATIC,)
 IOS_BASE := -O2 -arch arm64 -mios-version-min=$(IOS_MIN_VERSION) -isysroot $(IOS_SDK) -MMD -MP -DHV_TLB_PAGE_BITS=$(HV_TLB_PAGE_BITS) -Ihost -Werror=implicit-function-declaration -Werror=incompatible-pointer-types
-IOS_CFLAGS := -std=c11 -Wall -Wextra -Werror $(IOS_BASE) $(IOS_ZSTD_CFLAGS)
-IOS_UP_CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers $(IOS_BASE)
+IOS_CFLAGS := -std=c11 -Wall -Wextra -Werror $(IOS_BASE) $(IOS_ZSTD_CFLAGS) $(IOS_GPU_CFLAGS)
+IOS_UP_CFLAGS := -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers $(IOS_BASE) $(IOS_GPU_CFLAGS)
 ENG_INC := -I$(UPSTREAM_DIR)/core -I$(UPSTREAM_DIR)/host -I$(UPSTREAM_DIR)/devices -I$(UPSTREAM_DIR)/ios/deps/include -I$(UPSTREAM_DIR)/ios/deps/include/slirp -I$(UPSTREAM_DIR)/ios/deps/include/glib-2.0 -I$(UPSTREAM_DIR)/ios/deps/lib/glib-2.0/include
 
 $(BUILD_DIR)/ios/%.o: host/%.c $(TLB_STAMP) | $(BUILD_DIR)

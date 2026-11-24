@@ -141,6 +141,10 @@ Path(sys.argv[3]).write_text(txt, encoding="utf-8")
         fi
     done
     ls -lh "$UPSTREAM_DEPS/lib"
+
+    if [ "${BUILD_GPU_DEPS:-0}" = "1" ]; then
+        bash "$(dirname "$0")/build_ios_gpu_deps.sh"
+    fi
 else
     echo "[deps] Upstream not yet synced; run ./scripts/sync_upstream.sh first."
     exit 1
