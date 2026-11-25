@@ -463,6 +463,10 @@ static bool angle_init_metal_egl(HengeVirglWorker *w) {
     w->egl_copy_shared_event =
         (HengeEglCopyMetalSharedEventFn)eglGetProcAddress("eglCopyMetalSharedEventANGLE");
     glGenFramebuffers(1, &w->blit_src_fbo);
+    const char *gl_ver = (const char *)glGetString(GL_VERSION);
+    const char *gl_ren = (const char *)glGetString(GL_RENDERER);
+    fprintf(stderr, "virgl-worker: ANGLE EGL %d.%d ready: GL_VERSION='%s' GL_RENDERER='%s'\n",
+            (int)major, (int)minor, gl_ver ? gl_ver : "?", gl_ren ? gl_ren : "?");
     return true;
 }
 
@@ -986,7 +990,7 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                     args.handle = res_id;
                     args.target = 2U; /* PIPE_TEXTURE_2D */
                     args.format = fmt;
-                    args.bind = (1U << 1); /* VIRGL_BIND_SAMPLER_VIEW */
+                    args.bind = (1U << 1) | (1U << 3); /* VIRGL_BIND_RENDER_TARGET | VIRGL_BIND_SAMPLER_VIEW */
                     args.width = rw;
                     args.height = rh;
                     args.depth = 1U;
@@ -1231,8 +1235,45 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                                 static int logged_sub = 0;
                                 if (logged_sub < 8) {
                                     logged_sub++;
-                                    fprintf(stderr, "virgl-worker: submit_cmd failed (ctx=%u bytes=%u hdr0=0x%08x rc=%d)\n",
-                                            node->ctx_id, cmd_bytes, aligned_cmd[0], rc_sub);
+                                    uint32_t ndw = cmd_bytes / 4U;
+                                    fprintf(stderr, "virgl-worker: submit_cmd failed (ctx=%u bytes=%u ndw=%u hdr0=0x%08x rc=%d)\n",
+                                            node->ctx_id, cmd_bytes, ndw, aligned_cmd[0], rc_sub);
+                                    if (logged_sub <= 2) {
+                                        uint32_t off = 0U;
+                                        uint32_t seen = 0U;
+                                        uint32_t printed = 0U;
+                                        uint32_t prev_off = 0U;
+                                        uint32_t prev_h = 0U;
+                                        while (off < ndw) {
+                                            uint32_t h = aligned_cmd[off];
+                                            uint32_t clen = h >> 16;
+                                            uint32_t cobj = (h >> 8) & 0xFFU;
+                                            uint32_t ccmd = h & 0xFFU;
+                                            if (off + 1U + clen > ndw) {
+                                                fprintf(stderr, "virgl-worker:   [off=%u #%u] TRUNCATED hdr=0x%08x (cmd=%u obj=%u len=%u ndw=%u)\n",
+                                                        off, seen, h, ccmd, cobj, clen, ndw);
+                                                break;
+                                            }
+                                            if (printed < 12U && ((ccmd == 1U && cobj == 7U) || seen < 3U)) {
+                                                if (ccmd == 1U && cobj == 7U && seen > 0U) {
+                                                    fprintf(stderr, "virgl-worker:   [prev off=%u] hdr=0x%08x (cmd=%u obj=%u len=%u)\n",
+                                                            prev_off, prev_h, prev_h & 0xFFU, (prev_h >> 8) & 0xFFU, prev_h >> 16);
+                                                }
+                                                fprintf(stderr, "virgl-worker:   [off=%u #%u] hdr=0x%08x (cmd=%u obj=%u len=%u)",
+                                                        off, seen, h, ccmd, cobj, clen);
+                                                uint32_t dump_n = (clen < 10U) ? clen : 10U;
+                                                for (uint32_t k = 1U; k <= dump_n; k++) {
+                                                    fprintf(stderr, " w%u=0x%08x", k, aligned_cmd[off + k]);
+                                                }
+                                                fprintf(stderr, "\n");
+                                                printed++;
+                                            }
+                                            prev_off = off;
+                                            prev_h = h;
+                                            off += 1U + clen;
+                                            seen++;
+                                        }
+                                    }
                                 }
                                 resp_type = HENGE_VIRTIO_GPU_RESP_ERR_UNSPEC;
                             }

@@ -286,9 +286,7 @@ HengeVirtioGpuDevice *henge_virtio_gpu_create(const HengeVirtioGpuConfig *cfg) {
 
     if (cfg->mode == HENGE_GPU_BACKEND_VIRGL_3D) {
         dev->feature_bits = HENGE_VIRTIO_GPU_F_VIRGL |
-                            HENGE_VIRTIO_GPU_F_EDID |
-                            HENGE_VIRTIO_GPU_F_RESOURCE_UUID |
-                            HENGE_VIRTIO_GPU_F_CONTEXT_INIT;
+                            HENGE_VIRTIO_GPU_F_EDID;
         dev->virgl_backend_ready = cfg->angle_metal_enabled;
     } else {
         dev->feature_bits = HENGE_VIRTIO_GPU_F_EDID;
