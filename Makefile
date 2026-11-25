@@ -209,6 +209,7 @@ sync-upstream:
 	bash ./scripts/sync_upstream.sh
 
 ios-project:
+	swift scripts/make_icon.swift ios/Assets.xcassets
 	xcodegen generate --spec ios/project.yml
 
 prebuilt-guest-image: hvsparse

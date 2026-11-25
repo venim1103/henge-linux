@@ -123,8 +123,10 @@ jobs:
           key: ios-arm64-gpu-deps-ios18-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/build_ios_gpu_deps.sh', 'scripts/patch_gpu_deps.py') }}
       - name: Run macOS platform tests & build full ios-lib
         run: make REQUIRE_UPSTREAM=1 IOS_MIN_VERSION=18.0 test-core hvsparse ios-lib
-      - name: Generate Xcode project
-        run: xcodegen generate --spec ios/project.yml
+      - name: Generate AppIcon assets & Xcode project
+        run: |
+          swift scripts/make_icon.swift ios/Assets.xcassets
+          xcodegen generate --spec ios/project.yml
       - name: Build unsigned iphoneos bundle and package .ipa
         env:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}

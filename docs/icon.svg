@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="HengeLinux App Icon">
+  <defs>
+    <clipPath id="squircle">
+      <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224"/>
+    </clipPath>
+
+    <radialGradient id="ambientGlow" cx="50%" cy="48%" r="48%">
+      <stop offset="0%" stop-color="#2563EB" stop-opacity="0.28"/>
+      <stop offset="55%" stop-color="#1E3A8A" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="backGlassFill" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1A2438" stop-opacity="0.90"/>
+      <stop offset="100%" stop-color="#090D16" stop-opacity="0.94"/>
+    </linearGradient>
+
+    <linearGradient id="frontGlassFill" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#172033" stop-opacity="0.95"/>
+      <stop offset="55%" stop-color="#0C111D" stop-opacity="0.96"/>
+      <stop offset="100%" stop-color="#070A12" stop-opacity="0.98"/>
+    </linearGradient>
+
+    <linearGradient id="glassSheen" x1="0%" y1="0%" x2="65%" y2="65%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.11"/>
+      <stop offset="45%" stop-color="#93C5FD" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="backStroke" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#93C5FD" stop-opacity="0.82"/>
+      <stop offset="35%" stop-color="#3B82F6" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#1D4ED8" stop-opacity="0.48"/>
+    </linearGradient>
+
+    <linearGradient id="frontStroke" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#EFF6FF" stop-opacity="0.95"/>
+      <stop offset="28%" stop-color="#60A5FA" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#2563EB" stop-opacity="0.78"/>
+    </linearGradient>
+
+    <linearGradient id="chevronGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#60A5FA"/>
+      <stop offset="55%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+
+    <linearGradient id="mintGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="100%" stop-color="#6EE7B7"/>
+    </linearGradient>
+
+    <filter id="cobaltGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="mintGlow" x="-40%" y="-80%" width="180%" height="260%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="windowShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000000" flood-opacity="0.78"/>
+    </filter>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+    <!-- Pure OLED Obsidian backdrop -->
+    <rect x="0" y="0" width="1024" height="1024" fill="#000000"/>
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#ambientGlow)"/>
+
+    <!-- Back desktop window (upper-right) -->
+    <g filter="url(#cobaltGlow)">
+      <rect x="260" y="182" width="588" height="476" rx="54" ry="54" fill="none" stroke="#2563EB" stroke-opacity="0.42" stroke-width="10"/>
+    </g>
+    <rect x="260" y="182" width="588" height="476" rx="54" ry="54" fill="url(#backGlassFill)" stroke="url(#backStroke)" stroke-width="5.5"/>
+    <line x1="264" y1="268" x2="844" y2="268" stroke="#93C5FD" stroke-opacity="0.14" stroke-width="3"/>
+
+    <!-- Front desktop window (lower-left) -->
+    <g filter="url(#windowShadow)">
+      <rect x="176" y="302" width="588" height="476" rx="54" ry="54" fill="url(#frontGlassFill)"/>
+    </g>
+    <g filter="url(#cobaltGlow)">
+      <rect x="176" y="302" width="588" height="476" rx="54" ry="54" fill="none" stroke="#3B82F6" stroke-opacity="0.50" stroke-width="10"/>
+    </g>
+    <rect x="176" y="302" width="588" height="476" rx="54" ry="54" fill="url(#glassSheen)" stroke="url(#frontStroke)" stroke-width="6"/>
+
+    <!-- Front window titlebar divider & subtle smoked-glass dots -->
+    <line x1="180" y1="388" x2="760" y2="388" stroke="#93C5FD" stroke-opacity="0.18" stroke-width="3"/>
+    <circle cx="228" cy="346" r="12" fill="#475569"/>
+    <circle cx="268" cy="346" r="12" fill="#52627A"/>
+    <circle cx="308" cy="346" r="12" fill="#64748B"/>
+
+    <!-- Glowing terminal chevron ">" -->
+    <g filter="url(#cobaltGlow)">
+      <path d="M 380 492 L 472 580 L 380 668" fill="none" stroke="url(#chevronGrad)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <path d="M 380 492 L 472 580 L 380 668" fill="none" stroke="#93C5FD" stroke-opacity="0.55" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Glowing electric mint underscore "_" -->
+    <g filter="url(#mintGlow)">
+      <rect x="498" y="646" width="110" height="32" rx="16" ry="16" fill="url(#mintGrad)"/>
+    </g>
+  </g>
+</svg>

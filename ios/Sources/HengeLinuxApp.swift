@@ -1326,6 +1326,32 @@ struct HengeLinuxApp: App {
     private var aboutView: some View {
         NavigationStack {
             List {
+                Section {
+                    HStack(spacing: 16) {
+                        Image("AppIconPreview")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 72, height: 72)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(Color.blue.opacity(0.45), lineWidth: 1)
+                            )
+                            .shadow(color: Color.blue.opacity(0.25), radius: 8, y: 2)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("HengeLinux")
+                                .font(.title2.bold())
+                            Text("v\(appVersionString) (\(appBuildNumberString)) · \(buildChannelLabel)")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Text("Full-System ARM64 Linux VM for iOS")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
                 Section("Installed Build") {
                     LabeledContent("Version", value: "v\(appVersionString) (\(appBuildNumberString))")
                     LabeledContent("Channel", value: buildChannelLabel)

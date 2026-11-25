@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/icon.svg" width="120" height="120" alt="HengeLinux">
+</p>
+
 # HengeLinux (`henge-linux`) — Full-System ARM64 Linux Virtual Machine for iOS
 
 [![CI](https://github.com/venim1103/henge-linux/actions/workflows/ci.yml/badge.svg)](https://github.com/venim1103/henge-linux/actions/workflows/ci.yml)

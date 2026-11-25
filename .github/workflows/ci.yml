@@ -148,8 +148,10 @@ jobs:
           key: ios-arm64-gpu-deps-ios18-${{ runner.os }}-${{ hashFiles('.xcode-version', 'scripts/build_ios_gpu_deps.sh', 'scripts/patch_gpu_deps.py') }}
       - name: Run macOS platform tests & build full ios-lib
         run: make REQUIRE_UPSTREAM=1 IOS_MIN_VERSION=18.0 test-core hvsparse ios-lib
-      - name: Generate Xcode project
-        run: xcodegen generate --spec ios/project.yml
+      - name: Generate AppIcon assets & Xcode project
+        run: |
+          swift scripts/make_icon.swift ios/Assets.xcassets
+          xcodegen generate --spec ios/project.yml
       - name: Build unsigned iphoneos bundle and package .ipa
         run: |
           SHORT_SHA="$(git rev-parse --short HEAD)"
@@ -170,6 +172,10 @@ jobs:
             echo "ERROR: Expected bundled static aarch64 henge-guest-agent in HengeLinux.app!" >&2
             exit 1
           }
+          test -s "$APP_BUNDLE/Assets.car" || {
+            echo "ERROR: Expected compiled Assets.car app icon catalog in HengeLinux.app!" >&2
+            exit 1
+          }
           APP_PLIST="$APP_BUNDLE/Info.plist"
           EXT_PLIST="$APP_BUNDLE/PlugIns/HengeLinuxJITExtension.appex/Info.plist"
           python3 -c '
@@ -184,6 +190,7 @@ jobs:
           assert build_channel == "Nightly", f"unexpected HengeBuildChannel: {build_channel}"
           doc_types = app_pl.get("CFBundleDocumentTypes") or []
           assert len(doc_types) >= 2, f"missing CFBundleDocumentTypes: {app_pl}"
+          assert app_pl.get("CFBundleIcons"), f"missing CFBundleIcons in Info.plist: {app_pl}"
           print("[verify] HengeLinux app Info.plist valid:", app_pl.get("CFBundleShortVersionString"), build_channel, git_commit)
           with open(sys.argv[2], "rb") as f:
               pl = plistlib.load(f)
