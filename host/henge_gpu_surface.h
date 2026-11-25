@@ -11,11 +11,13 @@ extern "C" {
 #endif
 
 /* Jetsam & GPU VRAM governance defaults (MiB). */
-#define HENGE_GPU_VRAM_CAP_STANDARD_MIB   256U
-#define HENGE_GPU_VRAM_CAP_ENTITLED_MIB   512U
-#define HENGE_GPU_VRAM_CAP_HIGHMEM_MIB    1024U
-#define HENGE_GPU_JETSAM_FLOOR_BYTES      (320ULL * 1024ULL * 1024ULL)
-#define HENGE_SHADER_CACHE_MAX_BYTES      (64ULL * 1024ULL * 1024ULL)
+#define HENGE_GPU_VRAM_CAP_STANDARD_MIB        256U
+#define HENGE_GPU_VRAM_CAP_ENTITLED_MIB        512U
+#define HENGE_GPU_VRAM_CAP_HIGHMEM_MIB         1024U
+#define HENGE_GPU_JETSAM_FLOOR_BYTES           (320ULL * 1024ULL * 1024ULL)
+#define HENGE_GPU_JETSAM_CRITICAL_FLOOR_BYTES  (64ULL * 1024ULL * 1024ULL)
+#define HENGE_GPU_LARGE_ALLOC_THRESHOLD_BYTES  (16ULL * 1024ULL * 1024ULL)
+#define HENGE_SHADER_CACHE_MAX_BYTES           (64ULL * 1024ULL * 1024ULL)
 
 /* Thermal states matching NSProcessInfoThermalState. */
 typedef enum {
@@ -63,7 +65,9 @@ uint32_t henge_gpu_swapchain_slot_count(const HengeGpuSwapchain *sc);
 /*
  * Host VRAM governance & Jetsam guardrail:
  * Rejects allocations exceeding vram_cap_bytes OR dropping live process headroom
- * below HENGE_GPU_JETSAM_FLOOR_BYTES (320 MiB).
+ * below the tiered Jetsam floor (320 MiB for large allocations > 16 MiB; 64 MiB
+ * critical floor for normal desktop/video textures <= 16 MiB so async VirtIO-GPU
+ * CREATE_3D does not fail and poison Xorg's VirGL context during normal browsing).
  */
 uint32_t henge_gpu_default_vram_cap_mib(uint64_t total_physical_bytes,
                                         uint64_t avail_memory_bytes);

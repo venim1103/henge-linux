@@ -317,12 +317,19 @@ bool henge_gpu_check_vram_budget(uint64_t requested_bytes,
     if (vram_cap_bytes > 0ULL && (current_vram_bytes + requested_bytes) > vram_cap_bytes) {
         return false;
     }
-    /* If live os_proc_available_memory() is known (>0), enforce 320 MiB emergency floor. */
+    /* If live os_proc_available_memory() is known (>0), enforce a tiered Jetsam floor:
+     * - Large allocations (> 16 MiB) require HENGE_GPU_JETSAM_FLOOR_BYTES (320 MiB).
+     * - Normal desktop/video textures (<= 16 MiB) use HENGE_GPU_JETSAM_CRITICAL_FLOOR_BYTES
+     *   (64 MiB), because Linux DRM virtio-gpu submits CREATE_3D asynchronously and rejecting
+     *   small UI/browser textures at ~230-310 MiB headroom poisons Xorg's VirGL context. */
     if (avail_memory_bytes > 0ULL) {
-        if (avail_memory_bytes <= HENGE_GPU_JETSAM_FLOOR_BYTES) {
+        uint64_t floor_bytes = (requested_bytes > HENGE_GPU_LARGE_ALLOC_THRESHOLD_BYTES)
+            ? HENGE_GPU_JETSAM_FLOOR_BYTES
+            : HENGE_GPU_JETSAM_CRITICAL_FLOOR_BYTES;
+        if (avail_memory_bytes <= floor_bytes) {
             return false;
         }
-        if (requested_bytes > (avail_memory_bytes - HENGE_GPU_JETSAM_FLOOR_BYTES)) {
+        if (requested_bytes > (avail_memory_bytes - floor_bytes)) {
             return false;
         }
     }

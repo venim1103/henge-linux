@@ -1327,8 +1327,12 @@ static void test_phase030c_swapchain_jetsam_cache_telemetry(void) {
     HENGE_CHECK(henge_gpu_check_vram_budget(16ULL << 20, 0ULL, 256ULL << 20, 1024ULL << 20));
     /* Exceeding VRAM cap fails cleanly. */
     HENGE_CHECK(!henge_gpu_check_vram_budget(64ULL << 20, 224ULL << 20, 256ULL << 20, 2048ULL << 20));
-    /* Dropping below 320 MiB emergency floor fails cleanly. */
+    /* Dropping below 320 MiB emergency floor fails cleanly for large allocations (> 16 MiB). */
     HENGE_CHECK(!henge_gpu_check_vram_budget(64ULL << 20, 0ULL, 512ULL << 20, 350ULL << 20));
+    /* Normal desktop/video textures (<= 16 MiB) succeed at ~240-296 MiB avail and only fail below 64 MiB. */
+    HENGE_CHECK(henge_gpu_check_vram_budget(222ULL * 35ULL * 4ULL, 13ULL << 20, 256ULL << 20, 296ULL << 20));
+    HENGE_CHECK(henge_gpu_check_vram_budget(8ULL << 20, 13ULL << 20, 256ULL << 20, 236ULL << 20));
+    HENGE_CHECK(!henge_gpu_check_vram_budget(8ULL << 20, 13ULL << 20, 256ULL << 20, 60ULL << 20));
 
     HengeVirtioGpuConfig vcfg;
     HENGE_CHECK(henge_virtio_gpu_init_config(HENGE_GPU_BACKEND_VIRGL_3D, 64U, &vcfg) == 0);
