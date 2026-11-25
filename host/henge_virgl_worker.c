@@ -177,7 +177,8 @@ struct HengeVirglWorker {
     uint64_t                 swapchain_signal_seq;
 
 #if HENGE_WORKER_HAS_VIRGL
-    HengeVirglIovEntry      *iov_head;
+    HengeVirglIovEntry             *iov_head;
+    struct virgl_renderer_callbacks virgl_cbs;
 #endif
 #if HENGE_WORKER_HAS_VIRGL && HENGE_WORKER_HAS_ANGLE_EGL
     EGLDisplay               egl_dpy;
@@ -1317,10 +1318,11 @@ static void *virgl_worker_thread_main(void *arg) {
 #if HENGE_WORKER_HAS_VIRGL
     bool virgl_ok = false;
     if (w->enable_virgl) {
-        struct virgl_renderer_callbacks cbs;
-        memset(&cbs, 0, sizeof(cbs));
-        cbs.version = 1;
-        cbs.write_fence = virgl_cb_write_fence;
+        /* virgl_renderer_init() stores the callbacks pointer without copying it, so
+         * the struct must live on the heap inside HengeVirglWorker for the full lifetime. */
+        memset(&w->virgl_cbs, 0, sizeof(w->virgl_cbs));
+        w->virgl_cbs.version = 1;
+        w->virgl_cbs.write_fence = virgl_cb_write_fence;
 
         /* Keep all virglrenderer + ANGLE Metal GL calls strictly single-threaded on virgl_thread
          * (VIRGL_RENDERER_THREAD_SYNC spawns a second thread that collides on EGLSurface). */
@@ -1328,11 +1330,11 @@ static void *virgl_worker_thread_main(void *arg) {
 #if HENGE_WORKER_HAS_ANGLE_EGL
         bool egl_ok = angle_init_metal_egl(w);
         if (egl_ok) {
-            cbs.create_gl_context = virgl_cb_create_gl_context;
-            cbs.destroy_gl_context = virgl_cb_destroy_gl_context;
-            cbs.make_current = virgl_cb_make_current;
+            w->virgl_cbs.create_gl_context = virgl_cb_create_gl_context;
+            w->virgl_cbs.destroy_gl_context = virgl_cb_destroy_gl_context;
+            w->virgl_cbs.make_current = virgl_cb_make_current;
         }
-        if (egl_ok && virgl_renderer_init(w, flags, &cbs) == 0) {
+        if (egl_ok && virgl_renderer_init(w, flags, &w->virgl_cbs) == 0) {
             virgl_ok = true;
             fprintf(stderr, "virgl-worker: initialized libvirglrenderer + ANGLE Metal on virgl_thread (flags=0x%x, vram=%u MiB)\n",
                     flags, w->vram_mib);
@@ -1341,7 +1343,7 @@ static void *virgl_worker_thread_main(void *arg) {
             fprintf(stderr, "virgl-worker: ANGLE Metal / virgl_renderer_init failed; staying on 2D KMS fallback\n");
         }
 #else
-        if (virgl_renderer_init(w, flags, &cbs) == 0) {
+        if (virgl_renderer_init(w, flags, &w->virgl_cbs) == 0) {
             virgl_ok = true;
             fprintf(stderr, "virgl-worker: initialized libvirglrenderer on dedicated virgl_thread (flags=0x%x, vram=%u MiB)\n",
                     flags, w->vram_mib);
