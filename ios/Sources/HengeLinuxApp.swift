@@ -469,6 +469,7 @@ struct HengeLinuxApp: App {
                 }
                 jitClient.gpuBackend = GpuDisplayBackend.from(modeCode: vm.gpuBackend)
                 externalDisplay.dualScanoutEnabled = vm.dualScanoutEnabled ?? false
+                HengeVMBridge.shared.setDualScanoutEnabled(vm.dualScanoutEnabled ?? false)
                 HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, vm.vramCapMiB ?? 0)))
                 HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, vm.refreshRateHz ?? 60)))
                 if ramInputText.isEmpty {
@@ -480,6 +481,7 @@ struct HengeLinuxApp: App {
                 customGuestRamMiB = min(max(vm.ramMiB, Int(HENGE_MIN_GUEST_RAM_MIB)), Int(HENGE_MAX_GUEST_RAM_MIB))
                 jitClient.gpuBackend = GpuDisplayBackend.from(modeCode: vm.gpuBackend)
                 externalDisplay.dualScanoutEnabled = vm.dualScanoutEnabled ?? false
+                HengeVMBridge.shared.setDualScanoutEnabled(vm.dualScanoutEnabled ?? false)
                 HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, vm.vramCapMiB ?? 0)))
                 HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, vm.refreshRateHz ?? 60)))
                 ramInputText = "\(effectiveRamMiB)"
@@ -636,6 +638,7 @@ struct HengeLinuxApp: App {
             }
             let gpuMode: Int32 = jitClient.gpuBackend.modeCode
             externalDisplay.dualScanoutEnabled = activeVM.dualScanoutEnabled ?? false
+            HengeVMBridge.shared.setDualScanoutEnabled(activeVM.dualScanoutEnabled ?? false)
             HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, activeVM.vramCapMiB ?? 0)))
             HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, activeVM.refreshRateHz ?? 60)))
             if gpuMode == 1 && henge_virtio_gpu_has_virglrenderer() {
@@ -1225,6 +1228,7 @@ struct HengeLinuxApp: App {
                             copy.dualScanoutEnabled = newVal
                             vmStore.updateMachine(copy)
                             externalDisplay.dualScanoutEnabled = newVal
+                            HengeVMBridge.shared.setDualScanoutEnabled(newVal)
                         }
                     ),
                     externalDisplay: externalDisplay,

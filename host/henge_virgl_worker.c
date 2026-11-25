@@ -194,6 +194,7 @@ struct HengeVirglWorker {
     EGLDisplay               egl_dpy;
     EGLConfig                egl_cfg;
     EGLContext               egl_root_ctx;
+    EGLContext               egl_blit_ctx;
     EGLSurface               egl_dummy_surf;
     GLuint                   blit_src_fbo;
     bool                     egl_supports_border_clamp;
@@ -399,13 +400,17 @@ static void angle_release_all_bindings(HengeVirglWorker *w) {
     if (w == NULL || w->egl_dpy == EGL_NO_DISPLAY) {
         return;
     }
-    if (w->egl_root_ctx != EGL_NO_CONTEXT) {
-        eglMakeCurrent(w->egl_dpy, w->egl_dummy_surf, w->egl_dummy_surf, w->egl_root_ctx);
+    EGLContext ctx = (w->egl_blit_ctx != EGL_NO_CONTEXT) ? w->egl_blit_ctx : w->egl_root_ctx;
+    if (ctx != EGL_NO_CONTEXT) {
+        eglMakeCurrent(w->egl_dpy, w->egl_dummy_surf, w->egl_dummy_surf, ctx);
     }
     for (uint32_t s = 0U; s < HENGE_VIRTIO_GPU_MAX_SCANOUTS; s++) {
         for (uint32_t i = 0U; i < HENGE_GPU_SWAPCHAIN_SLOTS; i++) {
             angle_release_surface_binding(w, &w->surface_bindings[s][i]);
         }
+    }
+    if (w->egl_root_ctx != EGL_NO_CONTEXT && ctx != w->egl_root_ctx) {
+        eglMakeCurrent(w->egl_dpy, w->egl_dummy_surf, w->egl_dummy_surf, w->egl_root_ctx);
     }
 }
 
@@ -462,7 +467,38 @@ static bool angle_init_metal_egl(HengeVirglWorker *w) {
         eglTerminate(dpy);
         return false;
     }
+    /* Dedicated shared EGLContext for scanout-to-IOSurface blits so glBlitFramebuffer
+     * and FBO/texture binds never clobber virglrenderer ctx0's cached GL state or
+     * inherit an active guest scissor box. */
+    EGLContext blit_ctx = eglCreateContext(dpy, cfg, root_ctx, ctx_attrs);
+    if (blit_ctx == EGL_NO_CONTEXT) {
+        eglDestroyContext(dpy, root_ctx);
+        if (dummy != EGL_NO_SURFACE) eglDestroySurface(dpy, dummy);
+        eglTerminate(dpy);
+        return false;
+    }
+    if (!eglMakeCurrent(dpy, dummy, dummy, blit_ctx)) {
+        eglDestroyContext(dpy, blit_ctx);
+        eglDestroyContext(dpy, root_ctx);
+        if (dummy != EGL_NO_SURFACE) eglDestroySurface(dpy, dummy);
+        eglTerminate(dpy);
+        return false;
+    }
+    glGenFramebuffers(1, &w->blit_src_fbo);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_DITHER);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+
     if (!eglMakeCurrent(dpy, dummy, dummy, root_ctx)) {
+        if (w->blit_src_fbo != 0U) {
+            eglMakeCurrent(dpy, dummy, dummy, blit_ctx);
+            glDeleteFramebuffers(1, &w->blit_src_fbo);
+            w->blit_src_fbo = 0U;
+            eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        }
+        eglDestroyContext(dpy, blit_ctx);
         eglDestroyContext(dpy, root_ctx);
         if (dummy != EGL_NO_SURFACE) eglDestroySurface(dpy, dummy);
         eglTerminate(dpy);
@@ -471,10 +507,10 @@ static bool angle_init_metal_egl(HengeVirglWorker *w) {
     w->egl_dpy = dpy;
     w->egl_cfg = cfg;
     w->egl_root_ctx = root_ctx;
+    w->egl_blit_ctx = blit_ctx;
     w->egl_dummy_surf = dummy;
     w->egl_copy_shared_event =
         (HengeEglCopyMetalSharedEventFn)eglGetProcAddress("eglCopyMetalSharedEventANGLE");
-    glGenFramebuffers(1, &w->blit_src_fbo);
 
     /* Empirically probe ANGLE ES 3.0 sampler wrap-mode support so virgl_renderer_submit_cmd()
      * never triggers GL_INVALID_ENUM (1280) on PIPE_TEX_WRAP_CLAMP_TO_BORDER / MIRROR_CLAMP. */
@@ -506,10 +542,17 @@ static void angle_teardown_metal_egl(HengeVirglWorker *w) {
     }
     angle_release_all_bindings(w);
     if (w->blit_src_fbo != 0U) {
+        if (w->egl_blit_ctx != EGL_NO_CONTEXT) {
+            eglMakeCurrent(w->egl_dpy, w->egl_dummy_surf, w->egl_dummy_surf, w->egl_blit_ctx);
+        }
         glDeleteFramebuffers(1, &w->blit_src_fbo);
         w->blit_src_fbo = 0U;
     }
     eglMakeCurrent(w->egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (w->egl_blit_ctx != EGL_NO_CONTEXT) {
+        eglDestroyContext(w->egl_dpy, w->egl_blit_ctx);
+        w->egl_blit_ctx = EGL_NO_CONTEXT;
+    }
     if (w->egl_root_ctx != EGL_NO_CONTEXT) {
         eglDestroyContext(w->egl_dpy, w->egl_root_ctx);
         w->egl_root_ctx = EGL_NO_CONTEXT;
@@ -586,7 +629,15 @@ static bool angle_blit_scanout_to_iosurface(HengeVirglWorker *w,
         return false;
     }
 
-    if (!eglMakeCurrent(w->egl_dpy, w->egl_dummy_surf, w->egl_dummy_surf, w->egl_root_ctx)) {
+    /* Flush pending guest VirGL draws on whichever context is currently active before
+     * switching to our isolated shared blit context so ANGLE Metal submits them first. */
+    if (eglGetCurrentContext() != EGL_NO_CONTEXT) {
+        glFlush();
+    }
+
+    EGLContext blit_ctx = (w->egl_blit_ctx != EGL_NO_CONTEXT) ? w->egl_blit_ctx : w->egl_root_ctx;
+    if (!eglMakeCurrent(w->egl_dpy, w->egl_dummy_surf, w->egl_dummy_surf, blit_ctx)) {
+        virgl_renderer_force_ctx_0();
         return false;
     }
 
@@ -653,14 +704,16 @@ static bool angle_blit_scanout_to_iosurface(HengeVirglWorker *w,
 
     GLint sw = (rinfo.width > 0U) ? (GLint)rinfo.width : (GLint)slot->width;
     GLint sh = (rinfo.height > 0U) ? (GLint)rinfo.height : (GLint)slot->height;
+    glDisable(GL_SCISSOR_TEST);
     glBlitFramebuffer(0, 0, sw, sh,
                       0, 0, (GLint)slot->width, (GLint)slot->height,
                       GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
     /* Guarantee IOSurface backing store completion before Metal consumer samples it,
-     * then restore virglrenderer's ctx0 so subsequent Gallium commands stay current. */
+     * then restore virglrenderer's ctx0 with its GL state untouched. */
     glFinish();
     virgl_renderer_force_ctx_0();
 

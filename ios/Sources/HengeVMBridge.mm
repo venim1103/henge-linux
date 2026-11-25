@@ -35,6 +35,7 @@ static NSString *const HengeVMErrorDomain = @"io.hengelinux.vm";
     uint32_t _lastDisplayHeight;
     uint32_t _targetRefreshHz;
     uint32_t _configuredVramCapMiB;
+    BOOL _dualScanoutEnabled;
     uint8_t _hidModifiers;
     NSString *_statusText;
     CAMetalLayer *__weak _displayLayer;
@@ -83,6 +84,7 @@ static void henge_on_vm_exit(int reason) {
         _lastDisplayHeight = 768U;
         _targetRefreshHz = 60U;
         _configuredVramCapMiB = 0U;
+        _dualScanoutEnabled = NO;
         _hidModifiers = 0;
         _statusText = self.isEngineLinked
             ? @"Engine linked · Ready"
@@ -402,6 +404,10 @@ static void henge_on_vm_exit(int reason) {
 
 - (void)setConfiguredVramCapMiB:(uint32_t)vramMiB {
     _configuredVramCapMiB = vramMiB;
+}
+
+- (void)setDualScanoutEnabled:(BOOL)enabled {
+    _dualScanoutEnabled = enabled;
 }
 
 - (BOOL)clearShaderCache {
@@ -862,6 +868,9 @@ static void henge_on_vm_exit(int reason) {
 #if defined(HENGE_WINVM_HAS_V5_GPU_CONFIG)
     cfg.gpu_backend_mode = (int)mode;
     cfg.gpu_vram_mib = _gpuConfig.vram_mib;
+#endif
+#if defined(HENGE_WINVM_HAS_V7_SCANOUT_COUNT)
+    cfg.enable_dual_scanout = _dualScanoutEnabled ? 1 : 0;
 #endif
 #if defined(HENGE_WINVM_HAS_V4_RESIZE)
     cfg.disk1_blk_size = _disk1PathStr.empty() ? 512U : henge_iso_preferred_block_size(_disk1PathStr.c_str());

@@ -254,6 +254,7 @@ int henge_cidata_write_image(const char *out_path,
 
     char user_data[4096];
     int user_len = 0;
+    const bool needs_legacy_chpasswd_list = (distro_tag != NULL && str_eq_ci(distro_tag, "alpine"));
     if (cfg->ssh_authorized_key != NULL && cfg->ssh_authorized_key[0] != '\0') {
         user_len = snprintf(user_data, sizeof(user_data),
                             "#cloud-config\n"
@@ -274,11 +275,8 @@ int henge_cidata_write_image(const char *out_path,
                             "    ssh_authorized_keys:\n"
                             "      - %s\n"
                             "chpasswd:\n"
-                            "  expire: false\n"
-                            "  list: |\n"
-                            "    %s:%s\n"
-                            "ssh_pwauth: true\n",
-                            hostname, username, shell_path, escaped_pw, cfg->ssh_authorized_key, username, password);
+                            "  expire: false\n",
+                            hostname, username, shell_path, escaped_pw, cfg->ssh_authorized_key);
     } else {
         user_len = snprintf(user_data, sizeof(user_data),
                             "#cloud-config\n"
@@ -297,11 +295,28 @@ int henge_cidata_write_image(const char *out_path,
                             "    lock_passwd: false\n"
                             "    plain_text_passwd: '%s'\n"
                             "chpasswd:\n"
-                            "  expire: false\n"
-                            "  list: |\n"
-                            "    %s:%s\n"
-                            "ssh_pwauth: true\n",
-                            hostname, username, shell_path, escaped_pw, username, password);
+                            "  expire: false\n",
+                            hostname, username, shell_path, escaped_pw);
+    }
+    if (needs_legacy_chpasswd_list && user_len > 0 && (size_t)user_len < sizeof(user_data)) {
+        int extra = snprintf(user_data + user_len, sizeof(user_data) - (size_t)user_len,
+                             "  list: |\n"
+                             "    %s:%s\n",
+                             username, password);
+        if (extra > 0 && (size_t)(user_len + extra) < sizeof(user_data)) {
+            user_len += extra;
+        } else {
+            user_len = -1;
+        }
+    }
+    if (user_len > 0 && (size_t)user_len < sizeof(user_data)) {
+        int extra = snprintf(user_data + user_len, sizeof(user_data) - (size_t)user_len,
+                             "ssh_pwauth: true\n");
+        if (extra > 0 && (size_t)(user_len + extra) < sizeof(user_data)) {
+            user_len += extra;
+        } else {
+            user_len = -1;
+        }
     }
 
     if (user_len > 0 && (size_t)user_len < sizeof(user_data) && distro_tag != NULL) {

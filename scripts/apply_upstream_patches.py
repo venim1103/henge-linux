@@ -1444,6 +1444,7 @@ void hv_winvirt_set_device_flags(int enable_xhci, int enable_virtio_input, int e
 void hv_winvirt_set_disk1_blk_size(uint32_t blk_size);
 void hv_winvirt_set_virtio_gpu(int enable);
 void hv_winvirt_set_virtio_gpu_config(int enable, int backend_mode, uint32_t vram_mib);
+void hv_winvirt_set_virtio_gpu_num_scanouts(uint32_t num_scanouts);
 void hv_winvirt_set_virtio_gpu_size(HvWinVirt *b, uint32_t width, uint32_t height);
 void hv_winvirt_set_virtio_gpu_scanout(HvWinVirt *b, uint32_t scanout_id, uint32_t width, uint32_t height, int enabled, uint32_t refresh_hz);
 uint64_t hv_winvirt_get_virtio_gpu_flushes(const HvWinVirt *b);
@@ -1997,6 +1998,7 @@ static void vgpu_notify(HvVirtio *v, int q) {
 
 static int g_wv_gpu_backend_mode = 0;
 static uint32_t g_wv_gpu_vram_mib = 128u;
+static uint32_t g_wv_gpu_num_scanouts = 1u;
 
 static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, HvFbDisplay *fb) {
     HengeGpuBackendMode mode = (g_wv_gpu_backend_mode == 1)
@@ -2050,7 +2052,9 @@ static HvVirtioGpuPci *henge_virtio_gpu_pci_create(HvMachine *m, HvPcie *bus, Hv
     g->vio.config_write = vgpu_config_write;
     g->vio.on_reset = vgpu_reset;
     g->vio.config_len = 16;
-    uint32_t num_scanouts = HENGE_VIRTIO_GPU_MAX_SCANOUTS;
+    uint32_t num_scanouts = (g_wv_gpu_num_scanouts >= 1u && g_wv_gpu_num_scanouts <= HENGE_VIRTIO_GPU_MAX_SCANOUTS)
+        ? g_wv_gpu_num_scanouts
+        : 1u;
     memcpy(g->vio.config + 8, &num_scanouts, 4);
     memcpy(g->vio.config + 12, &num_capsets, 4);
     hv_pcie_attach(bus, &g->vio.pci);
@@ -2149,6 +2153,12 @@ void hv_winvirt_set_virtio_gpu_config(int enable, int backend_mode, uint32_t vra
     g_wv_gpu_vram_mib = (vram_mib >= 64u && vram_mib <= 2048u)
         ? vram_mib
         : (g_wv_gpu_backend_mode == 1 ? 512u : 128u);
+}
+
+void hv_winvirt_set_virtio_gpu_num_scanouts(uint32_t num_scanouts) {
+    if (num_scanouts < 1u) num_scanouts = 1u;
+    if (num_scanouts > HENGE_VIRTIO_GPU_MAX_SCANOUTS) num_scanouts = HENGE_VIRTIO_GPU_MAX_SCANOUTS;
+    g_wv_gpu_num_scanouts = num_scanouts;
 }
 
 uint64_t hv_winvirt_get_virtio_gpu_flushes(const HvWinVirt *b) {
@@ -2278,6 +2288,7 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
     int enable_virtio_gpu;    /* 1 = attach PCIe virtio-gpu (0x1af4:0x1050) */
     int gpu_backend_mode;     /* 0 = 2D KMS, 1 = VirGL 3D */
     uint32_t gpu_vram_mib;    /* VRAM budget in MiB (64..2048) */
+    int enable_dual_scanout;  /* 1 = expose num_scanouts=2; 0 = single Virtual-1 connector */
 } HvWinVmConfig;
 
 #define HENGE_WINVM_HAS_V2_FLAGS 1
@@ -2285,6 +2296,7 @@ static uint64_t tick_locked(HvMachine *m, HvCpu *cpu) {
 #define HENGE_WINVM_HAS_V4_RESIZE 1
 #define HENGE_WINVM_HAS_V5_GPU_CONFIG 1
 #define HENGE_WINVM_HAS_V6_DUAL_SCANOUT 1
+#define HENGE_WINVM_HAS_V7_SCANOUT_COUNT 1
 void hv_winvm_set_virtio_gpu_size(uint32_t width, uint32_t height);
 void hv_winvm_set_virtio_gpu_scanout(uint32_t scanout_id, uint32_t width, uint32_t height, int enabled, uint32_t refresh_hz);
 uint64_t hv_winvm_virtio_gpu_flushes(void);
@@ -2309,6 +2321,7 @@ void hv_winvm_notify_memory_warning(void);""",
         """    hv_winvirt_set_device_flags(!c->disable_xhci, c->enable_virtio_input, !c->disable_acpi_spcr, c->disk1_virtio_blk);
     hv_winvirt_set_disk1_blk_size(c->disk1_blk_size);
     hv_winvirt_set_virtio_gpu_config(c->enable_virtio_gpu, c->gpu_backend_mode, c->gpu_vram_mib);
+    hv_winvirt_set_virtio_gpu_num_scanouts(c->enable_dual_scanout ? 2u : 1u);
     if (hv_winvirt_create(&board, &m, cpus, ncpus, ram_bytes, c->prealloc_ram, c->code_fd, c->vars_fd,
                           d0_ptr, d1_ptr, mac, c->enable_sound) != 0) {""",
     )
@@ -2336,6 +2349,7 @@ static int kicker_started;""",
     atomic_store_explicit(&display_fb, board.fb, memory_order_release);
     os_unfair_lock_unlock(&display_lock);
 
+    atomic_store(&stop_requested, 0);
     atomic_store_explicit(&vm_initialized, 1, memory_order_release);
     return 0;""",
     )
@@ -2387,6 +2401,9 @@ void hv_winvm_stop(void) {
 }
 
 void hv_winvm_start(int spawn_cpu0, void (*on_exit)(int reason)) {
+    /* Clear stop_requested before spawning secondary vCPUs & kicker_thread so
+     * subsequent VM boots in the same app session do not exit kicker/secondaries. */
+    atomic_store(&stop_requested, 0);
     exit_cb = on_exit;
     spawn_secondaries();
     if (pthread_create(&kicker_tid, NULL, kicker_thread, NULL) == 0) {

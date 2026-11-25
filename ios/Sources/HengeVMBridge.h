@@ -54,6 +54,8 @@ NS_SWIFT_UI_ACTOR
 - (void)setTargetRefreshHz:(uint32_t)refreshHz;
 /// Set explicit VRAM cap (MiB) for the next VM launch (0 = auto based on Jetsam tier).
 - (void)setConfiguredVramCapMiB:(uint32_t)vramMiB;
+/// Configure whether the next VM launch exposes a second VirtIO-GPU scanout (extended display).
+- (void)setDualScanoutEnabled:(BOOL)enabled;
 /// Clear the bounded 64 MiB LRU shader cache under Library/Caches/HengeShaders/.
 - (BOOL)clearShaderCache;
 - (uint64_t)shaderCacheSizeBytes;

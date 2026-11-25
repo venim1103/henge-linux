@@ -968,14 +968,15 @@ static void test_cidata_fat16_generator(void) {
 
         const char *udata = (const char *)(uimg + 67U * 512U);
         size_t ulen = (4224U - 67U) * 512U;
-        bool has_bash = false, has_nocloud = false, has_snapd = false, has_growpart = false;
+        bool has_bash = false, has_nocloud = false, has_snapd = false, has_growpart = false, has_legacy_list = false;
         for (size_t i = 0U; i + 32U < ulen; i++) {
             if (!has_bash && memcmp(udata + i, "shell: /bin/bash\n", 17U) == 0) has_bash = true;
             if (!has_nocloud && memcmp(udata + i, "datasource_list: [NoCloud, None]", 32U) == 0) has_nocloud = true;
             if (!has_snapd && memcmp(udata + i, "snapd.service", 13U) == 0) has_snapd = true;
             if (!has_growpart && memcmp(udata + i, "resize_rootfs: true", 19U) == 0) has_growpart = true;
+            if (!has_legacy_list && memcmp(udata + i, "  list: |\n", 10U) == 0) has_legacy_list = true;
         }
-        HENGE_CHECK(has_bash && has_nocloud && has_snapd && has_growpart);
+        HENGE_CHECK(has_bash && has_nocloud && has_snapd && has_growpart && !has_legacy_list);
         free(uimg);
         remove(ubuntu_seed);
     }
