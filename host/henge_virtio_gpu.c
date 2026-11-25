@@ -644,7 +644,7 @@ int henge_virtio_gpu_attach_backing(HengeVirtioGpuDevice *dev,
     if (dev == NULL || resource_id == 0U || (entry_count > 0U && entries == NULL)) {
         return -1;
     }
-    if (entry_count > 4096U) {
+    if (entry_count > 16384U) {
         return -1;
     }
     pthread_mutex_lock(&dev->lock);
@@ -1016,14 +1016,20 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
             uint8_t *pixels = NULL;
             uint32_t stride = 0U;
             uint64_t est_bytes = is_3d_buffer
-                ? (uint64_t)width
+                ? 0ULL
                 : ((uint64_t)width * (uint64_t)height * 4ULL);
             if (is_3d) {
-                uint64_t vram_cap = (uint64_t)dev->cfg.vram_mib * 1024ULL * 1024ULL;
-                uint64_t avail_mem = henge_available_memory_bytes();
-                if (!henge_gpu_check_vram_budget(est_bytes, dev->vram_used_bytes, vram_cap, avail_mem)) {
-                    resp = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
-                    break;
+                /* 1D PIPE_BUFFER staging/upload resources live in guest RAM backing
+                 * rather than Metal GPU textures; do not double-charge them against
+                 * the GPU VRAM cap or transient browser uploads will fail CREATE_3D
+                 * and poison Xorg's VirGL context on subsequent COPY_TRANSFER3D. */
+                if (!is_3d_buffer) {
+                    uint64_t vram_cap = (uint64_t)dev->cfg.vram_mib * 1024ULL * 1024ULL;
+                    uint64_t avail_mem = henge_available_memory_bytes();
+                    if (!henge_gpu_check_vram_budget(est_bytes, dev->vram_used_bytes, vram_cap, avail_mem)) {
+                        resp = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
+                        break;
+                    }
                 }
             } else {
                 if (est_bytes == 0ULL || est_bytes > HENGE_VIRTIO_GPU_MAX_2D_BYTES) {

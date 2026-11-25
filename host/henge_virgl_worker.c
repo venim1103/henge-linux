@@ -4,6 +4,7 @@
 #endif
 
 #include "henge_virgl_worker.h"
+#include "henge_txm_jit.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -174,6 +175,7 @@ struct HengeVirglWorker {
 
     /* Per-worker diagnostic log rate limits (reset cleanly on each VM boot). */
     uint32_t                 logged_c3d;
+    uint32_t                 logged_attach;
     uint32_t                 logged_sub;
     uint32_t                 logged_fbo;
     uint32_t                 logged_blit;
@@ -1061,6 +1063,17 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                 (void)target; (void)bind; (void)depth; (void)array_sz; (void)last_lvl; (void)nr_samples; (void)rflags;
                 resp_type = (uint32_t)henge_virtio_gpu_process_ctrl(
                     w->gpu, node->cmd_type, node->ctx_id, res_id, 0U, rw, rh, fmt, NULL, 0U);
+                if (resp_type != HENGE_VIRTIO_GPU_RESP_OK_NODATA) {
+                    if (w->logged_c3d < 8U) {
+                        w->logged_c3d++;
+                        uint64_t vram_mib = henge_virtio_gpu_vram_used_bytes(w->gpu) >> 20;
+                        uint64_t avail_mib = henge_available_memory_bytes() >> 20;
+                        fprintf(stderr, "virgl-worker: create_3d rejected (res=%u target=%u fmt=%u %ux%ux%u resp=0x%x vram=%lluM avail=%lluM active=%u)\n",
+                                res_id, target, fmt, rw, rh, depth, resp_type,
+                                (unsigned long long)vram_mib, (unsigned long long)avail_mib,
+                                henge_virtio_gpu_active_resources(w->gpu));
+                    }
+                }
 #if HENGE_WORKER_HAS_VIRGL
                 if (resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA && w->virgl_initialized) {
                     struct virgl_renderer_resource_create_args args;
@@ -1143,16 +1156,28 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                                 valid_iovs++;
                             }
                         }
-                        if (valid_iovs > 0 &&
-                            virgl_renderer_resource_attach_iov((int)res_id, iovs, valid_iovs) == 0) {
+                        int rc_iov = (valid_iovs > 0)
+                            ? virgl_renderer_resource_attach_iov((int)res_id, iovs, valid_iovs)
+                            : -1;
+                        if (rc_iov == 0) {
                             virgl_iov_replace(w, res_id, iovs, valid_iovs);
                         } else {
+                            if (w->logged_attach < 8U) {
+                                w->logged_attach++;
+                                fprintf(stderr, "virgl-worker: attach_iov failed (res=%u n=%u valid=%d rc=%d)\n",
+                                        res_id, node->backing_count, valid_iovs, rc_iov);
+                            }
                             free(iovs);
                         }
                     }
                 }
 #endif
             } else {
+                if (w->logged_attach < 8U) {
+                    w->logged_attach++;
+                    fprintf(stderr, "virgl-worker: attach_backing failed (res=%u n=%u active=%u)\n",
+                            res_id, node->backing_count, henge_virtio_gpu_active_resources(w->gpu));
+                }
                 resp_type = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE;
             }
             write_ctrl_hdr(stack_resp, resp_type, node->flags, node->fence_id, node->ctx_id, node->ring_idx);
@@ -1301,14 +1326,14 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                                                         off, seen, h, ccmd, cobj, clen, ndw);
                                                 break;
                                             }
-                                            if (printed < 12U && (ccmd == 1U || ccmd == 8U || seen < 3U)) {
-                                                if ((ccmd == 1U || ccmd == 8U) && seen > 0U) {
+                                            if (printed < 12U && (ccmd == 1U || ccmd == 8U || ccmd == 45U || seen < 3U)) {
+                                                if ((ccmd == 1U || ccmd == 8U || ccmd == 45U) && seen > 0U) {
                                                     fprintf(stderr, "virgl-worker:   [prev off=%u] hdr=0x%08x (cmd=%u obj=%u len=%u)\n",
                                                             prev_off, prev_h, prev_h & 0xFFU, (prev_h >> 8) & 0xFFU, prev_h >> 16);
                                                 }
                                                 fprintf(stderr, "virgl-worker:   [off=%u #%u] hdr=0x%08x (cmd=%u obj=%u len=%u)",
                                                         off, seen, h, ccmd, cobj, clen);
-                                                uint32_t dump_n = (clen < 10U) ? clen : 10U;
+                                                uint32_t dump_n = (clen < 14U) ? clen : 14U;
                                                 for (uint32_t k = 1U; k <= dump_n; k++) {
                                                     fprintf(stderr, " w%u=0x%08x", k, aligned_cmd[off + k]);
                                                 }

@@ -1345,6 +1345,19 @@ static void test_phase030c_swapchain_jetsam_cache_telemetry(void) {
     HENGE_CHECK(henge_virtio_gpu_process_ctrl(
         vgpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, 0U, 3U, 0U, 4096U, 2048U,
         HENGE_VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY);
+    /* Guest-backed 1D staging PIPE_BUFFERs (height=1, R8_UNORM) bypass GPU VRAM cap & support >4096 SG entries. */
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        vgpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, 0U, 4U, 0U, 32U * 1024U * 1024U, 1U,
+        64U /* R8_UNORM */, NULL, 0U) == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
+    HENGE_CHECK(henge_virtio_gpu_vram_used_bytes(vgpu) == (64ULL << 20));
+    HengeGpuBackingEntry *big_sg = calloc(5000U, sizeof(*big_sg));
+    HENGE_CHECK(big_sg != NULL);
+    HENGE_CHECK(henge_virtio_gpu_attach_backing(vgpu, 4U, big_sg, 5000U) == 0);
+    HENGE_CHECK(henge_virtio_gpu_attach_backing(vgpu, 4U, big_sg, 16385U) == -1);
+    free(big_sg);
+    HENGE_CHECK(henge_virtio_gpu_process_ctrl(
+        vgpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF, 0U, 4U, 0U, 0U, 0U, 0U, NULL, 0U) ==
+        HENGE_VIRTIO_GPU_RESP_OK_NODATA);
     /* Unreferencing resource 1 reclaims VRAM so resource 3 now succeeds. */
     HENGE_CHECK(henge_virtio_gpu_process_ctrl(
         vgpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF, 0U, 1U, 0U, 0U, 0U, 0U, NULL, 0U) ==

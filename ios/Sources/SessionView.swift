@@ -453,21 +453,6 @@ struct SessionView: View {
 
     private var topBarToolCluster: some View {
         HStack(spacing: 6) {
-            if activeTab == .display {
-                if externalDisplay.isRenderingOnExternalDisplay {
-                    topBarIconButton(
-                        systemName: showExternalMousepad ? "rectangle.split.2x1.fill" : "rectangle.split.2x1",
-                        isActive: showExternalMousepad,
-                        tint: .blue,
-                        accessibilityLabel: showExternalMousepad ? "Hide Mousepad" : "Show Mousepad"
-                    ) {
-                        showExternalMousepad.toggle()
-                    }
-                } else {
-                    HingeSensorView(posture: $posture)
-                }
-            }
-
             if externalDisplay.isExternalDisplayConnected {
                 topBarIconButton(
                     systemName: externalDisplay.isRenderingOnExternalDisplay ? "tv.fill" : "iphone",
@@ -502,6 +487,21 @@ struct SessionView: View {
                 accessibilityLabel: "Debug & Telemetry Logs"
             ) {
                 showDebugConsole = true
+            }
+
+            if activeTab == .display {
+                if externalDisplay.isRenderingOnExternalDisplay {
+                    topBarIconButton(
+                        systemName: showExternalMousepad ? "rectangle.split.2x1.fill" : "rectangle.split.2x1",
+                        isActive: showExternalMousepad,
+                        tint: .blue,
+                        accessibilityLabel: showExternalMousepad ? "Hide Mousepad" : "Show Mousepad"
+                    ) {
+                        showExternalMousepad.toggle()
+                    }
+                } else {
+                    HingeSensorView(posture: $posture)
+                }
             }
 
             let kbdOn = (activeTab == .display) ? focusSoftwareKeyboard : focusTerminalKeyboard
