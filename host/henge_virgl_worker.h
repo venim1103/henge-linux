@@ -120,6 +120,18 @@ int henge_virgl_worker_get_front_surface(const HengeVirglWorker *worker,
 int henge_virgl_worker_notify_memory_pressure(HengeVirglWorker *worker);
 
 /*
+ * Sanitize a VirGL 3D command stream in-place for GLES 3.0 hosts that lack
+ * EXT_texture_border_clamp or EXT_texture_mirror_clamp_to_edge, remapping
+ * unsupported PIPE_TEX_WRAP_* modes in VIRGL_OBJECT_SAMPLER_STATE to
+ * PIPE_TEX_WRAP_CLAMP_TO_EDGE before virgl_renderer_submit_cmd().
+ * Returns the number of sampler state packets rewritten.
+ */
+uint32_t henge_virgl_sanitize_cmd_stream(uint32_t *cmds,
+                                         size_t ndw,
+                                         bool allow_border_clamp,
+                                         bool allow_mirror_clamp);
+
+/*
  * Process-wide active worker registration so MetalLifecycleGuard's willResignActive
  * observer can synchronously drain ANGLE/VirGL queues before iOS revokes GPU access.
  */

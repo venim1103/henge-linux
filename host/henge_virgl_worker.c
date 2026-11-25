@@ -172,6 +172,13 @@ struct HengeVirglWorker {
     uint64_t                 resets_processed;
     uint64_t                 flushes_3d;
 
+    /* Per-worker diagnostic log rate limits (reset cleanly on each VM boot). */
+    uint32_t                 logged_c3d;
+    uint32_t                 logged_sub;
+    uint32_t                 logged_fbo;
+    uint32_t                 logged_blit;
+    uint32_t                 logged_sanitized;
+
     /* Zero-copy double-buffered IOSurface swapchains per scanout. */
     HengeGpuSwapchain       *swapchains[HENGE_VIRTIO_GPU_MAX_SCANOUTS];
     uint64_t                 swapchain_signal_seq;
@@ -186,6 +193,8 @@ struct HengeVirglWorker {
     EGLContext               egl_root_ctx;
     EGLSurface               egl_dummy_surf;
     GLuint                   blit_src_fbo;
+    bool                     egl_supports_border_clamp;
+    bool                     egl_supports_mirror_clamp;
     HengeEglCopyMetalSharedEventFn egl_copy_shared_event;
     HengeAngleSurfaceBinding surface_bindings[HENGE_VIRTIO_GPU_MAX_SCANOUTS][HENGE_GPU_SWAPCHAIN_SLOTS];
 #endif
@@ -463,10 +472,28 @@ static bool angle_init_metal_egl(HengeVirglWorker *w) {
     w->egl_copy_shared_event =
         (HengeEglCopyMetalSharedEventFn)eglGetProcAddress("eglCopyMetalSharedEventANGLE");
     glGenFramebuffers(1, &w->blit_src_fbo);
+
+    /* Empirically probe ANGLE ES 3.0 sampler wrap-mode support so virgl_renderer_submit_cmd()
+     * never triggers GL_INVALID_ENUM (1280) on PIPE_TEX_WRAP_CLAMP_TO_BORDER / MIRROR_CLAMP. */
+    GLuint probe_sampler = 0U;
+    glGenSamplers(1, &probe_sampler);
+    while (glGetError() != GL_NO_ERROR) {}
+    glSamplerParameteri(probe_sampler, GL_TEXTURE_WRAP_S, 0x812D /* GL_CLAMP_TO_BORDER */);
+    GLenum err_border_wrap = glGetError();
+    const GLfloat zero_border[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    glSamplerParameterfv(probe_sampler, 0x1004 /* GL_TEXTURE_BORDER_COLOR */, zero_border);
+    GLenum err_border_col = glGetError();
+    w->egl_supports_border_clamp = (err_border_wrap == GL_NO_ERROR && err_border_col == GL_NO_ERROR);
+    glSamplerParameteri(probe_sampler, GL_TEXTURE_WRAP_S, 0x8743 /* GL_MIRROR_CLAMP_TO_EDGE */);
+    w->egl_supports_mirror_clamp = (glGetError() == GL_NO_ERROR);
+    while (glGetError() != GL_NO_ERROR) {}
+    glDeleteSamplers(1, &probe_sampler);
+
     const char *gl_ver = (const char *)glGetString(GL_VERSION);
     const char *gl_ren = (const char *)glGetString(GL_RENDERER);
-    fprintf(stderr, "virgl-worker: ANGLE EGL %d.%d ready: GL_VERSION='%s' GL_RENDERER='%s'\n",
-            (int)major, (int)minor, gl_ver ? gl_ver : "?", gl_ren ? gl_ren : "?");
+    fprintf(stderr, "virgl-worker: ANGLE EGL %d.%d ready: GL_VERSION='%s' GL_RENDERER='%s' (border_clamp=%d mirror_clamp=%d)\n",
+            (int)major, (int)minor, gl_ver ? gl_ver : "?", gl_ren ? gl_ren : "?",
+            w->egl_supports_border_clamp ? 1 : 0, w->egl_supports_mirror_clamp ? 1 : 0);
     return true;
 }
 
@@ -610,9 +637,8 @@ static bool angle_blit_scanout_to_iosurface(HengeVirglWorker *w,
     GLenum read_status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
     GLenum draw_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
     if (read_status != GL_FRAMEBUFFER_COMPLETE || draw_status != GL_FRAMEBUFFER_COMPLETE) {
-        static int logged_fbo = 0;
-        if (logged_fbo < 4) {
-            logged_fbo++;
+        if (w->logged_fbo < 4U) {
+            w->logged_fbo++;
             fprintf(stderr, "virgl-worker: incomplete blit FBO (read=0x%x draw=0x%x res=%u tex=%u)\n",
                     (unsigned)read_status, (unsigned)draw_status, res_id, rinfo.tex_id);
         }
@@ -1041,9 +1067,8 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                     args.flags = rflags;
                     int rc_c3d = virgl_renderer_resource_create(&args, NULL, 0);
                     if (rc_c3d != 0) {
-                        static int logged_c3d = 0;
-                        if (logged_c3d < 8) {
-                            logged_c3d++;
+                        if (w->logged_c3d < 8U) {
+                            w->logged_c3d++;
                             fprintf(stderr, "virgl-worker: create_3d failed (res=%u target=%u fmt=%u %ux%ux%u rc=%d)\n",
                                     res_id, target, fmt, rw, rh, depth, rc_c3d);
                         }
@@ -1230,15 +1255,24 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                             resp_type = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
                         } else {
                             memcpy(aligned_cmd, cmd_buf, cmd_bytes);
+#if HENGE_WORKER_HAS_ANGLE_EGL
+                            uint32_t sanitized = henge_virgl_sanitize_cmd_stream(
+                                aligned_cmd, (size_t)(cmd_bytes / 4U),
+                                w->egl_supports_border_clamp, w->egl_supports_mirror_clamp);
+                            if (sanitized > 0U && w->logged_sanitized < 4U) {
+                                w->logged_sanitized++;
+                                fprintf(stderr, "virgl-worker: sanitized %u unsupported sampler wrap mode(s) for ES 3.0 (ctx=%u)\n",
+                                        sanitized, node->ctx_id);
+                            }
+#endif
                             int rc_sub = virgl_renderer_submit_cmd(aligned_cmd, (int)node->ctx_id, (int)(cmd_bytes / 4U));
                             if (rc_sub != 0) {
-                                static int logged_sub = 0;
-                                if (logged_sub < 8) {
-                                    logged_sub++;
+                                if (w->logged_sub < 8U) {
+                                    w->logged_sub++;
                                     uint32_t ndw = cmd_bytes / 4U;
                                     fprintf(stderr, "virgl-worker: submit_cmd failed (ctx=%u bytes=%u ndw=%u hdr0=0x%08x rc=%d)\n",
                                             node->ctx_id, cmd_bytes, ndw, aligned_cmd[0], rc_sub);
-                                    if (logged_sub <= 2) {
+                                    if (w->logged_sub <= 2U) {
                                         uint32_t off = 0U;
                                         uint32_t seen = 0U;
                                         uint32_t printed = 0U;
@@ -1254,8 +1288,8 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                                                         off, seen, h, ccmd, cobj, clen, ndw);
                                                 break;
                                             }
-                                            if (printed < 12U && ((ccmd == 1U && cobj == 7U) || seen < 3U)) {
-                                                if (ccmd == 1U && cobj == 7U && seen > 0U) {
+                                            if (printed < 12U && (ccmd == 1U || seen < 3U)) {
+                                                if (ccmd == 1U && seen > 0U) {
                                                     fprintf(stderr, "virgl-worker:   [prev off=%u] hdr=0x%08x (cmd=%u obj=%u len=%u)\n",
                                                             prev_off, prev_h, prev_h & 0xFFU, (prev_h >> 8) & 0xFFU, prev_h >> 16);
                                                 }
@@ -1337,9 +1371,8 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                                     uint64_t sig = 0ULL;
 #if HENGE_WORKER_HAS_VIRGL && HENGE_WORKER_HAS_ANGLE_EGL
                                     if (angle_blit_scanout_to_iosurface(w, s, slot_idx, res_id, &slot, &shared_ev, &sig)) {
-                                        static int logged_blit = 0;
-                                        if (logged_blit == 0) {
-                                            logged_blit = 1;
+                                        if (w->logged_blit == 0U) {
+                                            w->logged_blit = 1U;
                                             fprintf(stderr, "virgl-worker: first 3D IOSurface blit succeeded (scanout=%u res=%u %ux%u)\n",
                                                     s, res_id, slot.width, slot.height);
                                         }
@@ -1848,6 +1881,54 @@ int henge_virgl_worker_notify_memory_pressure(HengeVirglWorker *worker) {
     pthread_cond_signal(&worker->cv);
     pthread_mutex_unlock(&worker->mu);
     return 0;
+}
+
+static uint32_t sanitize_pipe_tex_wrap(uint32_t wrap,
+                                       bool allow_border_clamp,
+                                       bool allow_mirror_clamp) {
+    /* PIPE_TEX_WRAP_CLAMP_TO_EDGE = 2, CLAMP_TO_BORDER = 3,
+     * MIRROR_CLAMP = 5, MIRROR_CLAMP_TO_EDGE = 6, MIRROR_CLAMP_TO_BORDER = 7. */
+    if (!allow_border_clamp && (wrap == 3U || wrap == 7U)) {
+        return 2U;
+    }
+    if (!allow_mirror_clamp && (wrap == 5U || wrap == 6U || wrap == 7U)) {
+        return 2U;
+    }
+    return wrap;
+}
+
+uint32_t henge_virgl_sanitize_cmd_stream(uint32_t *cmds,
+                                         size_t ndw,
+                                         bool allow_border_clamp,
+                                         bool allow_mirror_clamp) {
+    if (cmds == NULL || ndw == 0U || (allow_border_clamp && allow_mirror_clamp)) {
+        return 0U;
+    }
+    uint32_t rewritten = 0U;
+    size_t off = 0U;
+    while (off < ndw) {
+        uint32_t h = cmds[off];
+        uint32_t clen = h >> 16;
+        uint32_t cobj = (h >> 8) & 0xFFU;
+        uint32_t ccmd = h & 0xFFU;
+        if ((size_t)clen > ndw - off - 1U) {
+            break;
+        }
+        /* VIRGL_CCMD_CREATE_OBJECT (1), VIRGL_OBJECT_SAMPLER_STATE (7), length 9. */
+        if (ccmd == 1U && cobj == 7U && clen == 9U) {
+            uint32_t s0 = cmds[off + 2U];
+            uint32_t ws = sanitize_pipe_tex_wrap((s0 >> 0U) & 0x7U, allow_border_clamp, allow_mirror_clamp);
+            uint32_t wt = sanitize_pipe_tex_wrap((s0 >> 3U) & 0x7U, allow_border_clamp, allow_mirror_clamp);
+            uint32_t wr = sanitize_pipe_tex_wrap((s0 >> 6U) & 0x7U, allow_border_clamp, allow_mirror_clamp);
+            uint32_t new_s0 = (s0 & ~0x1FFU) | ws | (wt << 3U) | (wr << 6U);
+            if (new_s0 != s0) {
+                cmds[off + 2U] = new_s0;
+                rewritten++;
+            }
+        }
+        off += 1U + (size_t)clen;
+    }
+    return rewritten;
 }
 
 void henge_virgl_register_active_worker(HengeVirglWorker *worker) {

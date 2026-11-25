@@ -1249,6 +1249,23 @@ static void test_virgl_async_worker(void) {
     HENGE_CHECK(stats.fences_retired == 9ULL && stats.resets_processed == 1ULL);
     HENGE_CHECK(stats.pending_queue_depth == 0U && stats.pending_fence_count == 0U);
 
+    /* 6. ES 3.0 VirGL sampler wrap sanitization (CLAMP_TO_BORDER / MIRROR_CLAMP -> CLAMP_TO_EDGE). */
+    uint32_t sampler_stream[] = {
+        0x0003000aU, 0x00000001U, 0x00000000U, 0x00000005U, /* SET_SAMPLER_VIEWS (skipped intact) */
+        0x00090701U, 0x0000005eU, 0x0003101bU, 0x00000000U, /* CREATE_OBJECT SAMPLER_STATE: wrap_s=3 wrap_t=3 */
+        0x00000000U, 0x447a0000U, 0x00000000U, 0x00000000U,
+        0x00000000U, 0x00000000U,
+        0x00090701U, 0x0000005fU, 0x000311b0U, 0x00000000U, /* wrap_s=0 wrap_t=6 (MIRROR_CLAMP_TO_EDGE) wrap_r=6 */
+        0x00000000U, 0x447a0000U, 0x00000000U, 0x00000000U,
+        0x00000000U, 0x00000000U
+    };
+    HENGE_CHECK(henge_virgl_sanitize_cmd_stream(sampler_stream, sizeof(sampler_stream) / 4U, true, true) == 0U);
+    HENGE_CHECK(sampler_stream[6] == 0x0003101bU);
+    HENGE_CHECK(henge_virgl_sanitize_cmd_stream(sampler_stream, sizeof(sampler_stream) / 4U, false, false) == 2U);
+    HENGE_CHECK(sampler_stream[6] == 0x00031012U);
+    HENGE_CHECK(sampler_stream[16] == 0x00031090U);
+    HENGE_CHECK(sampler_stream[0] == 0x0003000aU && sampler_stream[3] == 0x00000005U);
+
     henge_virgl_worker_destroy(worker);
     henge_virtio_gpu_destroy(gpu);
     pthread_mutex_destroy(&sink.mu);
