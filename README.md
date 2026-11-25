@@ -79,12 +79,12 @@ See [`docs/SETUP.md`](docs/SETUP.md) for the complete guide, desktop instruction
 
 ## Target Devices & Recommended Memory
 
-| Device Class | Example Hardware | Recommended Guest RAM | Notes |
+| Device Class | Example Hardware | Default Preset | Notes |
 | :--- | :--- | :--- | :--- |
-| **iPhone (4–6 GB RAM)** | iPhone 13 / 14 / 15 (`iOS 18+`) | **1,024 – 1,536 MiB** *(192–256 MiB JIT)* | Best with **2D VirtIO-GPU KMS** or **2D GOP** + `ttyAMA0` terminal |
-| **iPhone Pro (8 GB RAM)** | iPhone 15 Pro / 16 Pro (`A18 Pro`) | **1,664 – 2,048 MiB** *(standard)* / **2,560 MiB** *(entitled)* | Full **VirGL 3D Metal** LXQt/Wayland desktop + Split Deck / external monitor |
-| **12 GB+ Pro / Foldable iPhone** | iPhone 17 Pro / iPhone Duo (`UIHingeInteraction`) | **1,664 – 2,048 MiB** *(standard)* / **4,608 MiB** *(entitled)* | Heavy multi-process desktops, clamshell deck, and dual-scanout |
-| **M-Series iPad Pro (8–16 GB)** | iPad Pro M1–M4 (`iPadOS 18–27+`) | **2,560 – 6,144 MiB** *(entitled)* | `4`–`6` vCPU, USB-C `4K UHD` external display, hardware keyboard & mouse |
+| **iPhone (4–6 GB RAM)** | iPhone 13 / 14 / 15 (`iOS 18+`) | **1,024 MiB (`1.0 GiB`) · 2 vCPU** *(192–256 MiB JIT)* | Best with **2D VirtIO-GPU KMS** or **2D GOP** + `ttyAMA0` terminal |
+| **iPhone Pro (8 GB RAM)** | iPhone 15 Pro / 16 Pro (`A18 Pro`) | **1,536 MiB (`1.5 GiB`) · 4 vCPU** *(≤ 1,792 MiB standard)* | Safe headroom for **VirGL 3D Metal** LXQt/Wayland desktop on standard SideStore ledger |
+| **12 GB+ Pro / Foldable iPhone** | iPhone 17 Pro / iPhone Duo (`UIHingeInteraction`) | **3,072 MiB (`3.0 GiB`) · 4 vCPU** *(entitled)* / **1,536 MiB** *(standard)* | Heavy multi-process desktops, clamshell deck, and dual-scanout |
+| **M-Series iPad Pro (8–16 GB)** | iPad Pro M1–M4 (`iPadOS 18–27+`) | **4,096 MiB (`4.0 GiB`) · 6 vCPU** *(entitled)* | USB-C `4K UHD` external display, VirGL 3D, hardware keyboard & mouse |
 
 ---
 

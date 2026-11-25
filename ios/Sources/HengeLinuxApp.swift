@@ -13,27 +13,53 @@ struct MachineProfile: Identifiable, Hashable {
 
     static let presets: [MachineProfile] = [
         MachineProfile(
+            id: "iphone-compact",
+            name: "iPhone (4–6 GB RAM)",
+            subtitle: "iPhone 13–15 · 1.0 GiB guest RAM · 2 vCPU · Conservative Jetsam budget",
+            ramMiB: 1024,
+            cpuCount: 2
+        ),
+        MachineProfile(
             id: "iphone-8gb",
             name: "iPhone Pro (8 GB RAM)",
-            subtitle: "iPhone 16 Pro · 2.5 GiB guest RAM · 4 vCPU · Safe Jetsam headroom",
-            ramMiB: 2560,
+            subtitle: "iPhone 15/16 Pro · 1.5 GiB guest RAM · 4 vCPU · Safe for VirGL 3D",
+            ramMiB: 1536,
             cpuCount: 4
         ),
         MachineProfile(
-            id: "iphone-duo",
-            name: "iPhone Duo / 12 GB Pro",
-            subtitle: "4.5 GiB guest RAM · 4 vCPU · Full desktop & multi-process workloads",
-            ramMiB: 4608,
+            id: "iphone-12gb",
+            name: "iPhone 12 GB Pro / Duo (Entitled)",
+            subtitle: "3.0 GiB guest RAM · 4 vCPU · Requires increased-memory-limit",
+            ramMiB: 3072,
             cpuCount: 4
         ),
         MachineProfile(
             id: "ipad-pro",
-            name: "M-Series iPad Pro (16 GB)",
-            subtitle: "6.0 GiB guest RAM · 6 vCPU · External USB-C display mode",
-            ramMiB: 6144,
+            name: "M-Series iPad Pro (Entitled)",
+            subtitle: "4.0 GiB guest RAM · 6 vCPU · External USB-C display & high-RAM tier",
+            ramMiB: 4096,
             cpuCount: 6
         )
     ]
+
+    /// Returns the safest default profile matching the host device's physical RAM
+    /// and live iOS Jetsam entitlement ceiling (`os_proc_available_memory`).
+    static func defaultForCurrentDevice() -> MachineProfile {
+        let physicalGiB = ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)
+        let entitled = henge_is_entitled_high_memory()
+        if physicalGiB < 7 {
+            return presets[0] // 1.0 GiB / 2 vCPU
+        }
+        if entitled {
+            if physicalGiB >= 14 {
+                return presets[3] // 4.0 GiB / 6 vCPU
+            }
+            if physicalGiB >= 10 {
+                return presets[2] // 3.0 GiB / 4 vCPU
+            }
+        }
+        return presets[1] // 1.5 GiB / 4 vCPU (safe on standard SideStore ledger)
+    }
 }
 
 @main
@@ -58,8 +84,8 @@ struct HengeLinuxApp: App {
     @AppStorage("oledScreenSaverAutoDimSeconds") private var oledAutoDimSeconds: Int = 0
     @State private var selectedStartTab: StartTab = .machines
     @State private var copiedBuildInfo: Bool = false
-    @State private var selectedProfile: MachineProfile = MachineProfile.presets[0]
-    @AppStorage("customGuestRamMiB") private var customGuestRamMiB: Int = 1664
+    @State private var selectedProfile: MachineProfile = MachineProfile.defaultForCurrentDevice()
+    @AppStorage("customGuestRamMiB") private var customGuestRamMiB: Int = 1536
     @State private var ramInputText: String = ""
     @State private var isRunning: Bool = false
     @State private var isPreparingDisk: Bool = false
@@ -195,7 +221,7 @@ struct HengeLinuxApp: App {
                         }
                         Section("Defaults") {
                             LabeledContent("Guest RAM", value: "\(effectiveRamMiB) MiB")
-                            LabeledContent("vCPUs", value: "\(selectedProfile.cpuCount)")
+                            LabeledContent("vCPUs", value: "\(vmStore.selectedMachine.cpuCount)")
                             LabeledContent("VirtIO Input", value: "Enabled (Keyboard + Tablet)")
                             LabeledContent("USB 3.0 xHCI", value: "Disabled (No 90s Linux stall)")
                         }
@@ -216,7 +242,7 @@ struct HengeLinuxApp: App {
                                         name: newVMName,
                                         distroTag: newVMDistroTag,
                                         ramMiB: Int(effectiveRamMiB),
-                                        cpuCount: selectedProfile.cpuCount,
+                                        cpuCount: vmStore.selectedMachine.cpuCount,
                                         gpuBackend: defaultGpu,
                                         targetDiskSizeGiB: newVMCreateBlankDisk ? newVMBlankDiskGiB : 16
                                     )
@@ -1126,9 +1152,9 @@ struct HengeLinuxApp: App {
                         HStack(spacing: 6) {
                             ForEach([
                                 (mib: 1024, label: "1G"),
-                                (mib: 1664, label: "1.6G"),
+                                (mib: 1536, label: "1.5G"),
                                 (mib: 2048, label: "2G"),
-                                (mib: 2560, label: "2.5G"),
+                                (mib: 3072, label: "3G"),
                                 (mib: 4096, label: "4G")
                             ], id: \.mib) { preset in
                                 Button {
@@ -1518,7 +1544,7 @@ struct HengeLinuxApp: App {
                                             item: item,
                                             into: vmStore,
                                             ramMiB: Int(effectiveRamMiB),
-                                            cpuCount: selectedProfile.cpuCount,
+                                            cpuCount: vmStore.selectedMachine.cpuCount,
                                             diskGiB: galleryDiskGiB,
                                             username: cidataUsername,
                                             password: cidataPassword
@@ -1575,7 +1601,7 @@ struct HengeLinuxApp: App {
                                     distroTag: customDownloadDistroTag,
                                     into: vmStore,
                                     ramMiB: Int(effectiveRamMiB),
-                                    cpuCount: selectedProfile.cpuCount,
+                                    cpuCount: vmStore.selectedMachine.cpuCount,
                                     diskGiB: galleryDiskGiB,
                                     generateCidata: customDownloadCidata,
                                     username: cidataUsername,
@@ -1816,7 +1842,7 @@ struct HengeLinuxApp: App {
         }
         return effectiveRamMiB > 1792
             ? "Above ~1,792 MiB without LEDGER_NO_FOOTPRINT may hit iOS's ~3 GiB standard-ledger Jetsam kill limit."
-            : "16 KiB page-aligned (512–10,240 MiB). Default 1,664 MiB leaves safe standard-ledger headroom."
+            : "16 KiB page-aligned (512–10,240 MiB). Default 1,536 MiB leaves safe standard-ledger headroom."
     }
 
     private var sliderMaxRamMiB: Int {

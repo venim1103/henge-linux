@@ -72,7 +72,7 @@ HengeLinux automatically detects your iOS version and picks the right JIT backen
 Open the **Hardware** tab to tune the selected VM:
 
 1. **Memory & CPU:**
-   - Pick a device preset (**iPhone Pro**, **iPhone Duo / 12 GB**, **M-Series iPad Pro**) or adjust **Virtual CPUs** (`1`–`8`) and **Guest RAM** (`512`–`10,240 MiB` via slider, stepper, or `1G` / `1.6G` / `2G` / `2.5G` / `4G` pills — automatically selecting the **Custom** profile when customized).
+   - Pick a device preset (**iPhone (4–6 GB)**: `1.0 GiB / 2 vCPU`, **iPhone Pro (8 GB)**: `1.5 GiB / 4 vCPU`, **iPhone 12 GB Pro / Duo (Entitled)**: `3.0 GiB / 4 vCPU`, **M-Series iPad Pro (Entitled)**: `4.0 GiB / 6 vCPU`) or adjust **Virtual CPUs** (`1`–`8`) and **Guest RAM** (`512`–`10,240 MiB` via slider, stepper, or `1G` / `1.5G` / `2G` / `3G` / `4G` pills — automatically selecting the **Custom** profile when customized).
    - Check the stacked **Jetsam Memory Breakdown Bar** (Guest RAM + JIT Pool + GPU Reserve + Free Margin against live `os_proc_available_memory()`).
 2. **Display Adapter:**
    - **3D VirtIO-GPU VirGL (ANGLE Metal):** Hardware-accelerated OpenGL ES 3.0 / VirGL 3D on Apple Silicon Metal via zero-copy `IOSurfaceRef` + `MTLSharedEvent` swapchains, persistent `64 MiB` Metal shader cache, ES 3.0 sampler wrap sanitization, and automatic 5-frame crash recovery fallback.

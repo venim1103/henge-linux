@@ -48,13 +48,13 @@ struct VMConfig: Codable, Identifiable, Equatable, Hashable {
         }
     }
 
-    static func legacyArchDefault(ramMiB: Int = 1664) -> VMConfig {
+    static func legacyArchDefault(ramMiB: Int = 1536, cpuCount: Int = 4) -> VMConfig {
         VMConfig(
             id: "ArchLinux",
             name: "Arch Linux",
             distroTag: "arch",
             ramMiB: ramMiB,
-            cpuCount: 4,
+            cpuCount: cpuCount,
             gpuBackend: 0,
             enableVirtioInput: true,
             enableXhci: false,
@@ -260,7 +260,11 @@ final class VMStore: ObservableObject {
             try? fm.createDirectory(at: legacyDir, withIntermediateDirectories: true, attributes: nil)
             let legacyManifest = manifestURL(for: "ArchLinux")
             if !fm.fileExists(atPath: legacyManifest.path) {
-                var cfg = VMConfig.legacyArchDefault()
+                let deviceDefault = MachineProfile.defaultForCurrentDevice()
+                var cfg = VMConfig.legacyArchDefault(
+                    ramMiB: deviceDefault.ramMiB,
+                    cpuCount: deviceDefault.cpuCount
+                )
                 let savedRam = UserDefaults.standard.integer(forKey: "customGuestRamMiB")
                 if savedRam >= Int(HENGE_MIN_GUEST_RAM_MIB) && savedRam <= Int(HENGE_MAX_GUEST_RAM_MIB) {
                     cfg.ramMiB = savedRam
