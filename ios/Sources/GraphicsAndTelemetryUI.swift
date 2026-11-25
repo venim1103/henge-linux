@@ -4,6 +4,72 @@ import UIKit
 
 /// Visual stacked memory bar breaking down Guest RAM + JIT Pool + GPU VRAM Reserve + Free Margin
 /// against the live iOS Jetsam ceiling (`os_proc_available_memory()`).
+struct ActionIconBadge: View {
+    let systemName: String
+    let color: Color
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 28, height: 28)
+            .background(color.gradient, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+}
+
+/// Strictly non-interactive read-only metric row, visually distinct from interactive controls.
+struct InfoMetricRow: View {
+    let title: String
+    let value: String
+    var systemImage: String? = nil
+    var monospaced: Bool = false
+    var valueColor: Color = .secondary
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 20)
+            }
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(monospaced ? .caption.monospaced() : .subheadline)
+                .foregroundStyle(valueColor)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Muted non-interactive metadata pill for hero cards and headers.
+struct InfoBadgePill: View {
+    let text: String
+    var systemImage: String? = nil
+    var tint: Color = .secondary
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            Text(text)
+                .font(.caption2.weight(.medium))
+                .lineLimit(1)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(tint.opacity(0.12), in: Capsule())
+    }
+}
+
 struct JetsamMemoryBreakdownBar: View {
     let guestRamMiB: Int
     let jitPoolMiB: Int
@@ -123,8 +189,9 @@ struct JetsamMemoryBreakdownBar: View {
     }
 }
 
-/// Dedicated per-VM Graphics & Display sheet for HengeLinux v0.3.0.
-struct GraphicsDisplayConfigSheet: View {
+/// Reusable inline Graphics & Display configuration sections (embedded in the Hardware tab
+/// or wrapped inside a modal sheet).
+struct GraphicsDisplayConfigSections: View {
     let vmName: String
     let distroTag: String
     @Binding var gpuBackend: GpuDisplayBackend
@@ -133,7 +200,6 @@ struct GraphicsDisplayConfigSheet: View {
     @Binding var dualScanoutEnabled: Bool
     @ObservedObject var externalDisplay: ExternalDisplayManager
     @Binding var oledAutoDimSeconds: Int
-    @Environment(\.dismiss) private var dismiss
 
     @State private var shaderCacheBytes: UInt64 = HengeVMBridge.shared.shaderCacheSizeBytes()
     @State private var cacheClearedNotice: Bool = false
@@ -152,101 +218,113 @@ struct GraphicsDisplayConfigSheet: View {
     ]
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Display Adapter (\(vmName))") {
-                    ForEach(GpuDisplayBackend.allCases) { backend in
-                        Button {
-                            gpuBackend = backend
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: icon(for: backend))
-                                    .font(.title3)
-                                    .foregroundStyle(gpuBackend == backend ? .blue : .secondary)
-                                    .frame(width: 26)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(backend.rawValue)
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(.primary)
-                                    Text(subtitle(for: backend))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if gpuBackend == backend {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.blue)
-                                }
-                            }
-                            .padding(.vertical, 2)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if distroTag == "ubuntu" && gpuBackend != .gop2D {
-                        Text("Ubuntu Cloud omits virtio-gpu.ko by default. Run Guest Tools install.sh inside Ubuntu before using VirtIO-GPU KMS/3D.")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
-                }
-
-                Section("GPU Budget & Refresh Cadence") {
-                    Picker("VRAM Ceiling", selection: $vramCapMiB) {
-                        ForEach(vramOptions, id: \.mib) { opt in
-                            Text(opt.label).tag(opt.mib)
-                        }
-                    }
-                    Picker("Target Refresh Rate", selection: $refreshRateHz) {
-                        ForEach(refreshOptions, id: \.hz) { opt in
-                            Text(opt.label).tag(opt.hz)
-                        }
-                    }
-                    if refreshRateHz >= 120 {
-                        Text("ProMotion 120 Hz writes 120 Hz into the guest EDID. Best suited for smooth Wayland compositors; thermal throttling automatically steps down to 40/30 Hz under sustained load.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("External USB-C / HDMI Display") {
-                    LabeledContent("Monitor Status", value: externalDisplay.statusLabel)
-                    Picker("External Resolution", selection: $externalDisplay.resolutionPreset) {
-                        ForEach(ExternalDisplayResolutionPreset.allCases) { preset in
-                            Text(preset.label).tag(preset)
-                        }
-                    }
-                    Toggle("Advertise Dual Scanout (Extended Mode)", isOn: $dualScanoutEnabled)
-                    Picker("OLED Screen Saver Auto-Dim", selection: $oledAutoDimSeconds) {
-                        ForEach(OLEDAutoDimOption.allCases) { opt in
-                            Text(opt.label).tag(opt.rawValue)
-                        }
-                    }
-                }
-
-                Section("Metal Shader Cache (Library/Caches/HengeShaders)") {
-                    LabeledContent("Cached Shaders", value: formattedBytes(shaderCacheBytes))
-                    Button(role: .destructive) {
-                        _ = HengeVMBridge.shared.clearShaderCache()
-                        shaderCacheBytes = HengeVMBridge.shared.shaderCacheSizeBytes()
-                        cacheClearedNotice = true
+        Group {
+            Section {
+                ForEach(GpuDisplayBackend.allCases) { backend in
+                    let isSelected = (gpuBackend == backend)
+                    Button {
+                        gpuBackend = backend
                     } label: {
-                        Label(
-                            cacheClearedNotice ? "Shader Cache Cleared" : "Clear Shader Cache",
-                            systemImage: cacheClearedNotice ? "checkmark.circle.fill" : "trash"
-                        )
+                        HStack(spacing: 12) {
+                            ActionIconBadge(
+                                systemName: icon(for: backend),
+                                color: isSelected ? .blue : .gray
+                            )
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(backend.rawValue)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text(subtitle(for: backend))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                .font(.title3)
+                                .foregroundStyle(isSelected ? Color.blue : Color.secondary.opacity(0.35))
+                        }
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                if distroTag == "ubuntu" && gpuBackend != .gop2D {
+                    Label(
+                        "Ubuntu Cloud omits virtio-gpu.ko by default. Run Guest Tools install.sh inside Ubuntu before using VirtIO-GPU KMS/3D.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                }
+            } header: {
+                Text("Display Adapter")
+            } footer: {
+                Text("Applies to \(vmName). Choose VirGL 3D for hardware-accelerated ANGLE Metal desktops or 2D KMS for minimal RAM usage.")
+            }
+
+            Section("GPU Budget & Refresh Rate") {
+                Picker("VRAM Ceiling", selection: $vramCapMiB) {
+                    ForEach(vramOptions, id: \.mib) { opt in
+                        Text(opt.label).tag(opt.mib)
+                    }
+                }
+                Picker("Target Refresh Rate", selection: $refreshRateHz) {
+                    ForEach(refreshOptions, id: \.hz) { opt in
+                        Text(opt.label).tag(opt.hz)
+                    }
+                }
+                if refreshRateHz >= 120 {
+                    Text("ProMotion 120 Hz writes 120 Hz into the guest EDID; thermal throttling automatically steps down to 40/30 Hz under sustained load.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("External Display & OLED Protection") {
+                InfoMetricRow(
+                    title: "Monitor Status",
+                    value: externalDisplay.statusLabel,
+                    systemImage: "display"
+                )
+                Picker("External Resolution", selection: $externalDisplay.resolutionPreset) {
+                    ForEach(ExternalDisplayResolutionPreset.allCases) { preset in
+                        Text(preset.label).tag(preset)
+                    }
+                }
+                Toggle("Advertise Dual Scanout (Extended Mode)", isOn: $dualScanoutEnabled)
+                Picker("OLED Screen Saver Auto-Dim", selection: $oledAutoDimSeconds) {
+                    ForEach(OLEDAutoDimOption.allCases) { opt in
+                        Text(opt.label).tag(opt.rawValue)
                     }
                 }
             }
-            .navigationTitle("Graphics & Display")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+
+            Section("Metal Shader Cache") {
+                InfoMetricRow(
+                    title: "Cached Shaders",
+                    value: formattedBytes(shaderCacheBytes),
+                    systemImage: "sparkles",
+                    monospaced: true
+                )
+                Button(role: .destructive) {
+                    _ = HengeVMBridge.shared.clearShaderCache()
+                    shaderCacheBytes = HengeVMBridge.shared.shaderCacheSizeBytes()
+                    cacheClearedNotice = true
+                } label: {
+                    HStack(spacing: 12) {
+                        ActionIconBadge(
+                            systemName: cacheClearedNotice ? "checkmark" : "trash.fill",
+                            color: cacheClearedNotice ? .green : .red
+                        )
+                        Text(cacheClearedNotice ? "Shader Cache Cleared" : "Clear Metal Shader Cache")
+                            .font(.subheadline.weight(.medium))
+                    }
                 }
             }
-            .onAppear {
-                shaderCacheBytes = HengeVMBridge.shared.shaderCacheSizeBytes()
-                cacheClearedNotice = false
-            }
+        }
+        .onAppear {
+            shaderCacheBytes = HengeVMBridge.shared.shaderCacheSizeBytes()
+            cacheClearedNotice = false
         }
     }
 
@@ -275,6 +353,43 @@ struct GraphicsDisplayConfigSheet: View {
         if bytes < 1024 { return "\(bytes) B" }
         if bytes < 1024 * 1024 { return String(format: "%.1f KiB", Double(bytes) / 1024.0) }
         return String(format: "%.2f MiB", Double(bytes) / (1024.0 * 1024.0))
+    }
+}
+
+/// Dedicated per-VM Graphics & Display sheet for HengeLinux v0.3.0.
+struct GraphicsDisplayConfigSheet: View {
+    let vmName: String
+    let distroTag: String
+    @Binding var gpuBackend: GpuDisplayBackend
+    @Binding var vramCapMiB: Int
+    @Binding var refreshRateHz: Int
+    @Binding var dualScanoutEnabled: Bool
+    @ObservedObject var externalDisplay: ExternalDisplayManager
+    @Binding var oledAutoDimSeconds: Int
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                GraphicsDisplayConfigSections(
+                    vmName: vmName,
+                    distroTag: distroTag,
+                    gpuBackend: $gpuBackend,
+                    vramCapMiB: $vramCapMiB,
+                    refreshRateHz: $refreshRateHz,
+                    dualScanoutEnabled: $dualScanoutEnabled,
+                    externalDisplay: externalDisplay,
+                    oledAutoDimSeconds: $oledAutoDimSeconds
+                )
+            }
+            .navigationTitle("Graphics & Display")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }
 

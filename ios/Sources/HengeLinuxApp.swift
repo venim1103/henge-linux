@@ -45,7 +45,9 @@ struct HengeLinuxApp: App {
 
     private enum StartTab: Hashable {
         case machines
-        case about
+        case hardware
+        case storage
+        case information
     }
 
     @StateObject private var lifecycle = MetalLifecycleGuard()
@@ -80,7 +82,6 @@ struct HengeLinuxApp: App {
     @State private var cidataHostname: String = "hengelinux"
     @State private var showCidataSheet: Bool = false
     @State private var showExpandDiskSheet: Bool = false
-    @State private var showGraphicsSheet: Bool = false
     @State private var gpuRecoveryVMName: String? = nil
     @State private var gpuRecoveryVMID: String? = nil
     @State private var expandDiskGiB: Int = 16
@@ -123,17 +124,29 @@ struct HengeLinuxApp: App {
                     )
                 } else {
                     TabView(selection: $selectedStartTab) {
-                        launcherView
+                        machinesTabView
                             .tabItem {
                                 Label("Machines", systemImage: "desktopcomputer")
                             }
                             .tag(StartTab.machines)
 
-                        aboutView
+                        hardwareTabView
                             .tabItem {
-                                Label("About", systemImage: "info.circle")
+                                Label("Hardware", systemImage: "cpu")
                             }
-                            .tag(StartTab.about)
+                            .tag(StartTab.hardware)
+
+                        storageTabView
+                            .tabItem {
+                                Label("Images & Disks", systemImage: "externaldrive.fill")
+                            }
+                            .tag(StartTab.storage)
+
+                        informationTabView
+                            .tabItem {
+                                Label("Information", systemImage: "info.circle")
+                            }
+                            .tag(StartTab.information)
                     }
                 }
             }
@@ -143,43 +156,6 @@ struct HengeLinuxApp: App {
             }
             .sheet(isPresented: $showDebugConsole) {
                 DebugConsoleSheetView()
-            }
-            .sheet(isPresented: $showGraphicsSheet) {
-                let activeVM = vmStore.selectedMachine
-                GraphicsDisplayConfigSheet(
-                    vmName: activeVM.name,
-                    distroTag: activeVM.distroTag,
-                    gpuBackend: $jitClient.gpuBackend,
-                    vramCapMiB: Binding(
-                        get: { vmStore.selectedMachine.vramCapMiB ?? 0 },
-                        set: { newVal in
-                            var copy = vmStore.selectedMachine
-                            copy.vramCapMiB = (newVal > 0) ? newVal : nil
-                            vmStore.updateMachine(copy)
-                            HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, newVal)))
-                        }
-                    ),
-                    refreshRateHz: Binding(
-                        get: { vmStore.selectedMachine.refreshRateHz ?? 60 },
-                        set: { newVal in
-                            var copy = vmStore.selectedMachine
-                            copy.refreshRateHz = newVal
-                            vmStore.updateMachine(copy)
-                            HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, newVal)))
-                        }
-                    ),
-                    dualScanoutEnabled: Binding(
-                        get: { vmStore.selectedMachine.dualScanoutEnabled ?? false },
-                        set: { newVal in
-                            var copy = vmStore.selectedMachine
-                            copy.dualScanoutEnabled = newVal
-                            vmStore.updateMachine(copy)
-                            externalDisplay.dualScanoutEnabled = newVal
-                        }
-                    ),
-                    externalDisplay: externalDisplay,
-                    oledAutoDimSeconds: $oledAutoDimSeconds
-                )
             }
             .sheet(isPresented: $showNewVMSheet) {
                 NavigationStack {
@@ -482,6 +458,14 @@ struct HengeLinuxApp: App {
                 HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, vm.refreshRateHz ?? 60)))
                 ramInputText = "\(effectiveRamMiB)"
             }
+            .onChange(of: customGuestRamMiB) { _, newRam in
+                var vm = vmStore.selectedMachine
+                let aligned = Int(effectiveRamMiB)
+                if vm.ramMiB != aligned && newRam >= Int(HENGE_MIN_GUEST_RAM_MIB) {
+                    vm.ramMiB = aligned
+                    vmStore.updateMachine(vm)
+                }
+            }
             .onChange(of: jitClient.gpuBackend) { _, newBackend in
                 var vm = vmStore.selectedMachine
                 let code = Int(newBackend.modeCode)
@@ -550,8 +534,172 @@ struct HengeLinuxApp: App {
         }
     }
 
-    private var launcherView: some View {
-        NavigationStack {
+    private var shortGpuBackendLabel: String {
+        switch jitClient.gpuBackend {
+        case .virgl3D: return "VirGL 3D"
+        case .virtioGpu2D: return "2D KMS"
+        case .gop2D: return "2D GOP"
+        }
+    }
+
+    private var jitBadgeColor: Color {
+        switch jitClient.state {
+        case .blessed: return .green
+        case .requestingExtension: return .blue
+        case .fallbackUntethered: return .orange
+        case .idle: return .secondary
+        }
+    }
+
+    private func startSelectedMachine() {
+        Task {
+            var activeVM = vmStore.selectedMachine
+            activeVM.ramMiB = Int(effectiveRamMiB)
+            activeVM.gpuBackend = Int(jitClient.gpuBackend.modeCode)
+            vmStore.updateMachine(activeVM)
+
+            let machineDir = vmStore.machineDirectoryURL(for: activeVM.id)
+            let codeURL = vmStore.resolvedCodeFirmwareURL(for: activeVM)
+            let varsURL = vmStore.resolvedVarsFirmwareURL(for: activeVM)
+            let secondaryURL = vmStore.resolvedSecondaryMediaURL(for: activeVM)
+
+            isPreparingDisk = true
+            let minDiskBytes = UInt64(activeVM.targetDiskSizeGiB ?? 0) << 30
+            let diskReady: Result<Void, Error> = await withCheckedContinuation { continuation in
+                HengeVMBridge.shared.prepareDiskImage(
+                    atMachineDir: machineDir.path,
+                    primaryDiskName: activeVM.primaryDiskFileName,
+                    codePath: codeURL.path,
+                    varsPath: varsURL.path,
+                    minDiskBytes: minDiskBytes
+                ) { success, error in
+                    if success {
+                        continuation.resume(returning: .success(()))
+                    } else {
+                        let fallback = NSError(
+                            domain: "HengeVM",
+                            code: 1007,
+                            userInfo: [NSLocalizedDescriptionKey: "Failed to prepare guest disk image."]
+                        )
+                        continuation.resume(returning: .failure(error ?? fallback))
+                    }
+                }
+            }
+            isPreparingDisk = false
+            if case .failure(let err) = diskReady {
+                bootWarning = err.localizedDescription
+                bootErrorAlert = err.localizedDescription
+                isRunning = false
+                return
+            }
+
+            await jitClient.prepareSession()
+            if HengeVMBridge.shared.isEngineLinked,
+               case .fallbackUntethered(let reason) = jitClient.state {
+                bootWarning = reason
+                bootErrorAlert = reason
+                isRunning = false
+                return
+            }
+            let gpuMode: Int32 = jitClient.gpuBackend.modeCode
+            externalDisplay.dualScanoutEnabled = activeVM.dualScanoutEnabled ?? false
+            HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, activeVM.vramCapMiB ?? 0)))
+            HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, activeVM.refreshRateHz ?? 60)))
+            if gpuMode == 1 && henge_virtio_gpu_has_virglrenderer() {
+                UserDefaults.standard.set(true, forKey: "hengeGpuInitInProgress")
+                UserDefaults.standard.set(activeVM.id, forKey: "hengeGpuInitMachineID")
+            }
+            AudioSessionManager.shared.activate()
+            externalDisplay.setVMRunning(true)
+            do {
+                try HengeVMBridge.shared.startGuest(
+                    atMachineDir: machineDir.path,
+                    primaryDiskName: activeVM.primaryDiskFileName,
+                    secondaryDiskPath: secondaryURL?.path,
+                    codePath: codeURL.path,
+                    varsPath: varsURL.path,
+                    ramMiB: effectiveRamMiB,
+                    cpuCount: Int32(activeVM.cpuCount),
+                    gpuBackend: gpuMode,
+                    enableVirtioInput: activeVM.enableVirtioInput,
+                    enableXhci: activeVM.enableXhci,
+                    enableAcpiSpcr: activeVM.enableAcpiSpcr
+                )
+                let actualMiB = HengeVMBridge.shared.activeRamMiB
+                if actualMiB > 0 && actualMiB < effectiveRamMiB {
+                    bootWarning = "Jetsam guard clamped guest RAM from \(effectiveRamMiB) MiB to \(actualMiB) MiB (standard Mach ledger)."
+                } else {
+                    bootWarning = nil
+                }
+                bootErrorAlert = nil
+                isRunning = true
+                externalDisplay.syncActiveDisplayLayer()
+            } catch {
+                UserDefaults.standard.set(false, forKey: "hengeGpuInitInProgress")
+                UserDefaults.standard.removeObject(forKey: "hengeGpuInitMachineID")
+                externalDisplay.setVMRunning(false)
+                AudioSessionManager.shared.deactivate()
+                bootWarning = error.localizedDescription
+                bootErrorAlert = error.localizedDescription
+                isRunning = false
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var activeNoticeBannerSection: some View {
+        if let banner = bootWarning, !banner.isEmpty {
+            Section {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: banner.hasPrefix("Imported ") || banner.hasPrefix("Ready:") || banner.hasPrefix("Downloaded") ? "checkmark.circle.fill" : "info.circle.fill")
+                        .foregroundStyle(banner.hasPrefix("Imported ") || banner.hasPrefix("Ready:") || banner.hasPrefix("Downloaded") ? .green : .blue)
+                    Text(banner)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    Button {
+                        bootWarning = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss Notice")
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var activeDownloadRow: some View {
+        if downloader.isDownloading {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Downloading \(downloader.activeTitle)")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Button("Cancel", role: .destructive) {
+                        downloader.cancelDownload()
+                    }
+                    .font(.caption)
+                }
+                if downloader.bytesExpected > 0 {
+                    ProgressView(value: downloader.progressFraction)
+                } else {
+                    ProgressView()
+                }
+                Text(downloader.progressLabel)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var machinesTabView: some View {
+        let activeVM = vmStore.selectedMachine
+        return NavigationStack {
             List {
                 if let recName = gpuRecoveryVMName {
                     Section {
@@ -580,25 +728,151 @@ struct HengeLinuxApp: App {
                     }
                 }
 
-                Section("Virtual Machines (`Documents/Machines/`)") {
+                activeNoticeBannerSection
+
+                Section {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "desktopcomputer")
+                                .font(.system(size: 22, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 46, height: 46)
+                                .background(Color.blue.gradient, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(activeVM.name)
+                                    .font(.title3.bold())
+                                Text(activeVM.distroDisplayName)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            InfoBadgePill(
+                                text: jitStatusLabel,
+                                systemImage: "bolt.fill",
+                                tint: jitBadgeColor
+                            )
+                        }
+
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                InfoBadgePill(text: "\(effectiveRamMiB) MiB RAM", systemImage: "memorychip")
+                                InfoBadgePill(text: "\(activeVM.cpuCount) vCPU", systemImage: "cpu")
+                                InfoBadgePill(text: shortGpuBackendLabel, systemImage: "display")
+                                InfoBadgePill(
+                                    text: vmStore.hasSharedFirmware ? "UEFI Ready" : "Firmware Needed",
+                                    systemImage: "checkmark.shield",
+                                    tint: vmStore.hasSharedFirmware ? .green : .orange
+                                )
+                            }
+                        }
+
+                        Button {
+                            startSelectedMachine()
+                        } label: {
+                            Label(
+                                isPreparingDisk ? "Unpacking Disk Image..." : "Boot \(activeVM.name)",
+                                systemImage: isPreparingDisk ? "hourglass" : "play.fill"
+                            )
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(isPreparingDisk || jitClient.state == .requestingExtension)
+                    }
+                    .padding(.vertical, 6)
+                } header: {
+                    Text("Active Machine")
+                }
+
+                Section {
+                    InfoMetricRow(
+                        title: "JIT Status",
+                        value: "\(jitStatusLabel) · \(SelfDebugJITClient.activeJitModeLabel)",
+                        systemImage: "bolt.circle",
+                        valueColor: jitBadgeColor
+                    )
+                    InfoMetricRow(
+                        title: "Pairing File",
+                        value: jitClient.pairingStatusText,
+                        systemImage: "key"
+                    )
+                    if let diag = jitClient.extensionDiagnostic, !diag.isEmpty {
+                        Text(diag)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let stikURL = SelfDebugJITClient.stikDebugEnableURL {
+                        Button {
+                            UIApplication.shared.open(stikURL)
+                        } label: {
+                            HStack(spacing: 12) {
+                                ActionIconBadge(systemName: "bolt.shield.fill", color: .indigo)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Enable JIT via StikDebug")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text("Recommended before booting on iOS 18–26")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Button {
+                        fileImportMode = .pairingPlist
+                        isImportingFile = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            ActionIconBadge(systemName: "key.fill", color: .orange)
+                            Text("Import Pairing File (.plist / .mobiledevicepairing)")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                } header: {
+                    Text("JIT Acceleration")
+                }
+
+                Section {
                     ForEach(vmStore.machines) { vm in
+                        let isSelected = (vm.id == activeVM.id)
                         Button {
                             vmStore.selectedMachineID = vm.id
                         } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 12) {
+                                ActionIconBadge(
+                                    systemName: "terminal.fill",
+                                    color: isSelected ? .blue : .gray
+                                )
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text(vm.name)
-                                        .font(.headline)
-                                    Text("\(vm.distroDisplayName) · \(vm.ramMiB) MiB · \(vm.cpuCount) vCPU · \(vm.primaryDiskFileName)")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text("\(vm.distroDisplayName) · \(vm.ramMiB) MiB · \(vm.cpuCount) vCPU")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if vm.id == vmStore.selectedMachine.id {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.blue)
-                                }
+                                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                    .font(.title3)
+                                    .foregroundStyle(isSelected ? Color.blue : Color.secondary.opacity(0.35))
                             }
+                            .padding(.vertical, 2)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -617,63 +891,126 @@ struct HengeLinuxApp: App {
                             }
                         }
                     }
-                    Button {
-                        showDownloadGallery = true
-                    } label: {
-                        Label("Download Distros & Firmware...", systemImage: "arrow.down.circle.fill")
-                    }
-                    if downloader.isDownloading {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text("Downloading \(downloader.activeTitle)")
-                                    .font(.caption.weight(.medium))
-                                Spacer()
-                                Button("Cancel", role: .destructive) {
-                                    downloader.cancelDownload()
-                                }
-                                .font(.caption)
-                            }
-                            if downloader.bytesExpected > 0 {
-                                ProgressView(value: downloader.progressFraction)
-                            } else {
-                                ProgressView()
-                            }
-                            Text(downloader.progressLabel)
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 2)
-                    }
+
+                    activeDownloadRow
+
                     Button {
                         showNewVMSheet = true
                     } label: {
-                        Label("New ARM64 Linux VM...", systemImage: "plus.rectangle.on.folder")
+                        HStack(spacing: 12) {
+                            ActionIconBadge(systemName: "plus", color: .green)
+                            Text("New ARM64 Linux VM")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        showDownloadGallery = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            ActionIconBadge(systemName: "arrow.down.circle.fill", color: .blue)
+                            Text("Download Distros & Firmware")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                } header: {
+                    Text("Machines")
+                } footer: {
+                    Text("Tap a machine to select it. Swipe left on custom machines to delete.")
+                }
+            }
+            .navigationTitle("Machines")
+        }
+    }
+
+    private var hardwareTabView: some View {
+        let activeVM = vmStore.selectedMachine
+        return NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 10) {
+                        Image(systemName: "slider.horizontal.3")
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Configuring \(activeVM.name)")
+                                .font(.subheadline.weight(.semibold))
+                            Text("\(activeVM.distroDisplayName) · \(effectiveRamMiB) MiB · \(activeVM.cpuCount) vCPU · \(shortGpuBackendLabel)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
                 }
 
-                Section("Hardware Profile") {
+                Section {
                     ForEach(MachineProfile.presets) { preset in
+                        let isSelected = (preset == selectedProfile && Int(effectiveRamMiB) == preset.ramMiB && activeVM.cpuCount == preset.cpuCount)
                         Button {
                             selectedProfile = preset
                             customGuestRamMiB = preset.ramMiB
                             ramInputText = "\(preset.ramMiB)"
+                            var copy = vmStore.selectedMachine
+                            copy.ramMiB = preset.ramMiB
+                            copy.cpuCount = preset.cpuCount
+                            vmStore.updateMachine(copy)
                         } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 12) {
+                                ActionIconBadge(
+                                    systemName: preset.id == "ipad-pro" ? "ipad" : "iphone",
+                                    color: isSelected ? .blue : .gray
+                                )
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text(preset.name)
-                                        .font(.headline)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
                                     Text(preset.subtitle)
-                                        .font(.caption)
+                                        .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if preset == selectedProfile && Int(effectiveRamMiB) == preset.ramMiB {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.blue)
-                                }
+                                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                    .font(.title3)
+                                    .foregroundStyle(isSelected ? Color.blue : Color.secondary.opacity(0.35))
                             }
+                            .padding(.vertical, 2)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                    }
+
+                    Stepper(
+                        value: Binding(
+                            get: { vmStore.selectedMachine.cpuCount },
+                            set: { newVal in
+                                var copy = vmStore.selectedMachine
+                                copy.cpuCount = newVal
+                                vmStore.updateMachine(copy)
+                            }
+                        ),
+                        in: 1...8
+                    ) {
+                        HStack {
+                            Text("Virtual CPUs")
+                                .font(.subheadline.weight(.medium))
+                            Spacer()
+                            Text("\(activeVM.cpuCount) vCPU")
+                                .font(.subheadline.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
@@ -758,6 +1095,8 @@ struct HengeLinuxApp: App {
                             .font(.caption2)
                             .foregroundStyle(effectiveRamMiB > safeRecommendedRamMiB ? .orange : .secondary)
 
+                        Divider()
+
                         JetsamMemoryBreakdownBar(
                             guestRamMiB: Int(effectiveRamMiB),
                             jitPoolMiB: SelfDebugJITClient.recommendedJitPoolMiB,
@@ -766,94 +1105,46 @@ struct HengeLinuxApp: App {
                         )
                     }
                     .padding(.vertical, 4)
+                } header: {
+                    Text("Memory & CPU")
                 }
 
-                Section("Graphics & JIT Engine") {
-                    Button {
-                        showGraphicsSheet = true
-                    } label: {
-                        HStack {
-                            Label("Graphics & Display Settings", systemImage: "display.2")
-                            Spacer()
-                            Text(jitClient.gpuBackend == .virgl3D ? "VirGL 3D" : (jitClient.gpuBackend == .virtioGpu2D ? "2D KMS" : "2D GOP"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Image(systemName: "chevron.right")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                GraphicsDisplayConfigSections(
+                    vmName: activeVM.name,
+                    distroTag: activeVM.distroTag,
+                    gpuBackend: $jitClient.gpuBackend,
+                    vramCapMiB: Binding(
+                        get: { vmStore.selectedMachine.vramCapMiB ?? 0 },
+                        set: { newVal in
+                            var copy = vmStore.selectedMachine
+                            copy.vramCapMiB = (newVal > 0) ? newVal : nil
+                            vmStore.updateMachine(copy)
+                            HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, newVal)))
                         }
-                    }
-                    .buttonStyle(.plain)
-                    Picker("Display Adapter", selection: $jitClient.gpuBackend) {
-                        ForEach(GpuDisplayBackend.allCases) { backend in
-                            Text(backend.rawValue).tag(backend)
+                    ),
+                    refreshRateHz: Binding(
+                        get: { vmStore.selectedMachine.refreshRateHz ?? 60 },
+                        set: { newVal in
+                            var copy = vmStore.selectedMachine
+                            copy.refreshRateHz = newVal
+                            vmStore.updateMachine(copy)
+                            HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, newVal)))
                         }
-                    }
-                    if vmStore.selectedMachine.distroTag == "ubuntu" && jitClient.gpuBackend != .gop2D {
-                        Text("Ubuntu Cloud omits virtio-gpu.ko by default. Run Guest Tools install.sh (or install linux-modules-extra) inside Ubuntu before using VirtIO-GPU KMS.")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
-                    LabeledContent("External Monitor", value: externalDisplay.statusLabel)
-                    Picker("External Resolution", selection: $externalDisplay.resolutionPreset) {
-                        ForEach(ExternalDisplayResolutionPreset.allCases) { preset in
-                            Text(preset.label).tag(preset)
+                    ),
+                    dualScanoutEnabled: Binding(
+                        get: { vmStore.selectedMachine.dualScanoutEnabled ?? false },
+                        set: { newVal in
+                            var copy = vmStore.selectedMachine
+                            copy.dualScanoutEnabled = newVal
+                            vmStore.updateMachine(copy)
+                            externalDisplay.dualScanoutEnabled = newVal
                         }
-                    }
-                    Picker("OLED Screen Saver Auto-Dim", selection: $oledAutoDimSeconds) {
-                        ForEach(OLEDAutoDimOption.allCases) { opt in
-                            Text(opt.label).tag(opt.rawValue)
-                        }
-                    }
-                    Picker("JIT Strategy", selection: $jitClient.jitStrategy) {
-                        ForEach(JitStrategyOverride.allCases) { strategy in
-                            Text(strategy.label).tag(strategy)
-                        }
-                    }
-                    Toggle("Auto-Sync Host Clipboard on Focus", isOn: $autoSyncClipboard)
-                    LabeledContent("JIT Mode", value: SelfDebugJITClient.activeJitModeLabel)
-                    LabeledContent("JIT Pool", value: "\(SelfDebugJITClient.recommendedJitPoolMiB) MiB")
-                    if SelfDebugJITClient.isRunningInLiveContainer {
-                        LabeledContent("Container", value: "LiveContainer (Use StikDebug)")
-                    }
-                    LabeledContent("Pairing File", value: jitClient.pairingStatusText)
-                    LabeledContent("JIT Status", value: jitStatusLabel)
-                    if let diag = jitClient.extensionDiagnostic, !diag.isEmpty {
-                        Text(diag)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let stikURL = SelfDebugJITClient.stikDebugEnableURL {
-                        Button {
-                            UIApplication.shared.open(stikURL)
-                        } label: {
-                            Label("Enable JIT via StikDebug", systemImage: "bolt.shield.fill")
-                        }
-                    }
-                    Button {
-                        fileImportMode = .pairingPlist
-                        isImportingFile = true
-                    } label: {
-                        Label("Import pairing.plist / .mobiledevicepairing...", systemImage: "key.fill")
-                    }
-                }
+                    ),
+                    externalDisplay: externalDisplay,
+                    oledAutoDimSeconds: $oledAutoDimSeconds
+                )
 
-                Section("Guest Image & Devices (\(vmStore.selectedMachine.name))") {
-                    let activeVM = vmStore.selectedMachine
-                    let activeDir = vmStore.machineDirectoryURL(for: activeVM.id)
-                    LabeledContent("Disk Container", value: vmStore.diskStatusText(for: activeVM))
-                    LabeledContent("UEFI Firmware", value: vmStore.uefiStatusText(for: activeVM))
-                    if let media = activeVM.secondaryMediaFileName, !media.isEmpty {
-                        HStack {
-                            LabeledContent("Secondary Media", value: media)
-                            Button("Eject", role: .destructive) {
-                                vmStore.clearSecondaryMedia(for: activeVM)
-                                jitClient.refreshFileStatus()
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-                        }
-                    }
+                Section("Virtual Devices & Engine") {
                     Toggle(
                         "VirtIO Input (Keyboard + Tablet)",
                         isOn: Binding(
@@ -887,40 +1178,128 @@ struct HengeLinuxApp: App {
                             }
                         )
                     )
-                    LabeledContent("Background Snapshot", value: HengeVMBridge.shared.hasSavedBackgroundSnapshot(atMachineDir: activeDir.path) ? "suspend.state (Disk Flushed + Metadata)" : "None")
-                    LabeledContent("Aligned Guest Bytes", value: "\(alignedBytes) B")
-                    LabeledContent("Host Bridge", value: "http://10.0.2.4/.henge/")
-                    LabeledContent("VM Engine", value: HengeVMBridge.shared.isEngineLinked ? "Linked (HengeVM)" : "Host Substrate Only")
+                    Toggle("Auto-Sync Host Clipboard on Focus", isOn: $autoSyncClipboard)
+                    Picker("JIT Strategy", selection: $jitClient.jitStrategy) {
+                        ForEach(JitStrategyOverride.allCases) { strategy in
+                            Text(strategy.label).tag(strategy)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Hardware")
+        }
+    }
+
+    private var storageTabView: some View {
+        let activeVM = vmStore.selectedMachine
+        let activeDir = vmStore.machineDirectoryURL(for: activeVM.id)
+        let virtualBytes = vmStore.primaryDiskVirtualSizeBytes(for: activeVM)
+        let virtualSizeLabel = virtualBytes > 0
+            ? String(format: "%.2f GiB", Double(virtualBytes) / Double(1 << 30))
+            : "Unpacks on first boot"
+        let hasSnapshot = HengeVMBridge.shared.hasSavedBackgroundSnapshot(atMachineDir: activeDir.path)
+
+        return NavigationStack {
+            List {
+                activeNoticeBannerSection
+
+                Section {
+                    InfoMetricRow(
+                        title: "Machine",
+                        value: activeVM.name,
+                        systemImage: "desktopcomputer"
+                    )
+                    InfoMetricRow(
+                        title: "Primary Disk",
+                        value: vmStore.diskStatusText(for: activeVM),
+                        systemImage: "internaldrive"
+                    )
+                    InfoMetricRow(
+                        title: "Virtual Capacity",
+                        value: virtualSizeLabel,
+                        systemImage: "chart.pie",
+                        monospaced: true
+                    )
+                    InfoMetricRow(
+                        title: "UEFI Firmware",
+                        value: vmStore.uefiStatusText(for: activeVM),
+                        systemImage: "cpu"
+                    )
+                    InfoMetricRow(
+                        title: "Background Snapshot",
+                        value: hasSnapshot ? "Saved (suspend.state)" : "None",
+                        systemImage: "clock.arrow.circlepath"
+                    )
+                    if let media = activeVM.secondaryMediaFileName, !media.isEmpty {
+                        HStack(spacing: 10) {
+                            InfoMetricRow(
+                                title: "Secondary Media",
+                                value: media,
+                                systemImage: "opticaldisc"
+                            )
+                            Button("Eject", role: .destructive) {
+                                vmStore.clearSecondaryMedia(for: activeVM)
+                                jitClient.refreshFileStatus()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                        }
+                    }
+                } header: {
+                    Text("Storage Summary")
+                } footer: {
+                    Text("Manage raw files directly in the iOS Files app under On My iPhone › HengeLinux.")
+                }
+
+                Section("Disk & Image Actions") {
                     Button {
                         fileImportMode = .guestFiles
                         isImportingFile = true
                     } label: {
-                        Label("Import Disk / QCOW2 / ISO / Firmware...", systemImage: "folder.badge.plus")
-                    }
-                    Button {
-                        showCidataSheet = true
-                    } label: {
-                        Label("Generate Cloud-Init CIDATA Seed...", systemImage: "externaldrive.badge.plus")
-                    }
-                    Button {
-                        do {
-                            let cloned = try vmStore.cloneMachine(activeVM)
-                            jitClient.refreshFileStatus()
-                            bootWarning = "Cloned VM '\(activeVM.name)' -> '\(cloned.name)' (APFS CoW)."
-                        } catch {
-                            bootErrorAlert = "Clone failed: \(error.localizedDescription)"
+                        HStack(spacing: 12) {
+                            ActionIconBadge(systemName: "folder.badge.plus", color: .blue)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Import Disk, ISO, or Firmware")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Text(".qcow2, .hvsparse, .img, .iso, or .fd into \(activeVM.name)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
                         }
-                    } label: {
-                        Label("Clone VM (APFS Copy-on-Write)", systemImage: "doc.on.doc")
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+
                     Button {
                         let currentGiB = Int(vmStore.primaryDiskVirtualSizeBytes(for: activeVM) >> 30)
                         expandDiskGiB = max(16, max(currentGiB + 8, activeVM.targetDiskSizeGiB ?? 16))
                         if expandDiskGiB > 128 { expandDiskGiB = 128 }
                         showExpandDiskSheet = true
                     } label: {
-                        Label("Expand Virtual Disk...", systemImage: "arrow.up.left.and.arrow.down.right")
+                        HStack(spacing: 12) {
+                            ActionIconBadge(systemName: "arrow.up.left.and.arrow.down.right", color: .indigo)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Expand Virtual Disk")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Text("APFS sparse resize up to 128 GiB")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+
                     Button {
                         do {
                             let reclaimed = try vmStore.compactPrimaryDisk(for: activeVM)
@@ -931,181 +1310,97 @@ struct HengeLinuxApp: App {
                             bootErrorAlert = "Compact failed: \(error.localizedDescription)"
                         }
                     } label: {
-                        Label("Compact Sparse Disk (F_PUNCHHOLE)", systemImage: "arrow.down.right.and.arrow.up.left")
-                    }
-                }
-
-                Section("App Container Files (`Documents/`)") {
-                    if jitClient.containerFiles.isEmpty {
-                        Text("No files in app container yet.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(jitClient.containerFiles) { entry in
-                            HStack(spacing: 10) {
-                                Image(systemName: iconName(for: entry.fileName))
-                                    .foregroundStyle(.blue)
-                                    .frame(width: 20)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(entry.fileName)
-                                        .font(.subheadline.weight(.medium))
-                                    Text(entry.relativePath)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Text(entry.sizeText)
-                                    .font(.caption.monospacedDigit())
+                        HStack(spacing: 12) {
+                            ActionIconBadge(systemName: "arrow.down.right.and.arrow.up.left", color: .teal)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Compact Sparse Disk")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Text("Reclaim zero blocks via APFS F_PUNCHHOLE")
+                                    .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                if entry.isDeletable {
-                                    Button(role: .destructive) {
-                                        do {
-                                            try jitClient.deleteContainerFile(entry)
-                                            bootWarning = "Removed \(entry.relativePath)."
-                                        } catch {
-                                            bootErrorAlert = "Delete failed: \(error.localizedDescription)"
-                                        }
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
-                            }
+                            Spacer()
                         }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+
                     Button {
-                        jitClient.bootstrapSandboxFolders()
-                        jitClient.refreshFileStatus()
+                        showCidataSheet = true
                     } label: {
-                        Label("Refresh Container File List", systemImage: "arrow.clockwise")
+                        HStack(spacing: 12) {
+                            ActionIconBadge(systemName: "externaldrive.badge.plus", color: .orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Generate Cloud-Init CIDATA Seed")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Text("Offline FAT16 seed volume for cloud images")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+
                     Button {
-                        showDebugConsole = true
-                    } label: {
-                        Label("View Boot & Serial Logs...", systemImage: "terminal")
-                    }
-                }
-
-                if let banner = bootWarning, !banner.isEmpty {
-                    Section("Status") {
-                        Label(
-                            banner,
-                            systemImage: banner.hasPrefix("Imported ") ? "checkmark.circle.fill" : "info.circle.fill"
-                        )
-                        .font(.footnote)
-                        .foregroundStyle(banner.hasPrefix("Imported ") ? .green : .secondary)
-                    }
-                }
-
-                Section {
-                    Button {
-                        Task {
-                            var activeVM = vmStore.selectedMachine
-                            activeVM.ramMiB = Int(effectiveRamMiB)
-                            activeVM.cpuCount = selectedProfile.cpuCount
-                            activeVM.gpuBackend = Int(jitClient.gpuBackend.modeCode)
-                            vmStore.updateMachine(activeVM)
-
-                            let machineDir = vmStore.machineDirectoryURL(for: activeVM.id)
-                            let codeURL = vmStore.resolvedCodeFirmwareURL(for: activeVM)
-                            let varsURL = vmStore.resolvedVarsFirmwareURL(for: activeVM)
-                            let secondaryURL = vmStore.resolvedSecondaryMediaURL(for: activeVM)
-
-                            isPreparingDisk = true
-                            let minDiskBytes = UInt64(activeVM.targetDiskSizeGiB ?? 0) << 30
-                            let diskReady: Result<Void, Error> = await withCheckedContinuation { continuation in
-                                HengeVMBridge.shared.prepareDiskImage(
-                                    atMachineDir: machineDir.path,
-                                    primaryDiskName: activeVM.primaryDiskFileName,
-                                    codePath: codeURL.path,
-                                    varsPath: varsURL.path,
-                                    minDiskBytes: minDiskBytes
-                                ) { success, error in
-                                    if success {
-                                        continuation.resume(returning: .success(()))
-                                    } else {
-                                        let fallback = NSError(
-                                            domain: "HengeVM",
-                                            code: 1007,
-                                            userInfo: [NSLocalizedDescriptionKey: "Failed to prepare guest disk image."]
-                                        )
-                                        continuation.resume(returning: .failure(error ?? fallback))
-                                    }
-                                }
-                            }
-                            isPreparingDisk = false
-                            if case .failure(let err) = diskReady {
-                                bootWarning = err.localizedDescription
-                                bootErrorAlert = err.localizedDescription
-                                isRunning = false
-                                return
-                            }
-
-                            await jitClient.prepareSession()
-                            if HengeVMBridge.shared.isEngineLinked,
-                               case .fallbackUntethered(let reason) = jitClient.state {
-                                bootWarning = reason
-                                bootErrorAlert = reason
-                                isRunning = false
-                                return
-                            }
-                            let gpuMode: Int32 = jitClient.gpuBackend.modeCode
-                            externalDisplay.dualScanoutEnabled = activeVM.dualScanoutEnabled ?? false
-                            HengeVMBridge.shared.setConfiguredVramCapMiB(UInt32(max(0, activeVM.vramCapMiB ?? 0)))
-                            HengeVMBridge.shared.setTargetRefreshHz(UInt32(max(30, activeVM.refreshRateHz ?? 60)))
-                            if gpuMode == 1 && henge_virtio_gpu_has_virglrenderer() {
-                                UserDefaults.standard.set(true, forKey: "hengeGpuInitInProgress")
-                                UserDefaults.standard.set(activeVM.id, forKey: "hengeGpuInitMachineID")
-                            }
-                            AudioSessionManager.shared.activate()
-                            externalDisplay.setVMRunning(true)
-                            do {
-                                try HengeVMBridge.shared.startGuest(
-                                    atMachineDir: machineDir.path,
-                                    primaryDiskName: activeVM.primaryDiskFileName,
-                                    secondaryDiskPath: secondaryURL?.path,
-                                    codePath: codeURL.path,
-                                    varsPath: varsURL.path,
-                                    ramMiB: effectiveRamMiB,
-                                    cpuCount: Int32(activeVM.cpuCount),
-                                    gpuBackend: gpuMode,
-                                    enableVirtioInput: activeVM.enableVirtioInput,
-                                    enableXhci: activeVM.enableXhci,
-                                    enableAcpiSpcr: activeVM.enableAcpiSpcr
-                                )
-                                let actualMiB = HengeVMBridge.shared.activeRamMiB
-                                if actualMiB > 0 && actualMiB < effectiveRamMiB {
-                                    bootWarning = "Jetsam guard clamped guest RAM from \(effectiveRamMiB) MiB to \(actualMiB) MiB (standard Mach ledger)."
-                                } else {
-                                    bootWarning = nil
-                                }
-                                bootErrorAlert = nil
-                                isRunning = true
-                                externalDisplay.syncActiveDisplayLayer()
-                            } catch {
-                                UserDefaults.standard.set(false, forKey: "hengeGpuInitInProgress")
-                                UserDefaults.standard.removeObject(forKey: "hengeGpuInitMachineID")
-                                externalDisplay.setVMRunning(false)
-                                AudioSessionManager.shared.deactivate()
-                                bootWarning = error.localizedDescription
-                                bootErrorAlert = error.localizedDescription
-                                isRunning = false
-                            }
+                        do {
+                            let cloned = try vmStore.cloneMachine(activeVM)
+                            jitClient.refreshFileStatus()
+                            bootWarning = "Cloned VM '\(activeVM.name)' -> '\(cloned.name)' (APFS CoW)."
+                        } catch {
+                            bootErrorAlert = "Clone failed: \(error.localizedDescription)"
                         }
                     } label: {
-                        Label(
-                            isPreparingDisk ? "Unpacking Disk Image..." : "Boot \(vmStore.selectedMachine.name) (\(effectiveRamMiB) MiB)",
-                            systemImage: "play.fill"
-                        )
-                        .frame(maxWidth: .infinity)
-                        .font(.headline)
+                        HStack(spacing: 12) {
+                            ActionIconBadge(systemName: "doc.on.doc.fill", color: .purple)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Clone Machine (APFS Copy-on-Write)")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Text("Instant zero-copy duplicate of \(activeVM.name)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isPreparingDisk || jitClient.state == .requestingExtension)
+                    .buttonStyle(.plain)
+                }
+
+                Section("Downloads & Firmware") {
+                    activeDownloadRow
+
+                    Button {
+                        showDownloadGallery = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            ActionIconBadge(systemName: "arrow.down.circle.fill", color: .green)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Distro & Firmware Gallery")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Text("Download ARM64 Linux images, EDK2 UEFI, or custom URLs")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .navigationTitle("henge-linux")
+            .navigationTitle("Images & Disks")
         }
     }
 
@@ -1323,7 +1618,7 @@ struct HengeLinuxApp: App {
         "HengeLinux v\(appVersionString) (build \(appBuildNumberString)) · \(buildChannelLabel) · \(buildCommitHash) · \(buildDateLabel)"
     }
 
-    private var aboutView: some View {
+    private var informationTabView: some View {
         NavigationStack {
             List {
                 Section {
@@ -1331,7 +1626,7 @@ struct HengeLinuxApp: App {
                         Image("AppIconPreview")
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 72, height: 72)
+                            .frame(width: 68, height: 68)
                             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -1352,15 +1647,29 @@ struct HengeLinuxApp: App {
                     .padding(.vertical, 4)
                 }
 
-                Section("Installed Build") {
-                    LabeledContent("Version", value: "v\(appVersionString) (\(appBuildNumberString))")
-                    LabeledContent("Channel", value: buildChannelLabel)
-                    LabeledContent("Commit") {
-                        Text(buildCommitHash)
-                            .font(.body.monospaced())
-                            .foregroundStyle(.secondary)
+                Section("Diagnostics & Actions") {
+                    Button {
+                        showDebugConsole = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            ActionIconBadge(systemName: "terminal.fill", color: .blue)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("View Boot & Serial Logs")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text("Live engine, VirGL, ttyAMA0, and saved boot tail")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
                     }
-                    LabeledContent("Built", value: buildDateLabel)
+                    .buttonStyle(.plain)
+
                     Button {
                         UIPasteboard.general.string = buildSummaryLine
                         copiedBuildInfo = true
@@ -1368,41 +1677,78 @@ struct HengeLinuxApp: App {
                             copiedBuildInfo = false
                         }
                     } label: {
-                        Label(
-                            copiedBuildInfo ? "Copied Build Info" : "Copy Version & Commit Hash",
-                            systemImage: copiedBuildInfo ? "checkmark.circle.fill" : "doc.on.doc"
-                        )
+                        HStack(spacing: 12) {
+                            ActionIconBadge(
+                                systemName: copiedBuildInfo ? "checkmark" : "doc.on.doc.fill",
+                                color: copiedBuildInfo ? .green : .indigo
+                            )
+                            Text(copiedBuildInfo ? "Copied Build Info" : "Copy Version & Commit Hash")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                }
+
+                Section("Installed Build") {
+                    InfoMetricRow(title: "Version", value: "v\(appVersionString) (\(appBuildNumberString))", systemImage: "tag")
+                    InfoMetricRow(title: "Channel", value: buildChannelLabel, systemImage: "shippingbox")
+                    InfoMetricRow(title: "Commit", value: buildCommitHash, systemImage: "number", monospaced: true)
+                    InfoMetricRow(title: "Built", value: buildDateLabel, systemImage: "calendar")
                 }
 
                 Section("Runtime & Capabilities") {
-                    LabeledContent("Bundle ID") {
-                        Text(Bundle.main.bundleIdentifier ?? "io.hengelinux.app")
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                    LabeledContent("iOS Version", value: UIDevice.current.systemVersion)
-                    LabeledContent("JIT Strategy", value: SelfDebugJITClient.activeJitModeLabel)
-                    LabeledContent("Engine", value: HengeVMBridge.shared.isEngineLinked ? "HengeVM Linked" : "Host Substrate Only")
-                    LabeledContent("QCOW2 Zstd", value: henge_qcow2_has_zstd() ? "Enabled (libzstd)" : "zlib Only")
-                    LabeledContent("LiveContainer", value: SelfDebugJITClient.isRunningInLiveContainer ? "Detected" : "No")
+                    InfoMetricRow(
+                        title: "Bundle ID",
+                        value: Bundle.main.bundleIdentifier ?? "io.hengelinux.app",
+                        systemImage: "app.badge",
+                        monospaced: true
+                    )
+                    InfoMetricRow(title: "iOS Version", value: UIDevice.current.systemVersion, systemImage: "iphone")
+                    InfoMetricRow(title: "VM Engine", value: HengeVMBridge.shared.isEngineLinked ? "HengeVM Linked" : "Host Substrate Only", systemImage: "gearshape.2")
+                    InfoMetricRow(title: "JIT Mode", value: SelfDebugJITClient.activeJitModeLabel, systemImage: "bolt")
+                    InfoMetricRow(title: "JIT Pool", value: "\(SelfDebugJITClient.recommendedJitPoolMiB) MiB", systemImage: "memorychip", monospaced: true)
+                    InfoMetricRow(title: "Aligned Guest RAM", value: "\(alignedBytes) B", systemImage: "rectangle.grid.2x2", monospaced: true)
+                    InfoMetricRow(title: "Host Bridge", value: "http://10.0.2.4/.henge/", systemImage: "network", monospaced: true)
+                    InfoMetricRow(title: "QCOW2 Zstd", value: henge_qcow2_has_zstd() ? "Enabled (libzstd)" : "zlib Only", systemImage: "archivebox")
+                    InfoMetricRow(title: "LiveContainer", value: SelfDebugJITClient.isRunningInLiveContainer ? "Detected (Use StikDebug)" : "No", systemImage: "cube")
                 }
 
                 Section("Project & License") {
-                    LabeledContent("License", value: "GPL-3.0-or-later")
+                    InfoMetricRow(title: "License", value: "GPL-3.0-or-later", systemImage: "doc.plaintext")
                     if let repoURL = URL(string: "https://github.com/venim1103/henge-linux") {
                         Link(destination: repoURL) {
-                            Label("GitHub Repository", systemImage: "safari")
+                            HStack(spacing: 12) {
+                                ActionIconBadge(systemName: "safari.fill", color: .blue)
+                                Text("GitHub Repository")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                     }
                     if let releasesURL = URL(string: "https://github.com/venim1103/henge-linux/releases") {
                         Link(destination: releasesURL) {
-                            Label("Releases & Nightly Builds", systemImage: "arrow.down.circle")
+                            HStack(spacing: 12) {
+                                ActionIconBadge(systemName: "arrow.down.circle.fill", color: .teal)
+                                Text("Releases & Nightly Builds")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                     }
                 }
             }
-            .navigationTitle("About")
+            .navigationTitle("Information")
         }
     }
 
@@ -1466,26 +1812,6 @@ struct HengeLinuxApp: App {
 
     private var effectiveRamMiB: UInt32 {
         UInt32(alignedBytes / (1024 * 1024))
-    }
-
-    private func iconName(for fileName: String) -> String {
-        let lower = fileName.lowercased()
-        if lower.hasSuffix(".plist") || lower.hasSuffix(".mobiledevicepairing") {
-            return "key.fill"
-        }
-        if lower.hasSuffix(".hvsparse") || lower.hasSuffix(".img") || lower.hasSuffix(".raw") {
-            return "internaldrive.fill"
-        }
-        if lower.hasSuffix(".fd") {
-            return "cpu.fill"
-        }
-        if lower.hasSuffix(".state") {
-            return "memorychip.fill"
-        }
-        if lower.hasSuffix(".txt") || lower.hasSuffix(".md") {
-            return "doc.text"
-        }
-        return "doc.fill"
     }
 }
 

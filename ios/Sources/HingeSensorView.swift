@@ -15,11 +15,19 @@ struct HingeSensorView: View {
     @State private var forceClamshellPreview: Bool = false
 
     var body: some View {
-        Toggle(isOn: $forceClamshellPreview) {
+        Button {
+            forceClamshellPreview.toggle()
+        } label: {
             Image(systemName: isClamshellActive ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isClamshellActive ? Color.white : Color.blue)
+                .frame(width: 30, height: 28)
+                .background(
+                    isClamshellActive ? Color.blue : Color.white.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
         }
-        .toggleStyle(.button)
-        .controlSize(.mini)
+        .buttonStyle(.plain)
         .accessibilityLabel("Split Deck")
         .onChange(of: forceClamshellPreview) { _, enabled in
             if enabled {

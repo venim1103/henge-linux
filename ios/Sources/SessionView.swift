@@ -423,8 +423,114 @@ struct SessionView: View {
         }
     }
 
+    private func topBarIconButton(
+        systemName: String,
+        isActive: Bool = false,
+        tint: Color = .blue,
+        isDestructive: Bool = false,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(
+                    isDestructive
+                        ? Color.red
+                        : (isActive ? Color.white : tint)
+                )
+                .frame(width: 30, height: 28)
+                .background(
+                    isDestructive
+                        ? Color.red.opacity(0.18)
+                        : (isActive ? tint : Color.white.opacity(0.12)),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var topBarToolCluster: some View {
+        HStack(spacing: 6) {
+            if activeTab == .display {
+                if externalDisplay.isRenderingOnExternalDisplay {
+                    topBarIconButton(
+                        systemName: showExternalMousepad ? "rectangle.split.2x1.fill" : "rectangle.split.2x1",
+                        isActive: showExternalMousepad,
+                        tint: .blue,
+                        accessibilityLabel: showExternalMousepad ? "Hide Mousepad" : "Show Mousepad"
+                    ) {
+                        showExternalMousepad.toggle()
+                    }
+                } else {
+                    HingeSensorView(posture: $posture)
+                }
+            }
+
+            if externalDisplay.isExternalDisplayConnected {
+                topBarIconButton(
+                    systemName: externalDisplay.isRenderingOnExternalDisplay ? "tv.fill" : "iphone",
+                    isActive: externalDisplay.isRenderingOnExternalDisplay,
+                    tint: .blue,
+                    accessibilityLabel: externalDisplay.isRenderingOnExternalDisplay ? "Switch Display to iPhone" : "Route Display to External Monitor"
+                ) {
+                    externalDisplay.routeToExternalDisplay.toggle()
+                }
+            }
+
+            topBarIconButton(
+                systemName: showPerformanceHUD ? "gauge.with.dots.needle.67percent" : "gauge.with.dots.needle.0percent",
+                isActive: showPerformanceHUD,
+                tint: .teal,
+                accessibilityLabel: showPerformanceHUD ? "Hide Performance HUD" : "Show Performance HUD"
+            ) {
+                showPerformanceHUD.toggle()
+            }
+
+            topBarIconButton(
+                systemName: "moon.stars.fill",
+                tint: .blue,
+                accessibilityLabel: "OLED Screen Saver"
+            ) {
+                activateScreenSaver()
+            }
+
+            topBarIconButton(
+                systemName: "doc.text.magnifyingglass",
+                tint: .blue,
+                accessibilityLabel: "Debug & Telemetry Logs"
+            ) {
+                showDebugConsole = true
+            }
+
+            let kbdOn = (activeTab == .display) ? focusSoftwareKeyboard : focusTerminalKeyboard
+            topBarIconButton(
+                systemName: kbdOn ? "keyboard.fill" : "keyboard",
+                isActive: kbdOn,
+                tint: .blue,
+                accessibilityLabel: "Toggle Keyboard"
+            ) {
+                if activeTab == .display {
+                    focusSoftwareKeyboard.toggle()
+                } else {
+                    focusTerminalKeyboard.toggle()
+                }
+            }
+
+            topBarIconButton(
+                systemName: showModifierBar ? "slider.horizontal.below.rectangle" : "slider.horizontal.3",
+                isActive: showModifierBar,
+                tint: .blue,
+                accessibilityLabel: "Toggle Special Keys"
+            ) {
+                showModifierBar.toggle()
+            }
+        }
+    }
+
     private func topStatusBar(isLandscape: Bool) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Picker("View", selection: $activeTab) {
                 ForEach(SessionTab.allCases) { tab in
                     Image(systemName: tab.iconName)
@@ -433,90 +539,27 @@ struct SessionView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 92)
+            .frame(width: 78)
+            .fixedSize()
 
-            if activeTab == .display {
-                if externalDisplay.isRenderingOnExternalDisplay {
-                    Button {
-                        showExternalMousepad.toggle()
-                    } label: {
-                        Image(systemName: showExternalMousepad ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .tint(showExternalMousepad ? .blue : .secondary)
-                    .accessibilityLabel(showExternalMousepad ? "Hide Mousepad" : "Show Mousepad")
-                } else {
-                    HingeSensorView(posture: $posture)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    topBarToolCluster
+                }
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    topBarToolCluster
+                        .padding(.horizontal, 1)
                 }
             }
+            .frame(maxWidth: .infinity)
 
-            if externalDisplay.isExternalDisplayConnected {
-                Button {
-                    externalDisplay.routeToExternalDisplay.toggle()
-                } label: {
-                    Image(systemName: externalDisplay.isRenderingOnExternalDisplay ? "tv.fill" : "iphone")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
-                .tint(externalDisplay.isRenderingOnExternalDisplay ? .blue : .secondary)
-                .accessibilityLabel(externalDisplay.isRenderingOnExternalDisplay ? "Switch Display to iPhone" : "Route Display to External Monitor")
-            }
-
-            Spacer(minLength: 4)
-
-            Button {
-                showPerformanceHUD.toggle()
-            } label: {
-                Image(systemName: showPerformanceHUD ? "gauge.with.dots.needle.67percent" : "gauge.with.dots.needle.0percent")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .tint(showPerformanceHUD ? .blue : .secondary)
-            .accessibilityLabel(showPerformanceHUD ? "Hide Performance HUD" : "Show Performance HUD")
-
-            Button {
-                activateScreenSaver()
-            } label: {
-                Image(systemName: "moon.stars.fill")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .accessibilityLabel("OLED Screen Saver")
-
-            Button {
-                showDebugConsole = true
-            } label: {
-                Image(systemName: "doc.text.magnifyingglass")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .accessibilityLabel("Debug & Telemetry Logs")
-
-            Button {
-                if activeTab == .display {
-                    focusSoftwareKeyboard.toggle()
-                } else {
-                    focusTerminalKeyboard.toggle()
-                }
-            } label: {
-                let kbdOn = (activeTab == .display) ? focusSoftwareKeyboard : focusTerminalKeyboard
-                Image(systemName: kbdOn ? "keyboard.fill" : "keyboard")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .accessibilityLabel("Toggle Keyboard")
-
-            Button {
-                showModifierBar.toggle()
-            } label: {
-                Image(systemName: showModifierBar ? "slider.horizontal.below.rectangle" : "slider.horizontal.3")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .accessibilityLabel("Toggle Special Keys")
-
-            Button(role: .destructive) {
+            topBarIconButton(
+                systemName: "stop.fill",
+                isDestructive: true,
+                accessibilityLabel: "Stop VM"
+            ) {
                 if isScreenSaverActive {
                     deactivateScreenSaver()
                 }
@@ -525,14 +568,9 @@ struct SessionView: View {
                 releaseActiveModifiers()
                 HengeVMBridge.shared.stopGuest()
                 onStopSession()
-            } label: {
-                Image(systemName: "stop.fill")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .accessibilityLabel("Stop VM")
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 8)
         .padding(.vertical, isLandscape ? 3 : 6)
         .background(.ultraThinMaterial)
     }
