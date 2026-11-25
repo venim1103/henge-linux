@@ -1266,6 +1266,27 @@ static void test_virgl_async_worker(void) {
     HENGE_CHECK(sampler_stream[16] == 0x00031090U);
     HENGE_CHECK(sampler_stream[0] == 0x0003000aU && sampler_stream[3] == 0x00000005U);
 
+    /* 7. ES 3.0 VirGL dual-source blend capset & blend state sanitization (Ubuntu 26.04 Xorg Glamor). */
+    uint32_t capset_v1[77];
+    memset(capset_v1, 0, sizeof(capset_v1));
+    capset_v1[0] = 1U;
+    capset_v1[66] = 300U;
+    capset_v1[69] = 1U; /* max_dual_source_render_targets */
+    capset_v1[70] = 8U; /* max_render_targets */
+    HENGE_CHECK(henge_virgl_sanitize_caps(capset_v1, 64U) == false);
+    HENGE_CHECK(henge_virgl_sanitize_caps(capset_v1, sizeof(capset_v1)) == true);
+    HENGE_CHECK(capset_v1[69] == 0U && capset_v1[66] == 300U && capset_v1[70] == 8U);
+    HENGE_CHECK(henge_virgl_sanitize_caps(capset_v1, sizeof(capset_v1)) == false);
+
+    uint32_t blend_stream[] = {
+        0x000b0101U, 0x00000029U, 0x00000004U, 0x00000000U, /* CREATE_OBJECT BLEND len=11 */
+        0x7e423211U, 0x00000000U, 0x00000000U, 0x00000000U, /* S2[0]: ONE + INV_SRC1_COLOR */
+        0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U
+    };
+    HENGE_CHECK(henge_virgl_sanitize_blend_stream(blend_stream, sizeof(blend_stream) / 4U) == 1U);
+    HENGE_CHECK(blend_stream[4] == 0x7c822411U);
+    HENGE_CHECK(henge_virgl_sanitize_blend_stream(blend_stream, sizeof(blend_stream) / 4U) == 0U);
+
     henge_virgl_worker_destroy(worker);
     henge_virtio_gpu_destroy(gpu);
     pthread_mutex_destroy(&sink.mu);

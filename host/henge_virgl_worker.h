@@ -132,6 +132,22 @@ uint32_t henge_virgl_sanitize_cmd_stream(uint32_t *cmds,
                                          bool allow_mirror_clamp);
 
 /*
+ * Sanitize VirGL v1/v2 capability blobs for ANGLE Metal ES 3.0 hosts by zeroing
+ * virgl_caps_v1.max_dual_source_render_targets (dword 69, byte offset 276) so
+ * Mesa virgl does not emit GL_EXT_blend_func_extended dual-source draws that
+ * ANGLE ES 3.0 rejects with GL_INVALID_OPERATION (1282).
+ * Returns true if the capset blob was modified.
+ */
+bool henge_virgl_sanitize_caps(void *caps_buf, size_t caps_len);
+
+/*
+ * Defense-in-depth: rewrite any dual-source PIPE_BLENDFACTOR_*SRC1_* factors in
+ * VIRGL_OBJECT_BLEND packets to their single-source equivalents before submit.
+ * Returns the number of blend state packets rewritten.
+ */
+uint32_t henge_virgl_sanitize_blend_stream(uint32_t *cmds, size_t ndw);
+
+/*
  * Process-wide active worker registration so MetalLifecycleGuard's willResignActive
  * observer can synchronously drain ANGLE/VirGL queues before iOS revokes GPU access.
  */

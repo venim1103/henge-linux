@@ -451,8 +451,12 @@ if command -v apt-get >/dev/null 2>&1; then
     apt-get update
     apt-get install -y --no-install-recommends \
         lxqt-core openbox sddm xorg xserver-xorg-video-fbdev qterminal pcmanfm-qt \
-        lxqt-themes breeze-icon-theme dbus-x11 scrot \
+        lxqt-themes breeze-icon-theme hicolor-icon-theme fonts-dejavu-core \
+        desktop-file-utils shared-mime-info dbus-x11 scrot \
         libgl1-mesa-dri libegl-mesa0 libgles2 mesa-utils
+    for opt_pkg in lxqt-menu-data lxmenu-data lxqt-config lxqt-runner lxqt-notificationd featherpad; do
+        apt-get install -y --no-install-recommends "$opt_pkg" 2>/dev/null || true
+    done
     if [ "$SESSION_PREF" = "wayland" ]; then
         apt-get install -y --no-install-recommends labwc xwayland wayland-protocols 2>/dev/null || true
         apt-get install -y --no-install-recommends lxqt-wayland-session 2>/dev/null || true

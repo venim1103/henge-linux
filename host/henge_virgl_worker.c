@@ -178,6 +178,7 @@ struct HengeVirglWorker {
     uint32_t                 logged_fbo;
     uint32_t                 logged_blit;
     uint32_t                 logged_sanitized;
+    uint32_t                 logged_caps_sanitized;
 
     /* Zero-copy double-buffered IOSurface swapchains per scanout. */
     HengeGpuSwapchain       *swapchains[HENGE_VIRTIO_GPU_MAX_SCANOUTS];
@@ -920,6 +921,16 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
 #if HENGE_WORKER_HAS_VIRGL
                     if (w->virgl_initialized && max_size > 0U) {
                         virgl_renderer_fill_caps(capset_id, capset_ver, heap_resp + 24U);
+#if HENGE_WORKER_HAS_ANGLE_EGL
+                        if (henge_virgl_sanitize_caps(heap_resp + 24U, (size_t)max_size) &&
+                            w->logged_caps_sanitized < 2U) {
+                            w->logged_caps_sanitized++;
+                            uint32_t glsl_lvl = read_le32(heap_resp + 24U + 264U);
+                            uint32_t max_rt = read_le32(heap_resp + 24U + 280U);
+                            fprintf(stderr, "virgl-worker: disabled dual-source blend cap for ANGLE ES 3.0 (capset=%u size=%u glsl=%u max_rt=%u)\n",
+                                    capset_id, max_size, glsl_lvl, max_rt);
+                        }
+#endif
                     }
 #else
                     (void)capset_ver;
@@ -1259,10 +1270,12 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                             uint32_t sanitized = henge_virgl_sanitize_cmd_stream(
                                 aligned_cmd, (size_t)(cmd_bytes / 4U),
                                 w->egl_supports_border_clamp, w->egl_supports_mirror_clamp);
-                            if (sanitized > 0U && w->logged_sanitized < 4U) {
+                            uint32_t blend_sanitized = henge_virgl_sanitize_blend_stream(
+                                aligned_cmd, (size_t)(cmd_bytes / 4U));
+                            if ((sanitized > 0U || blend_sanitized > 0U) && w->logged_sanitized < 4U) {
                                 w->logged_sanitized++;
-                                fprintf(stderr, "virgl-worker: sanitized %u unsupported sampler wrap mode(s) for ES 3.0 (ctx=%u)\n",
-                                        sanitized, node->ctx_id);
+                                fprintf(stderr, "virgl-worker: sanitized %u sampler wrap(s) + %u dual-src blend(s) for ES 3.0 (ctx=%u)\n",
+                                        sanitized, blend_sanitized, node->ctx_id);
                             }
 #endif
                             int rc_sub = virgl_renderer_submit_cmd(aligned_cmd, (int)node->ctx_id, (int)(cmd_bytes / 4U));
@@ -1288,8 +1301,8 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                                                         off, seen, h, ccmd, cobj, clen, ndw);
                                                 break;
                                             }
-                                            if (printed < 12U && (ccmd == 1U || seen < 3U)) {
-                                                if (ccmd == 1U && seen > 0U) {
+                                            if (printed < 12U && (ccmd == 1U || ccmd == 8U || seen < 3U)) {
+                                                if ((ccmd == 1U || ccmd == 8U) && seen > 0U) {
                                                     fprintf(stderr, "virgl-worker:   [prev off=%u] hdr=0x%08x (cmd=%u obj=%u len=%u)\n",
                                                             prev_off, prev_h, prev_h & 0xFFU, (prev_h >> 8) & 0xFFU, prev_h >> 16);
                                                 }
@@ -1923,6 +1936,83 @@ uint32_t henge_virgl_sanitize_cmd_stream(uint32_t *cmds,
             uint32_t new_s0 = (s0 & ~0x1FFU) | ws | (wt << 3U) | (wr << 6U);
             if (new_s0 != s0) {
                 cmds[off + 2U] = new_s0;
+                rewritten++;
+            }
+        }
+        off += 1U + (size_t)clen;
+    }
+    return rewritten;
+}
+
+bool henge_virgl_sanitize_caps(void *caps_buf, size_t caps_len) {
+    /*
+     * struct virgl_caps_v1 (embedded at offset 0 of both VIRGL v1 [308B] and
+     * VIRGL2 v2 [1408B] capsets):
+     *   dword  0: max_version
+     *   dwords 1..64: sampler/render/depthstencil/vertexbuffer format bitmasks (4 * 16)
+     *   dword 65: virgl_caps_bool_set1 bset
+     *   dword 66: glsl_level (offset 264)
+     *   dword 67: max_texture_array_layers (offset 268)
+     *   dword 68: max_streamout_buffers (offset 272)
+     *   dword 69: max_dual_source_render_targets (offset 276)
+     *   dword 70: max_render_targets (offset 280)
+     */
+    const size_t kDualSrcOffset = 69U * 4U; /* 276 */
+    if (caps_buf == NULL || caps_len < 308U) {
+        return false;
+    }
+    uint8_t *bytes = (uint8_t *)caps_buf;
+    uint32_t dual_src = read_le32(bytes + kDualSrcOffset);
+    if (dual_src == 0U) {
+        return false;
+    }
+    uint32_t zero = 0U;
+    memcpy(bytes + kDualSrcOffset, &zero, sizeof(zero));
+    return true;
+}
+
+static uint32_t sanitize_pipe_blend_factor(uint32_t factor) {
+    /* Map dual-source factors (SRC1_COLOR/ALPHA, INV_SRC1_COLOR/ALPHA) to single-source. */
+    switch (factor) {
+        case 0x09U: return 0x02U; /* SRC1_COLOR -> SRC_COLOR */
+        case 0x0AU: return 0x03U; /* SRC1_ALPHA -> SRC_ALPHA */
+        case 0x19U: return 0x12U; /* INV_SRC1_COLOR -> INV_SRC_COLOR */
+        case 0x1AU: return 0x13U; /* INV_SRC1_ALPHA -> INV_SRC_ALPHA */
+        default:    return factor;
+    }
+}
+
+uint32_t henge_virgl_sanitize_blend_stream(uint32_t *cmds, size_t ndw) {
+    if (cmds == NULL || ndw == 0U) {
+        return 0U;
+    }
+    uint32_t rewritten = 0U;
+    size_t off = 0U;
+    while (off < ndw) {
+        uint32_t h = cmds[off];
+        uint32_t clen = h >> 16;
+        uint32_t cobj = (h >> 8) & 0xFFU;
+        uint32_t ccmd = h & 0xFFU;
+        if ((size_t)clen > ndw - off - 1U) {
+            break;
+        }
+        /* VIRGL_CCMD_CREATE_OBJECT (1), VIRGL_OBJECT_BLEND (1), length 11 (w4..w11 = S2[0..7]). */
+        if (ccmd == 1U && cobj == 1U && clen == 11U) {
+            bool modified = false;
+            for (size_t rt = 0U; rt < 8U; rt++) {
+                uint32_t s2 = cmds[off + 4U + rt];
+                uint32_t rsrc = sanitize_pipe_blend_factor((s2 >> 4U) & 0x1FU);
+                uint32_t rdst = sanitize_pipe_blend_factor((s2 >> 9U) & 0x1FU);
+                uint32_t asrc = sanitize_pipe_blend_factor((s2 >> 17U) & 0x1FU);
+                uint32_t adst = sanitize_pipe_blend_factor((s2 >> 22U) & 0x1FU);
+                uint32_t mask = (0x1FU << 4U) | (0x1FU << 9U) | (0x1FU << 17U) | (0x1FU << 22U);
+                uint32_t new_s2 = (s2 & ~mask) | (rsrc << 4U) | (rdst << 9U) | (asrc << 17U) | (adst << 22U);
+                if (new_s2 != s2) {
+                    cmds[off + 4U + rt] = new_s2;
+                    modified = true;
+                }
+            }
+            if (modified) {
                 rewritten++;
             }
         }
