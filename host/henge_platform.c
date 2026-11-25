@@ -437,9 +437,12 @@ uint64_t hengelinux_compensated_counter(uint64_t raw_ticks) {
                 if (cur_prev > 0ULL && (raw_ticks - cur_prev) > HENGE_SUSPEND_JUMP_THRESHOLD_TICKS) {
                     uint64_t excess = (raw_ticks - cur_prev) - HENGE_SUSPEND_JUMP_THRESHOLD_TICKS;
                     uint64_t prev_off = atomic_fetch_add_explicit(&g_suspend_offset_ticks, excess, memory_order_acq_rel);
+                    uint64_t new_off = prev_off + excess;
                     atomic_store_explicit(&g_neg_suspend_offset_ticks,
-                                          0ULL - (prev_off + excess),
+                                          0ULL - new_off,
                                           memory_order_release);
+                    uint64_t new_comp = (raw_ticks > new_off) ? (raw_ticks - new_off) : 0ULL;
+                    (void)clamp_monotonic_ticks(new_comp);
                 }
                 atomic_store_explicit(&g_last_raw_ticks, raw_ticks, memory_order_release);
                 atomic_store_explicit(&g_clock_seq, seq + 2ULL, memory_order_release);

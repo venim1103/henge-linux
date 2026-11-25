@@ -1035,7 +1035,14 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                     args.last_level = last_lvl;
                     args.nr_samples = nr_samples;
                     args.flags = rflags;
-                    if (virgl_renderer_resource_create(&args, NULL, 0) != 0) {
+                    int rc_c3d = virgl_renderer_resource_create(&args, NULL, 0);
+                    if (rc_c3d != 0) {
+                        static int logged_c3d = 0;
+                        if (logged_c3d < 8) {
+                            logged_c3d++;
+                            fprintf(stderr, "virgl-worker: create_3d failed (res=%u target=%u fmt=%u %ux%ux%u rc=%d)\n",
+                                    res_id, target, fmt, rw, rh, depth, rc_c3d);
+                        }
                         (void)henge_virtio_gpu_process_ctrl(
                             w->gpu, HENGE_VIRTIO_GPU_CMD_RESOURCE_UNREF, 0U, res_id, 0U, 0U, 0U, 0U, NULL, 0U);
                         resp_type = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
@@ -1219,7 +1226,14 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                             resp_type = HENGE_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
                         } else {
                             memcpy(aligned_cmd, cmd_buf, cmd_bytes);
-                            if (virgl_renderer_submit_cmd(aligned_cmd, (int)node->ctx_id, (int)(cmd_bytes / 4U)) != 0) {
+                            int rc_sub = virgl_renderer_submit_cmd(aligned_cmd, (int)node->ctx_id, (int)(cmd_bytes / 4U));
+                            if (rc_sub != 0) {
+                                static int logged_sub = 0;
+                                if (logged_sub < 8) {
+                                    logged_sub++;
+                                    fprintf(stderr, "virgl-worker: submit_cmd failed (ctx=%u bytes=%u hdr0=0x%08x rc=%d)\n",
+                                            node->ctx_id, cmd_bytes, aligned_cmd[0], rc_sub);
+                                }
                                 resp_type = HENGE_VIRTIO_GPU_RESP_ERR_UNSPEC;
                             }
                             free(aligned_cmd);
@@ -1282,6 +1296,12 @@ static void execute_work_cmd(HengeVirglWorker *w, HengeWorkNode *node) {
                                     uint64_t sig = 0ULL;
 #if HENGE_WORKER_HAS_VIRGL && HENGE_WORKER_HAS_ANGLE_EGL
                                     if (angle_blit_scanout_to_iosurface(w, s, slot_idx, res_id, &slot, &shared_ev, &sig)) {
+                                        static int logged_blit = 0;
+                                        if (logged_blit == 0) {
+                                            logged_blit = 1;
+                                            fprintf(stderr, "virgl-worker: first 3D IOSurface blit succeeded (scanout=%u res=%u %ux%u)\n",
+                                                    s, res_id, slot.width, slot.height);
+                                        }
                                         (void)henge_gpu_swapchain_publish(w->swapchains[s], slot_idx, shared_ev, sig, slot.is_srgb);
                                     }
 #else

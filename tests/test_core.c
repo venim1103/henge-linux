@@ -1188,6 +1188,21 @@ static void test_virgl_async_worker(void) {
     cmd.payload_len = sizeof(res3d_req);
     HENGE_CHECK(henge_virgl_worker_enqueue(worker, &cmd) == 0);
 
+    /* Large 1D PIPE_BUFFER (64 KiB, width > 7680, height == 1) must succeed for Mesa VBOs/UBOs. */
+    uint32_t buf3d_req[12] = { 56U, 0U, 64U /* R8_UNORM */, 0x10U, 65536U, 1U, 1U, 1U, 0U, 0U, 0U, 0U };
+    cmd.cmd_type = HENGE_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D;
+    cmd.fence_id = 1041ULL;
+    cmd.payload = (const uint8_t *)buf3d_req;
+    cmd.payload_len = sizeof(buf3d_req);
+    HENGE_CHECK(henge_virgl_worker_enqueue(worker, &cmd) == 0);
+
+    uint32_t xfer3d_req[12] = { 0U, 0U, 0U, 64U, 1U, 1U, 0U, 0U, 56U, 0U, 0U, 0U };
+    cmd.cmd_type = HENGE_VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D;
+    cmd.fence_id = 1042ULL;
+    cmd.payload = (const uint8_t *)xfer3d_req;
+    cmd.payload_len = sizeof(xfer3d_req);
+    HENGE_CHECK(henge_virgl_worker_enqueue(worker, &cmd) == 0);
+
     uint8_t backing_mem[64];
     memset(backing_mem, 0x3CU, sizeof(backing_mem));
     HengeGpuBackingEntry bg = { .host_ptr = backing_mem, .guest_addr = 0x50000000ULL, .length = sizeof(backing_mem), .reserved = 0U };
@@ -1220,8 +1235,8 @@ static void test_virgl_async_worker(void) {
     henge_virgl_drain_active_worker(2000U);
     HENGE_CHECK(sink.last_resp_type == HENGE_VIRTIO_GPU_RESP_OK_NODATA);
     HENGE_CHECK(sink.last_fence_id == 107ULL);
-    HENGE_CHECK(sink.completed_count == 7U);
-    HENGE_CHECK(sink.off_thread_count == 7U);
+    HENGE_CHECK(sink.completed_count == 9U);
+    HENGE_CHECK(sink.off_thread_count == 9U);
     HENGE_CHECK(henge_virtio_gpu_active_contexts(gpu) == 1U);
     HENGE_CHECK(henge_virtio_gpu_context_attached_resources(gpu, 7U) == 1U);
 
@@ -1230,8 +1245,8 @@ static void test_virgl_async_worker(void) {
     HENGE_CHECK(henge_virgl_worker_drain(worker, 2000U) == 0);
     HengeVirglWorkerStats stats;
     henge_virgl_worker_get_stats(worker, &stats);
-    HENGE_CHECK(stats.cmds_enqueued == 7ULL && stats.cmds_completed == 7ULL);
-    HENGE_CHECK(stats.fences_retired == 7ULL && stats.resets_processed == 1ULL);
+    HENGE_CHECK(stats.cmds_enqueued == 9ULL && stats.cmds_completed == 9ULL);
+    HENGE_CHECK(stats.fences_retired == 9ULL && stats.resets_processed == 1ULL);
     HENGE_CHECK(stats.pending_queue_depth == 0U && stats.pending_fence_count == 0U);
 
     henge_virgl_worker_destroy(worker);

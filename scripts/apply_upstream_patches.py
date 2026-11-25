@@ -1677,6 +1677,7 @@ static int vgpu_enqueue_async_cmd(HvVirtio *v, HvVirtioGpuPci *g, int q, const H
             }
         }
     } else if (type == HENGE_VIRTIO_GPU_CMD_SUBMIT_3D) {
+        /* struct virtio_gpu_cmd_submit: hdr (24B) + size (4B) + padding (4B) = 32B header. */
         uint32_t cmd_size = 0u;
         hv_virtq_read(v, e, 24u, &cmd_size, 4u);
         if (cmd_size > (16u * 1024u * 1024u) - 4u) {
@@ -1691,7 +1692,7 @@ static int vgpu_enqueue_async_cmd(HvVirtio *v, HvVirtioGpuPci *g, int q, const H
         }
         memcpy(heap_buf, &cmd_size, 4u);
         if (cmd_size > 0u) {
-            hv_virtq_read(v, e, 28u, heap_buf + 4u, cmd_size);
+            hv_virtq_read(v, e, 32u, heap_buf + 4u, cmd_size);
         }
         payload = heap_buf;
     } else {

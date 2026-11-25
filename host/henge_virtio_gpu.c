@@ -981,7 +981,22 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_PARAM;
                 break;
             }
-            if (resource_id == 0U || width == 0U || height == 0U || width > 7680U || height > 4320U) {
+            bool is_3d_buffer = is_3d && height == 1U && (width > 16384U || format == 64U /* R8_UNORM */);
+            if (resource_id == 0U || width == 0U || height == 0U) {
+                resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_PARAM;
+                break;
+            }
+            if (is_3d) {
+                if (height == 1U) {
+                    if (width > (256U * 1024U * 1024U)) {
+                        resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_PARAM;
+                        break;
+                    }
+                } else if (width > 16384U || height > 16384U) {
+                    resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_PARAM;
+                    break;
+                }
+            } else if (width > 7680U || height > 4320U) {
                 resp = HENGE_VIRTIO_GPU_RESP_ERR_INVALID_PARAM;
                 break;
             }
@@ -1002,7 +1017,9 @@ HengeVirtioGpuRespType henge_virtio_gpu_process_ctrl(HengeVirtioGpuDevice *dev,
             }
             uint8_t *pixels = NULL;
             uint32_t stride = 0U;
-            uint64_t est_bytes = (uint64_t)width * (uint64_t)height * 4ULL;
+            uint64_t est_bytes = is_3d_buffer
+                ? (uint64_t)width
+                : ((uint64_t)width * (uint64_t)height * 4ULL);
             if (is_3d) {
                 uint64_t vram_cap = (uint64_t)dev->cfg.vram_mib * 1024ULL * 1024ULL;
                 uint64_t avail_mem = henge_available_memory_bytes();
