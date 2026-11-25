@@ -733,11 +733,15 @@ struct HengeLinuxApp: App {
                 Section {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: "desktopcomputer")
-                                .font(.system(size: 22, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 46, height: 46)
-                                .background(Color.blue.gradient, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            Image("AppIconPreview")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 48, height: 48)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .stroke(Color.blue.opacity(0.45), lineWidth: 1)
+                                )
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(activeVM.name)
                                     .font(.title3.bold())
@@ -875,6 +879,32 @@ struct HengeLinuxApp: App {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            Button {
+                                do {
+                                    let cloned = try vmStore.cloneMachine(vm)
+                                    jitClient.refreshFileStatus()
+                                    bootWarning = "Duplicated '\(vm.name)' -> '\(cloned.name)' (APFS CoW)."
+                                } catch {
+                                    bootErrorAlert = "Duplicate failed: \(error.localizedDescription)"
+                                }
+                            } label: {
+                                Label("Duplicate Machine (Clone)", systemImage: "doc.on.doc")
+                            }
+                            if vmStore.machines.count > 1 && vm.id != "ArchLinux" {
+                                Button(role: .destructive) {
+                                    do {
+                                        try vmStore.deleteMachine(id: vm.id)
+                                        jitClient.refreshFileStatus()
+                                        bootWarning = "Deleted VM '\(vm.name)'."
+                                    } catch {
+                                        bootErrorAlert = "Delete VM failed: \(error.localizedDescription)"
+                                    }
+                                } label: {
+                                    Label("Delete Machine", systemImage: "trash")
+                                }
+                            }
+                        }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if vmStore.machines.count > 1 && vm.id != "ArchLinux" {
                                 Button(role: .destructive) {
@@ -930,7 +960,7 @@ struct HengeLinuxApp: App {
                 } header: {
                     Text("Machines")
                 } footer: {
-                    Text("Tap a machine to select it. Swipe left on custom machines to delete.")
+                    Text("Tap a machine to select it. Press and hold to duplicate, or swipe left on custom machines to delete.")
                 }
             }
             .navigationTitle("Machines")
@@ -939,26 +969,35 @@ struct HengeLinuxApp: App {
 
     private var hardwareTabView: some View {
         let activeVM = vmStore.selectedMachine
+        let matchedPreset = MachineProfile.presets.first {
+            Int(effectiveRamMiB) == $0.ramMiB && activeVM.cpuCount == $0.cpuCount
+        }
+        let isCustomProfile = (matchedPreset == nil)
         return NavigationStack {
             List {
                 Section {
-                    HStack(spacing: 10) {
-                        Image(systemName: "slider.horizontal.3")
-                            .foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        ActionIconBadge(
+                            systemName: "slider.horizontal.3",
+                            color: isCustomProfile ? .blue : .gray
+                        )
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Configuring \(activeVM.name)")
+                            Text("Custom")
                                 .font(.subheadline.weight(.semibold))
-                            Text("\(activeVM.distroDisplayName) · \(effectiveRamMiB) MiB · \(activeVM.cpuCount) vCPU · \(shortGpuBackendLabel)")
-                                .font(.caption)
+                                .foregroundStyle(.primary)
+                            Text("\(effectiveRamMiB) MiB guest RAM · \(activeVM.cpuCount) vCPU · Configured manually below")
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
+                        Spacer()
+                        Image(systemName: isCustomProfile ? "checkmark.circle.fill" : "circle")
+                            .font(.title3)
+                            .foregroundStyle(isCustomProfile ? Color.blue : Color.secondary.opacity(0.35))
                     }
                     .padding(.vertical, 2)
-                }
 
-                Section {
                     ForEach(MachineProfile.presets) { preset in
-                        let isSelected = (preset == selectedProfile && Int(effectiveRamMiB) == preset.ramMiB && activeVM.cpuCount == preset.cpuCount)
+                        let isSelected = (matchedPreset == preset)
                         Button {
                             selectedProfile = preset
                             customGuestRamMiB = preset.ramMiB
@@ -1076,19 +1115,32 @@ struct HengeLinuxApp: App {
                         )
 
                         HStack(spacing: 6) {
-                            ForEach([1024, 1664, 2048, 2560, 4096], id: \.self) { mib in
-                                Button("\(mib)") {
-                                    customGuestRamMiB = mib
-                                    ramInputText = "\(mib)"
+                            ForEach([
+                                (mib: 1024, label: "1G"),
+                                (mib: 1664, label: "1.6G"),
+                                (mib: 2048, label: "2G"),
+                                (mib: 2560, label: "2.5G"),
+                                (mib: 4096, label: "4G")
+                            ], id: \.mib) { preset in
+                                Button {
+                                    customGuestRamMiB = preset.mib
+                                    ramInputText = "\(preset.mib)"
+                                } label: {
+                                    Text(preset.label)
+                                        .font(.caption2.weight(.semibold).monospacedDigit())
+                                        .lineLimit(1)
+                                        .fixedSize()
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.mini)
-                                .tint(Int(effectiveRamMiB) == mib ? .blue : .secondary)
+                                .tint(Int(effectiveRamMiB) == preset.mib ? .blue : .secondary)
                             }
-                            Spacer()
+                            Spacer(minLength: 4)
                             Text("\(String(format: "%.2f", Double(effectiveRamMiB) / 1024.0)) GiB")
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .fixedSize()
                         }
 
                         Text(ramAdvisoryText)
@@ -1336,57 +1388,6 @@ struct HengeLinuxApp: App {
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(.primary)
                                 Text("Offline FAT16 seed volume for cloud images")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        do {
-                            let cloned = try vmStore.cloneMachine(activeVM)
-                            jitClient.refreshFileStatus()
-                            bootWarning = "Cloned VM '\(activeVM.name)' -> '\(cloned.name)' (APFS CoW)."
-                        } catch {
-                            bootErrorAlert = "Clone failed: \(error.localizedDescription)"
-                        }
-                    } label: {
-                        HStack(spacing: 12) {
-                            ActionIconBadge(systemName: "doc.on.doc.fill", color: .purple)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Clone Machine (APFS Copy-on-Write)")
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(.primary)
-                                Text("Instant zero-copy duplicate of \(activeVM.name)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Section("Downloads & Firmware") {
-                    activeDownloadRow
-
-                    Button {
-                        showDownloadGallery = true
-                    } label: {
-                        HStack(spacing: 12) {
-                            ActionIconBadge(systemName: "arrow.down.circle.fill", color: .green)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Distro & Firmware Gallery")
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(.primary)
-                                Text("Download ARM64 Linux images, EDK2 UEFI, or custom URLs")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }

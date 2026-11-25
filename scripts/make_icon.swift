@@ -136,14 +136,23 @@ func renderIcon(size: Int, variant: IconVariant) -> CGImage {
 
     let tinted = (variant == .tinted)
 
-    // 1. Pure OLED black canvas + subtle ambient center glow
-    ctx.setFillColor(rgba(0x000000, 1.0))
-    ctx.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))
+    // 1. Native iOS Dark Mode charcoal-grey gradient canvas + subtle ambient center glow
+    let bgGrad = makeGradient(
+        tinted
+            ? [(0.0, 0x303030, 1.0), (0.55, 0x212121, 1.0), (1.0, 0x161616, 1.0)]
+            : [(0.0, 0x313236, 1.0), (0.55, 0x222327, 1.0), (1.0, 0x17181B, 1.0)]
+    )
+    ctx.drawLinearGradient(
+        bgGrad,
+        start: CGPoint(x: 512, y: 0),
+        end: CGPoint(x: 512, y: 1024),
+        options: []
+    )
 
     let ambient = makeGradient(
         tinted
-            ? [(0.0, 0x555555, 0.22), (0.55, 0x222222, 0.08), (1.0, 0x000000, 0.0)]
-            : [(0.0, 0x2563EB, 0.30), (0.55, 0x1E3A8A, 0.11), (1.0, 0x000000, 0.0)]
+            ? [(0.0, 0x666666, 0.20), (0.55, 0x333333, 0.07), (1.0, 0x161616, 0.0)]
+            : [(0.0, 0x2563EB, 0.24), (0.55, 0x1E3A8A, 0.09), (1.0, 0x17181B, 0.0)]
     )
     ctx.drawRadialGradient(
         ambient,
