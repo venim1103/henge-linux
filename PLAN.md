@@ -2,8 +2,8 @@
 
 **Repository:** `venim1103/henge-linux`
 **License:** GNU General Public License v3.0 or later (`GPL-3.0-or-later`)
-**Target Platforms:** Non-jailbroken iOS 18.0 – iOS 27+ (`arm64`, single-screen iPhones/iPads and foldable iPhone Duo) without `Hypervisor.framework` *(iOS 26+ shipped in `v0.1.0`; iOS 18.0+ dual-mode JIT targeted in Phase 6 / `v0.2.0`)*
-**Target Guest:** Any mainline `aarch64` Linux distribution — Arch Linux (`v0.1.0` baseline), Debian, Ubuntu, Fedora, Alpine, openSUSE, Void, and standard ARM64 Live/Netinstall ISOs (Phase 6)
+**Target Platforms:** Non-jailbroken iOS 18.0 – iOS 27+ (`arm64`, single-screen iPhones/iPads and foldable iPhone Duo) without `Hypervisor.framework` *(iOS 18.0–27+ dual-mode JIT shipped in `v0.2.0`; Two-Tier Metal 2D KMS + Async VirGL 3D ANGLE Metal shipped in `v0.3.0`)*
+**Target Guest:** Any mainline `aarch64` Linux distribution — Arch Linux, Debian 13, Ubuntu 24.04/26.04 LTS, Fedora, Alpine, openSUSE, Void, and standard ARM64 Live/Netinstall ISOs
 
 ---
 
@@ -34,24 +34,32 @@ henge-linux/
 │   ├── henge_platform.{h,c}        # Darwin <104B sun_path formatter (iOS sandbox /tmp), TCR_EL1 decoder, RAM aligner, render & CNTVCT_EL0 guards
 │   ├── henge_txm_jit.{h,c}         # Dual-mode CLASSIC/TXM JIT, [4GiB, 64GiB) VA validator, 0x69 blessing, os_proc_available_memory(), LEDGER_NO_FOOTPRINT RAM
 │   ├── henge_brk.S                 # ARM64 brk #0x69 & brk #0xf00d traps with .cfi unwind & BTI landing pads
-│   ├── henge_virtio_gpu.{h,c}      # VirtIO-GPU 1.0 PCI (0x1af4:0x1050) 2D KMS + VESA EDID 1.4, 3D VirGL control-queue & atomic FNV-1a suspend.state snapshots
+│   ├── henge_gpu_surface.{h,c}     # 2-slot RAII IOSurfaceRef swapchains, 64 MiB LRU shader cache, Jetsam VRAM budgets & lock-free telemetry atomics
+│   ├── henge_virtio_gpu.{h,c}      # VirtIO-GPU 1.0 PCI (0x1af4:0x1050) 2D KMS + dirty rects + cursorq + EDID 1.4, 3D VirGL (4096 res, 1D PIPE_BUFFER) & atomic FNV-1a snapshots
+│   ├── henge_virgl_worker.{h,c}    # Dedicated 8 MiB-stack virgl_thread (libvirglrenderer 1.2.0 + ANGLE Metal EGL, ES 3.0 wrap sanitizer, IOSurface/MTLSharedEvent blits)
 │   ├── henge_qcow2.{h,c}           # Streaming QCOW2 v2/v3 unpacker (zlib/zstd, Extended L2), magic-byte detector, El Torito 2048B ISO check, APFS clone/compact
 │   └── henge_cidata.{h,c}          # In-app 2 MiB FAT16 CIDATA NoCloud cloud-init seed generator (POSIX /bin/sh compatible)
 ├── tools/
 │   └── hvsparse.c                  # Upstream-compatible "HVSPARSE" streaming [offset, len] extent packer/unpacker
-├── ios/                            # XcodeGen iOS 18.0–27+ SwiftUI app + embedded JIT helper extension (links libhengelinux.a)
-│   ├── project.yml                 # Generates HengeLinux.xcodeproj (iOS 18.0+, .hvsparse/.qcow2/.iso/.raw/.fd UTIs, extended-virtual-addressing, -lzstd)
+├── ios/                            # XcodeGen iOS 18.0–27+ SwiftUI app + embedded JIT helper extension (links libhengelinux.a + ANGLE/epoxy/virglrenderer)
+│   ├── project.yml                 # Generates HengeLinux.xcodeproj (v0.3.0, iOS 18.0+, multi-scene External Display, indirect input, 3D GPU static libs)
 │   ├── HengeLinux.entitlements     # increased-memory-limit, extended-virtual-addressing & group.io.hengelinux.shared
 │   ├── Resources/
 │   │   └── henge-jit.js            # StikDebug / LLDB GDB RSP brk #0x69 / #0xf00d TXM page-blessing script (CI also stages static aarch64 henge-guest-agent)
 │   ├── Sources/
-│   │   ├── VMStore.swift           # Multi-VM vm.json store, shared Documents/Firmware/, legacy ArchLinux migration, magic-byte importer & APFS clone/compact
+│   │   ├── DistroCatalog.swift     # In-app streaming ARM64 distro & EDK2 UEFI firmware downloader
+│   │   ├── VMStore.swift           # Multi-VM vm.json store, shared Documents/Firmware/, legacy ArchLinux migration, magic-byte importer & APFS clone/expand/compact
+│   │   ├── GraphicsAndTelemetryUI.swift # Unified HengeStatusTone, Jetsam Memory Bar, inline Graphics & Display settings, Live Performance HUD Pill, 3D Crash-Sentinel Banner
+│   │   ├── ExternalDisplayManager.swift # Dedicated external USB-C/HDMI/AirPlay CAMetalLayer scene, 720p–4K presets, dual-scanout & OLED Screen Saver
+│   │   ├── HardwareInputManager.swift   # GCKeyboard + GCMouse hardware HID bridge
+│   │   ├── AudioSessionManager.swift    # AVAudioSession speaker/Bluetooth/AirPlay routing
+│   │   ├── SerialTerminalEmulator.swift # Native CoreGraphics VT100/xterm-256color ttyAMA0 terminal emulator
 │   │   ├── HengeJITExtensionBridge.{h,mm} # ObjC++ NSExtension (com.apple.ar.viewer) XPC bridge with timeout/cancellation guards
-│   │   ├── HengeVMBridge.{h,mm}    # ObjC++/C++20 per-VM bridge: HvWinVmConfig, async hvsparse/QCOW2 unpack, live KMS resize, 2048B ISO, VirtIO/xHCI/PL011
-│   │   ├── HengeLinuxApp.swift     # Multi-VM launcher, Quick Create/CIDATA wizard, editable Guest RAM, StikDebug deep-link, SafariSheetView
-│   │   ├── SessionView.swift       # Metal framebuffer host (live KMS resize), interactive ttyAMA0 tab, hold-capable HID keys, Display Paste & context menu
-│   │   ├── HingeSensorView.swift   # Runtime UIHingeInteraction detector + live angle observer + single-screen clamshell preview toggle
-│   │   ├── MetalLifecycleGuard.swift # Synchronous NotificationCenter observer + C pthread_mutex render fence
+│   │   ├── HengeVMBridge.{h,mm}    # ObjC++/C++20 per-VM bridge: HvWinVmConfig, async hvsparse/QCOW2 unpack, live KMS resize, 2048B ISO, VirtIO/xHCI/PL011, Saved Log tail
+│   │   ├── HengeLinuxApp.swift     # 4-tab SwiftUI launcher (Machines, Hardware, Images & Disks, Information), DebugConsoleSheetView & SafariSheetView
+│   │   ├── SessionView.swift       # Overflow-safe session top bar, Metal display canvas, interactive ttyAMA0 tab, 6x3 Split Deck, OLED Screen Saver & unified special-keys bar
+│   │   ├── HingeSensorView.swift   # Runtime UIHingeInteraction detector + live angle observer + compact Split Deck toggle
+│   │   ├── MetalLifecycleGuard.swift # Synchronous NotificationCenter observer + C pthread_mutex render fence + synchronous VirGL drain
 │   │   ├── SelfDebugJITClient.swift  # Dual-mode CLASSIC/TXM JIT + selftest crash sentinel, LiveContainer detection, SideStore bundle ID & pairing sync
 │   │   └── HengeLinux-Bridging-Header.h
 │   └── JITExtension/
@@ -68,14 +76,19 @@ henge-linux/
 │   ├── sync_upstream.sh            # Initializes/fetches ammaarreshi/WindowsiOS and runs apply_upstream_patches.py
 │   ├── apply_upstream_patches.py   # Idempotently patches share.c, fb_metal.m, fb_display.c, audio_mac.c, jit_region.c, sysreg.c, translate.c (commpage check), dispatch.c, virtio_input/blk/gpu, xhci.c, acpi.c, winvirt.c, winvm.c
 │   ├── build_ios_deps.sh           # Cross-compiles iOS 18.0+ arm64 static deps (libffi, glib, libslirp, libintl, libpcre2-8, libzstd)
+│   ├── build_ios_gpu_deps.sh       # Cross-compiles & smoke-tests iOS 18.0+ arm64 static 3D GPU stack (ANGLE Metal, libepoxy 1.5.10, libvirglrenderer 1.2.0)
+│   ├── patch_gpu_deps.py           # Deterministic iOS 18.0 patches for ANGLE, libepoxy, and libvirglrenderer
+│   ├── make_icon.swift             # CoreGraphics procedural iOS dark-grey app icon generator
 │   ├── build_guest_image.sh        # Parameterized multi-distro image builder (arch, debian, alpine, void)
 │   ├── build_prebuilt_archlinux_arm64.sh # Headless GPT+FAT32 ESP+ext4 Arch Linux ARM64 rootfs & hvsparse image builder (< 2 GiB)
 │   └── provision_archlinux_arm64.sh # Interactive QEMU virt + EDK2 + NVMe Archboot AArch64 installer and hvsparse packer
 ├── tests/
-│   └── test_core.c                 # Unit tests for sun_path, MMU granules, RAM, render lock, JIT, VirtIO-GPU 2D/3D/EDID, QCOW2 (zlib/zstd/ExtL2), ISO 2048B, CIDATA & console
+│   └── test_core.c                 # Unit tests for sun_path, MMU granules, RAM, render lock, JIT, VirtIO-GPU 2D/3D/VirGL sanitizer/EDID, QCOW2, ISO 2048B, CIDATA & console
 ├── docs/
+│   ├── icon.svg                    # Vector HengeLinux dark-grey app icon
+│   ├── HengeLinux v3.0 GPU Architecture.pdf # Phase 7 / v0.3.0 GPU architecture blueprint
 │   ├── RESEARCH.md                 # Deep technical review of WindowsiOS and 6 Linux-on-iOS architectures
-│   └── SETUP.md                    # Step-by-step SideStore/AltStore, StikDebug, multi-distro QCOW2/ISO/CIDATA & troubleshooting guide
+│   └── SETUP.md                    # Step-by-step v0.3.0 SideStore/AltStore, StikDebug, VirGL 3D, multi-distro & troubleshooting guide
 └── .github/workflows/
     ├── ci.yml                      # Linux unit tests (zstd+musl), static aarch64 guest agent build, macOS iOS 18.0 .ipa build & Nightly release
     ├── prebuilt-guest-image.yml    # Parameterized ubuntu-24.04-arm guest builder (arch/debian/alpine/void) publishing to Nightly (latest-ipa)
@@ -327,3 +340,14 @@ Unmodified distributions require zero guest software once `virtio-input` and int
 | **iOS 18 Hardware** | 4/6 GB and 8 GB iOS 18 devices activate `CLASSIC` dual-map JIT via `stikdebug://enable-jit` (no `script-name`), pass `verify_rx_rw_selftest()`, bound RAM via `os_proc_available_memory()`, and survive VM stop/reboot without re-attaching. |
 | **iOS 26+ & LiveContainer** | TXM hardware (iOS 26/27) passes with stock StikDebug `universal.js`; pre-TXM iOS 26+ hardware escalates cleanly if `mprotect` selftest fails; LiveContainer (`LC_HOME_PATH`) skips `.appex` and routes via `stikdebug://`. |
 | **Multi-Distro QEMU ACPI 6.3 & iPhone** | Unmodified Debian 13, Ubuntu 24.04/26.04, Fedora Cloud, Alpine `nocloud`, openSUSE, Arch, Void, and a stock ARM64 Live/Netinstall ISO boot with `-machine virt,gic-version=3,acpi=on`, obtain `10.0.2.15` DHCP, receive `virtio-input` + interactive `ttyAMA0` input, and isolate per-VM `vars.fd` NVRAM. |
+
+---
+
+## 8. Phase 7 (`v0.3.0` Shipped): Two-Tier Metal GPU Acceleration & 4-Tab iOS UI Overhaul
+
+Phase 7 (`v0.3.0`) implements the full blueprint in [`docs/HengeLinux v3.0 GPU Architecture.pdf`](docs/HengeLinux%20v3.0%20GPU%20Architecture.pdf) and has been verified end-to-end on physical Apple Silicon iPhone hardware (iPhone 16 Pro / A18 Pro):
+
+- **Phase 0.3.0-A (Enhanced 2D VirtIO-GPU KMS):** Unified `HengeVirtioGpuDevice` ownership, native alpha-blended Metal hardware cursor quad, `TRANSFER_TO_HOST_2D` dirty-rect partial uploads, 60 Hz frame-hash bypass, and OLED Screen Saver local Metal presentation pause.
+- **Phase 0.3.0-B1 & B2 (Async VirGL 3D Metal Stack):** Dedicated `8 MiB`-stack `virgl_thread` (`host/henge_virgl_worker.{h,c}`), heap-owned `virgl_renderer_callbacks`, cross-compiled static `arm64-apple-ios18.0` **ANGLE** (`chromium/7578`), **libepoxy** `1.5.10`, and **libvirglrenderer** `1.2.0` (`scripts/build_ios_gpu_deps.sh`, `scripts/patch_gpu_deps.py`), `SUBMIT_3D` 32B virtqueue payload alignment, `4096` resources + 1D `PIPE_BUFFER` support, and empirical ES 3.0 `GL_CLAMP_TO_BORDER` / `GL_MIRROR_CLAMP_TO_EDGE` probe + in-place `henge_virgl_sanitize_cmd_stream()` wrap-mode sanitizer.
+- **Phase 0.3.0-C (Zero-Copy Surfaces, Shader Cache & Governance):** 2-slot RAII `IOSurfaceRef` + `MTLSharedEvent` swapchains (`host/henge_gpu_surface.{h,c}`), explicit sRGB encoding, bounded `64 MiB` LRU disk shader cache, Jetsam VRAM budgets (`256 / 512 / 1,024 MiB` + `320 MiB` floor), thermal step-down pacing (`.serious` → `40 Hz`, `.critical` → `30 Hz`), `120 Hz` ProMotion EDID, `4K UHD` external preset, and `num_scanouts = 2`.
+- **Phase 0.3.0-D (4-Tab iOS UI Overhaul & Wayland Desktop):** Four-tab SwiftUI launcher (**Machines**, **Hardware**, **Images & Disks**, **Information**), unified `HengeStatusTone` semantic colors, overflow-safe `SessionView` top bar, Live Performance HUD Pill, 5-frame 3D Crash-Sentinel Recovery Banner, Saved Log tail viewer, dark-grey native app icon (`scripts/make_icon.swift`), and `henge-install-desktop [--wayland|--x11]` (`labwc` + LXQt Wayland GLES2 or Openbox/Xorg + SDDM).

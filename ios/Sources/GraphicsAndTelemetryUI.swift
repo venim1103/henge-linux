@@ -2,6 +2,23 @@
 import SwiftUI
 import UIKit
 
+/// Unified semantic status tone used across all launcher readouts, pills, and indicators.
+enum HengeStatusTone {
+    case ready
+    case active
+    case warning
+    case neutral
+
+    var color: Color {
+        switch self {
+        case .ready: return .green
+        case .active: return .blue
+        case .warning: return .orange
+        case .neutral: return .secondary
+        }
+    }
+}
+
 /// Visual stacked memory bar breaking down Guest RAM + JIT Pool + GPU VRAM Reserve + Free Margin
 /// against the live iOS Jetsam ceiling (`os_proc_available_memory()`).
 struct ActionIconBadge: View {
@@ -23,14 +40,14 @@ struct InfoMetricRow: View {
     let value: String
     var systemImage: String? = nil
     var monospaced: Bool = false
-    var valueColor: Color = .secondary
+    var statusTone: HengeStatusTone = .neutral
 
     var body: some View {
         HStack(spacing: 10) {
             if let systemImage {
                 Image(systemName: systemImage)
                     .font(.system(size: 13))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(statusTone == .neutral ? AnyShapeStyle(.tertiary) : AnyShapeStyle(statusTone.color))
                     .frame(width: 20)
             }
             Text(title)
@@ -39,7 +56,7 @@ struct InfoMetricRow: View {
             Spacer(minLength: 8)
             Text(value)
                 .font(monospaced ? .caption.monospaced() : .subheadline)
-                .foregroundStyle(valueColor)
+                .foregroundStyle(statusTone.color)
                 .multilineTextAlignment(.trailing)
                 .lineLimit(2)
         }
@@ -51,7 +68,7 @@ struct InfoMetricRow: View {
 struct InfoBadgePill: View {
     let text: String
     var systemImage: String? = nil
-    var tint: Color = .secondary
+    var statusTone: HengeStatusTone = .neutral
 
     var body: some View {
         HStack(spacing: 4) {
@@ -63,10 +80,10 @@ struct InfoBadgePill: View {
                 .font(.caption2.weight(.medium))
                 .lineLimit(1)
         }
-        .foregroundStyle(tint)
-        .padding(.horizontal, 8)
+        .foregroundStyle(statusTone.color)
+        .padding(.horizontal, 7)
         .padding(.vertical, 4)
-        .background(tint.opacity(0.12), in: Capsule())
+        .background(statusTone.color.opacity(0.13), in: Capsule())
     }
 }
 
@@ -284,7 +301,8 @@ struct GraphicsDisplayConfigSections: View {
                 InfoMetricRow(
                     title: "Monitor Status",
                     value: externalDisplay.statusLabel,
-                    systemImage: "display"
+                    systemImage: "display",
+                    statusTone: externalDisplay.isExternalDisplayConnected ? .ready : .neutral
                 )
                 Picker("External Resolution", selection: $externalDisplay.resolutionPreset) {
                     ForEach(ExternalDisplayResolutionPreset.allCases) { preset in

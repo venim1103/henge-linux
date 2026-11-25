@@ -92,6 +92,7 @@ final class SelfDebugJITClient: ObservableObject {
     }
     @Published private(set) var extensionDiagnostic: String?
     @Published private(set) var hasPairingFile: Bool = false
+    @Published private(set) var isPairingFileValid: Bool = false
     @Published private(set) var pairingStatusText: String = "Missing (Optional)"
     @Published private(set) var diskStatusText: String = "Missing (Import archlinux.hvsparse)"
     @Published private(set) var uefiStatusText: String = "Missing (Import code.fd & vars.fd)"
@@ -234,25 +235,22 @@ final class SelfDebugJITClient: ObservableObject {
             henge-linux iOS Sandbox Container
             =================================
 
-            1. Arch Linux Guest Files (`Machines/ArchLinux/`):
-               - `archlinux.hvsparse` (or `archlinux.img`)
-               - `code.fd` (64 MiB EDK2 AArch64 UEFI code firmware)
-               - `vars.fd` (64 MiB EDK2 AArch64 UEFI variable store)
-               Import all three via the in-app "Import Guest Files..." button.
+            1. Guest Disk & UEFI Firmware (`Machines/<VM>/` & `Firmware/`):
+               - Use the "Machines" tab -> "Download Distros & Firmware" or the "Images & Disks" tab ->
+                 "Import Disk, ISO, or Firmware" to add `.hvsparse`, `.qcow2`, `.img`, `.iso`, `code.fd`, and `vars.fd`.
 
-            2. TXM JIT Setup (StikDebug + LocalDevVPN):
-               - Save `henge-jit.js` into `Files -> On My iPhone -> StikDebug`.
-               - Long-press HengeLinux in StikDebug -> Assign Script -> `henge-jit.js`.
+            2. JIT Acceleration (iOS 18.0 - 27+ via StikDebug + LocalDevVPN):
+               - Enable LocalDevVPN and tap "Enable JIT via StikDebug" in the "Machines" tab.
                - Optional: import `pairing.plist` (or `.mobiledevicepairing`) into `Documents/pairing.plist`.
 
-            3. Guest RAM & LXQt Desktop Quick-Start:
-               - Customize Guest RAM (512-10240 MiB; default 1664 MiB) before booting.
-               - Inside Arch Linux (`tty1`), run `henge-install-desktop` to install LXQt + SDDM on `vt2`
-                 with full touch, Split Deck trackpad, and keyboard input via `/dev/uinput`.
-               - Press Ctrl+Alt+F1 (or `chvt 1`) to return to the root console, Ctrl+Alt+F2 for LXQt.
+            3. Hardware, VirGL 3D & Desktop Quick-Start:
+               - Configure CPU/RAM, VirGL 3D / 2D VirtIO-GPU KMS, VRAM ceiling, and refresh rate in the "Hardware" tab.
+               - Inside Linux, install optional guest tools + desktop via:
+                 curl -fsSL http://10.0.2.4/.henge/guest-tools/install.sh | sudo sh
+                 sudo henge-install-desktop --wayland   (or --x11)
 
             4. Host <-> Guest WebDAV Shared Folder (`Shared/`):
-               Mount inside Arch Linux via:
+               Mount inside Linux via:
                rclone mount :webdav: /mnt/ios-share --webdav-url http://10.0.2.4/ --webdav-vendor other --daemon
             """
             try? text.write(to: rootReadme, atomically: true, encoding: .utf8)
@@ -282,13 +280,16 @@ final class SelfDebugJITClient: ObservableObject {
         if hasPairingFile {
             let activeURL = localExists ? pairingFileURL : (appGroupPairingFileURL ?? pairingFileURL)
             if Self.isValidPropertyListDictionary(at: activeURL) {
+                isPairingFileValid = true
                 pairingStatusText = groupExists
                     ? "pairing.plist (Valid · App Group Synced)"
                     : "pairing.plist (Valid · Local Container)"
             } else {
+                isPairingFileValid = false
                 pairingStatusText = "pairing.plist (Present)"
             }
         } else {
+            isPairingFileValid = false
             pairingStatusText = "Missing (Optional · Tap Import)"
         }
 

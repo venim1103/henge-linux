@@ -542,13 +542,20 @@ struct HengeLinuxApp: App {
         }
     }
 
-    private var jitBadgeColor: Color {
+    private var jitStatusTone: HengeStatusTone {
         switch jitClient.state {
-        case .blessed: return .green
-        case .requestingExtension: return .blue
-        case .fallbackUntethered: return .orange
-        case .idle: return .secondary
+        case .blessed: return .ready
+        case .requestingExtension: return .active
+        case .fallbackUntethered: return .warning
+        case .idle: return .neutral
         }
+    }
+
+    private var pairingStatusTone: HengeStatusTone {
+        if jitClient.isPairingFileValid {
+            return .ready
+        }
+        return jitClient.hasPairingFile ? .warning : .neutral
     }
 
     private func startSelectedMachine() {
@@ -753,19 +760,20 @@ struct HengeLinuxApp: App {
                             InfoBadgePill(
                                 text: jitStatusLabel,
                                 systemImage: "bolt.fill",
-                                tint: jitBadgeColor
+                                statusTone: jitStatusTone
                             )
                         }
 
+                        let uefiReady = vmStore.isUefiReady(for: activeVM)
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 6) {
                                 InfoBadgePill(text: "\(effectiveRamMiB) MiB RAM", systemImage: "memorychip")
                                 InfoBadgePill(text: "\(activeVM.cpuCount) vCPU", systemImage: "cpu")
                                 InfoBadgePill(text: shortGpuBackendLabel, systemImage: "display")
                                 InfoBadgePill(
-                                    text: vmStore.hasSharedFirmware ? "UEFI Ready" : "Firmware Needed",
-                                    systemImage: "checkmark.shield",
-                                    tint: vmStore.hasSharedFirmware ? .green : .orange
+                                    text: uefiReady ? "UEFI Ready" : "Firmware Needed",
+                                    systemImage: uefiReady ? "checkmark.shield" : "exclamationmark.triangle",
+                                    statusTone: uefiReady ? .ready : .warning
                                 )
                             }
                         }
@@ -795,12 +803,13 @@ struct HengeLinuxApp: App {
                         title: "JIT Status",
                         value: "\(jitStatusLabel) · \(SelfDebugJITClient.activeJitModeLabel)",
                         systemImage: "bolt.circle",
-                        valueColor: jitBadgeColor
+                        statusTone: jitStatusTone
                     )
                     InfoMetricRow(
                         title: "Pairing File",
                         value: jitClient.pairingStatusText,
-                        systemImage: "key"
+                        systemImage: "key",
+                        statusTone: pairingStatusTone
                     )
                     if let diag = jitClient.extensionDiagnostic, !diag.isEmpty {
                         Text(diag)
@@ -1256,6 +1265,8 @@ struct HengeLinuxApp: App {
                 activeNoticeBannerSection
 
                 Section {
+                    let diskReady = vmStore.isPrimaryDiskReady(for: activeVM)
+                    let uefiReady = vmStore.isUefiReady(for: activeVM)
                     InfoMetricRow(
                         title: "Machine",
                         value: activeVM.name,
@@ -1264,7 +1275,8 @@ struct HengeLinuxApp: App {
                     InfoMetricRow(
                         title: "Primary Disk",
                         value: vmStore.diskStatusText(for: activeVM),
-                        systemImage: "internaldrive"
+                        systemImage: "internaldrive",
+                        statusTone: diskReady ? .ready : .warning
                     )
                     InfoMetricRow(
                         title: "Virtual Capacity",
@@ -1275,12 +1287,14 @@ struct HengeLinuxApp: App {
                     InfoMetricRow(
                         title: "UEFI Firmware",
                         value: vmStore.uefiStatusText(for: activeVM),
-                        systemImage: "cpu"
+                        systemImage: "cpu",
+                        statusTone: uefiReady ? .ready : .warning
                     )
                     InfoMetricRow(
                         title: "Background Snapshot",
                         value: hasSnapshot ? "Saved (suspend.state)" : "None",
-                        systemImage: "clock.arrow.circlepath"
+                        systemImage: "clock.arrow.circlepath",
+                        statusTone: hasSnapshot ? .ready : .neutral
                     )
                     if let media = activeVM.secondaryMediaFileName, !media.isEmpty {
                         HStack(spacing: 10) {
@@ -1443,7 +1457,12 @@ struct HengeLinuxApp: App {
                 }
 
                 Section("Shared UEFI Firmware (Required Once)") {
-                    LabeledContent("EDK2 Firmware", value: vmStore.hasSharedFirmware ? "Installed (Shared)" : "Not Installed")
+                    InfoMetricRow(
+                        title: "EDK2 Firmware",
+                        value: vmStore.hasSharedFirmware ? "Installed (Ready · Shared)" : "Not Installed",
+                        systemImage: "cpu",
+                        statusTone: vmStore.hasSharedFirmware ? .ready : .warning
+                    )
                     Button {
                         Task {
                             do {
@@ -1708,12 +1727,22 @@ struct HengeLinuxApp: App {
                         monospaced: true
                     )
                     InfoMetricRow(title: "iOS Version", value: UIDevice.current.systemVersion, systemImage: "iphone")
-                    InfoMetricRow(title: "VM Engine", value: HengeVMBridge.shared.isEngineLinked ? "HengeVM Linked" : "Host Substrate Only", systemImage: "gearshape.2")
+                    InfoMetricRow(
+                        title: "VM Engine",
+                        value: HengeVMBridge.shared.isEngineLinked ? "HengeVM Linked" : "Host Substrate Only",
+                        systemImage: "gearshape.2",
+                        statusTone: HengeVMBridge.shared.isEngineLinked ? .ready : .warning
+                    )
                     InfoMetricRow(title: "JIT Mode", value: SelfDebugJITClient.activeJitModeLabel, systemImage: "bolt")
                     InfoMetricRow(title: "JIT Pool", value: "\(SelfDebugJITClient.recommendedJitPoolMiB) MiB", systemImage: "memorychip", monospaced: true)
                     InfoMetricRow(title: "Aligned Guest RAM", value: "\(alignedBytes) B", systemImage: "rectangle.grid.2x2", monospaced: true)
                     InfoMetricRow(title: "Host Bridge", value: "http://10.0.2.4/.henge/", systemImage: "network", monospaced: true)
-                    InfoMetricRow(title: "QCOW2 Zstd", value: henge_qcow2_has_zstd() ? "Enabled (libzstd)" : "zlib Only", systemImage: "archivebox")
+                    InfoMetricRow(
+                        title: "QCOW2 Zstd",
+                        value: henge_qcow2_has_zstd() ? "Enabled (libzstd)" : "zlib Only",
+                        systemImage: "archivebox",
+                        statusTone: henge_qcow2_has_zstd() ? .ready : .neutral
+                    )
                     InfoMetricRow(title: "LiveContainer", value: SelfDebugJITClient.isRunningInLiveContainer ? "Detected (Use StikDebug)" : "No", systemImage: "cube")
                 }
 
@@ -1756,7 +1785,7 @@ struct HengeLinuxApp: App {
     private var jitStatusLabel: String {
         switch jitClient.state {
         case .idle:
-            return "Ready"
+            return "Standby"
         case .requestingExtension:
             return "Blessing Pages..."
         case .blessed(let poolMiB, _):

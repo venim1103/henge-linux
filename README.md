@@ -1,123 +1,136 @@
-<p align="center">
-  <img src="docs/icon.svg" width="120" height="120" alt="HengeLinux">
-</p>
+<div align="center">
 
-# HengeLinux (`henge-linux`) — Full-System ARM64 Linux Virtual Machine for iOS
+<img src="docs/icon.svg" width="128" height="128" alt="HengeLinux — ARM64 Linux Virtual Machine for iOS">
+
+# HengeLinux
+
+**Run full-system ARM64 (`aarch64`) Linux virtual machines natively on non-jailbroken iPhone & iPad (iOS 18 – iOS 27+)**
+*Direct ARM64-to-ARM64 JIT · Hardware-Accelerated VirGL 3D Metal (ANGLE) · Zero QEMU TCG · No Jailbreak Required*
 
 [![CI](https://github.com/venim1103/henge-linux/actions/workflows/ci.yml/badge.svg)](https://github.com/venim1103/henge-linux/actions/workflows/ci.yml)
-[![Releases](https://img.shields.io/github/v/release/venim1103/henge-linux?include_prereleases&label=Release)](https://github.com/venim1103/henge-linux/releases)
-[![Nightly](https://img.shields.io/badge/Nightly-latest--ipa-blue)](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa)
-[![Platform](https://img.shields.io/badge/iOS-18.0%20--%2027%2B%20(arm64)-black)](docs/SETUP.md)
-[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPLv3-green.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/venim1103/henge-linux?include_prereleases&label=Release&color=2563EB)](https://github.com/venim1103/henge-linux/releases)
+[![Nightly](https://img.shields.io/badge/Nightly-latest--ipa-3B82F6)](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa)
+[![iOS](https://img.shields.io/badge/iOS-18.0%20--%2027%2B%20(arm64)-222327)](docs/SETUP.md)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPLv3-10B981.svg)](LICENSE)
 
-**Run full-system ARM64 (`aarch64`) Linux virtual machines natively on non-jailbroken iPhone and iPad (iOS 18.0 – iOS 27+) — without `Hypervisor.framework` or QEMU TCG.**
+[**Download v0.3.0 Release**](https://github.com/venim1103/henge-linux/releases) · [**Nightly IPA (`latest-ipa`)**](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) · [**Setup Guide (`docs/SETUP.md`)**](docs/SETUP.md) · [**Architecture (`PLAN.md`)**](PLAN.md) · [**Research (`docs/RESEARCH.md`)**](docs/RESEARCH.md)
 
-**HengeLinux** is an open-source iOS Linux virtualization app powered by the direct ARM64-to-ARM64 dynamic binary translation (DBT) engine and Stage-1 software MMU of [`ammaarreshi/WindowsiOS`](https://github.com/ammaarreshi/WindowsiOS) and [`Leviidev/Henge`](https://github.com/Leviidev/Henge) (`HengeVM`). Boot **Arch Linux, Debian, Ubuntu, Fedora, Alpine Linux, openSUSE, Void Linux, or any ARM64 UEFI Live/Netinstall ISO** with full Linux kernel (`EL1`) fidelity, Metal display output, PCIe VirtIO devices, in-app QCOW2 unpacking, and Cloud-Init (`CIDATA`) provisioning—sideloadable via **SideStore** or **AltStore** with **StikDebug** JIT.
-
-> **Downloads & Documentation:**
-> - **Versioned Releases (Recommended):** [All Releases](https://github.com/venim1103/henge-linux/releases) (`v0.2.0`+)
-> - **Nightly Builds (Bleeding-Edge `main`):** [Nightly (`latest-ipa`)](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) (`HengeLinux-unsigned.ipa`, `archlinux.hvsparse`, `code.fd`, `vars.fd`) · [GitHub Actions CI](https://github.com/venim1103/henge-linux/actions)
-> - [`docs/SETUP.md`](docs/SETUP.md) — Complete iPhone/iPad sideloading guide (SideStore/AltStore, StikDebug JIT on iOS 18 & iOS 26/27+, Multi-VM & QCOW2/`CIDATA` cloud images, 2D VirtIO-GPU KMS, LXQt desktop, and Safari OAuth / WebDAV bridges).
-> - [`PLAN.md`](PLAN.md) — Engineering architecture, module map, platform invariants, and Phase 1–6 roadmap.
-> - [`HANDOVER.md`](HANDOVER.md) — Repository state, file inventory, and CI build guide.
-> - [`docs/RESEARCH.md`](docs/RESEARCH.md) — Technical comparison of `WindowsiOS`/`HengeVM` and Linux-on-iOS virtualization architectures.
-> - [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) — GPLv3 §5a / §6(d) attribution and license provenance.
+</div>
 
 ---
 
-## Key Features
+**HengeLinux** (`henge-linux`) is an open-source **iOS Linux virtual machine app** that boots unmodified **ARM64 Linux kernels (`EL1`)** on stock, non-jailbroken iPhones and iPads without `Hypervisor.framework` or QEMU TCG. Powered by the direct ARM64-to-ARM64 dynamic binary translation (DBT) engine and Stage-1 software MMU of [`ammaarreshi/WindowsiOS`](https://github.com/ammaarreshi/WindowsiOS) and [`Leviidev/Henge`](https://github.com/Leviidev/Henge) (`HengeVM`), HengeLinux runs **Arch Linux, Debian 13, Ubuntu 24.04/26.04 LTS, Fedora, Alpine Linux, openSUSE, Void Linux, and standard ARM64 UEFI Live/Netinstall ISOs** with **VirGL 3D Metal graphics**, **USB-C / HDMI external display output**, **native hardware keyboard/mouse**, and **in-app distro downloads** — sideloadable with **SideStore** or **AltStore** and **StikDebug** JIT.
 
-- **Direct ARM64-to-ARM64 JIT (No QEMU TCG Overhead):** Translates unprivileged `aarch64` instructions directly to Apple Silicon with hot/cold block splitting, inline ARMv8.1 LSE atomics, PAC stripping, and dual-mode 4 KiB / 16 KiB Stage-1 software MMU (`HV_TLB_PAGE_BITS=12|14`).
-- **iOS 18.0 – iOS 27+ Dual-Mode JIT (`StikDebug` Ready):** Automatically uses **Classic Dual-Map JIT** on iOS 18 (`vm_remap` + `vm_protect(RX)`) and **TXM Broker JIT** on iOS 26/27+ (compatible with stock StikDebug `universal.js` and `henge-jit.js`), with one-tap `stikdebug://enable-jit` deep-linking, `UserDefaults` selftest crash auto-escalation, **LiveContainer** detection, and live `os_proc_available_memory()` Jetsam headroom advisories.
-- **Multi-VM Manager, In-App Distro Gallery & Sparse Disk Expansion:** Stream official ARM64 cloud images (**Arch, Debian 13, Ubuntu 24.04/26.04, Alpine 3.23, Fedora 43, openSUSE**) and UEFI firmware directly inside the app with zero-RAM buffering, unpack QCOW2 v2/v3 (`zlib` + `libzstd`) on-device, generate distro-aware 2 MiB FAT16 `CIDATA` seeds, expand APFS sparse disks up to 128 GiB (with automatic `henge-grow-root`), clone via APFS `clonefile`, and compact via `F_PUNCHHOLE`.
-- **Standard UEFI + ACPI 6.3 + Two-Tier Metal GPU & PCIe VirtIO Hardware:** Boots unmodified ARM64 Linux kernels using inbox drivers for NVMe 1.4, **2D UEFI GOP**, **Enhanced 2D VirtIO-GPU KMS** (native alpha-blended Metal hardware cursor, `TRANSFER_TO_HOST_2D` dirty-rect partial uploads, 60 Hz hash bypass, dynamic EDID 1.4), or **Async VirGL 3D Metal** (`0x1af4:0x1050` → dedicated `virgl_thread` → static `libvirglrenderer` `1.2.0` + `libepoxy` `1.5.10` + Metal-only Google `ANGLE` → zero-copy `IOSurfaceRef` + `MTLSharedEvent` swapchains, explicit sRGB encoding, 64 MiB LRU shader cache, Jetsam VRAM guardrails, thermal step-down pacing, and opt-in 120 Hz ProMotion EDID), **VirtIO Input** (keyboard with `EV_REP` + direct absolute tablet), secondary read-only **VirtIO Block** (`512B` `CIDATA`/isohybrid & `2048B` pure El Torito ISOs), **VirtIO-Net** (`libslirp` NAT with clean stop teardown), toggleable **USB 3.0 xHCI**, and **Intel ICH6 HD Audio** (`CoreAudio` + `AVAudioSession` stereo speaker/Bluetooth routing).
-- **Native External Display Output, Dual-Scanout & OLED Burn-In Screen Saver:** Plug into a USB-C / HDMI / AirPlay monitor for a dedicated external `CAMetalLayer` scene (`UIWindowSceneSessionRoleExternalDisplayNonInteractive`) with live VirtIO-GPU KMS resolution presets (`Auto`, `720p`, `900p`, `1080p`, `1440p`, `4K UHD`), optional `num_scanouts = 2` extended dual-scanout, an iPhone Control Deck, VM keep-awake (`isIdleTimerDisabled`), and a pure `#000000` drifting OLED Screen Saver (with local Metal presentation pause when no external monitor is attached and configurable auto-dim `Manual / 1m / 3m / 5m`).
-- **v0.3.0 SwiftUI Controls, Wayland GLES2 Desktop & Native `ttyAMA0` Terminal:** Monitor Jetsam budgets in real time via the stacked **Unified VM Memory & Jetsam Bar**, customize per-VM GPU backend, VRAM ceiling, refresh cadence (`30/60/120 Hz`), and shader cache in **Graphics & Display Settings**, toggle the opt-in **Live Performance HUD Pill** (FPS, backend, GPU VRAM, thermal state), recover automatically via the 5-frame **3D Crash-Sentinel Banner**, switch anytime to the CoreGraphics VT100/xterm-256color `ttyAMA0` terminal (`Fit CxR`, SGR mouse), use immediate `GCKeyboard`/`GCMouse` hardware input or the 6×3 Split Deck, and install offline guest tools + **`sudo henge-install-desktop [--wayland|--x11]`** (`labwc` + LXQt Wayland GLES2 or Openbox/Xorg + SDDM) via `http://10.0.2.4/.henge/guest-tools/install.sh`.
+---
+
+## What's New in `v0.3.0`
+
+- **Hardware-Accelerated VirGL 3D on Apple Silicon Metal:** Dedicated asynchronous `virgl_thread` running statically linked `libvirglrenderer 1.2.0` + `libepoxy 1.5.10` + Metal-only Google **ANGLE** (`OpenGL ES 3.0`), presenting zero-copy double-buffered `IOSurfaceRef` + `MTLSharedEvent` frames directly to `CAMetalLayer`, complete with a `64 MiB` persistent LRU Metal shader cache, ES 3.0 sampler wrap-mode sanitization, Jetsam VRAM budgets, thermal step-down pacing, and a 5-frame auto-recovery crash sentinel.
+- **Enhanced 2D VirtIO-GPU KMS:** Native alpha-blended Metal hardware cursor (`cursorq`), `TRANSFER_TO_HOST_2D` dirty-rect partial uploads, 60 Hz frame-hash bypass, dynamic VESA EDID 1.4 (`30 / 60 / 120 Hz` ProMotion), and dual-scanout (`num_scanouts = 2`) support.
+- **Redesigned 4-Tab iOS Launcher & Overflow-Safe Session Bar:** Clean separation across **Machines**, **Hardware**, **Images & Disks**, and **Information** tabs with unified semantic status colors, press-and-hold APFS VM cloning, an auto-detected **Custom** CPU/RAM profile, inline Graphics & Display controls, a live **Jetsam Memory Breakdown Bar**, an opt-in **Live Performance HUD Pill** (FPS / backend / VRAM / thermal state), and a native dark-grey iOS app icon.
+- **Wayland GLES2 & X11 Linux Desktops:** One-command `sudo henge-install-desktop [--wayland|--x11]` supporting `labwc` + LXQt Wayland (`WLR_RENDERER=gles2`) or Openbox/Xorg + SDDM with automatic display-adapter switching (`henge-xorg-autodetect`).
+
+---
+
+## Highlights & Capabilities
+
+| Category | Capabilities |
+| :--- | :--- |
+| **CPU & Memory Engine** | Direct **ARM64-to-ARM64 DBT JIT** (hot/cold block splitting, inline ARMv8.1 LSE atomics, PAC stripping) and dual-mode **4 KiB / 16 KiB Stage-1 software MMU** (`HV_TLB_PAGE_BITS=12\|14`). |
+| **iOS 18 – 27+ JIT & Jetsam** | Automatic **Classic Dual-Map JIT** (iOS 18) and **TXM Broker JIT** (iOS 26/27+, compatible with stock StikDebug `universal.js` & `henge-jit.js`), one-tap `stikdebug://enable-jit`, LiveContainer detection, and live `os_proc_available_memory()` Jetsam budgeting. |
+| **Two-Tier Metal GPU** | Choose per VM between **3D VirtIO-GPU VirGL (ANGLE Metal)**, **2D VirtIO-GPU KMS (EDID + Metal)**, or **2D UEFI GOP** with configurable VRAM ceilings (`Auto / 256 / 512 / 1,024 MiB`), `30 / 60 / 120 Hz` refresh, and Metal shader cache management. |
+| **Multi-VM & Storage** | Isolated `Documents/Machines/<ID>/vm.json` VMs, shared `Documents/Firmware/`, in-app ARM64 Distro & Firmware Downloader, on-device **QCOW2 v2/v3** (`zlib` + `libzstd`) unpacking, offline FAT16 **Cloud-Init (`CIDATA`)** seeder, APFS sparse expansion up to `128 GiB` (`henge-grow-root`), APFS Copy-on-Write cloning, and `F_PUNCHHOLE` compaction. |
+| **Virtual Hardware** | Standard **EDK2 UEFI + ACPI 6.3 + PCIe GPEX**: NVMe 1.4, `virtio-gpu` (`0x1af4:0x1050`), `virtio-input` (keyboard + absolute tablet), read-only `virtio-blk` (`512B` `CIDATA` & `2048B` El Torito ISOs), `virtio-net` (`libslirp` NAT), toggleable USB 3.0 `xhci`, and Intel ICH6 HD Audio (`CoreAudio` + `AVAudioSession`). |
+| **Display, Terminal & Input** | Native **USB-C / HDMI / AirPlay External Display** scene (up to `4K UHD` + dual-scanout), drifting `#000000` **OLED Burn-In Screen Saver**, native CoreGraphics **VT100 / xterm-256color `ttyAMA0` terminal**, `GCKeyboard` + `GCMouse` hardware HID, 6×3 Split Deck trackpad, and offline **Safari OAuth / WebDAV** guest agent (`10.0.2.4/.henge/`). |
 
 ---
 
 ## Supported ARM64 Linux Distributions
 
-| Track | Distributions | How to Boot on iPhone / iPad |
+| Track | Distributions | How to Get Started |
 | :--- | :--- | :--- |
-| **Pre-Built `.hvsparse` Images** | **Arch Linux ARM64** *(with one-command `henge-install-desktop` LXQt + SDDM)* | Download `archlinux.hvsparse`, `code.fd`, and `vars.fd` from [Releases](https://github.com/venim1103/henge-linux/releases) or [Nightly (`latest-ipa`)](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) and import in-app. |
-| **Official ARM64 Cloud Images (`.qcow2` / `.img`)** | **Debian 13**, **Ubuntu 24.04 / 26.04 LTS**, **Fedora Cloud Base**, **Alpine Linux**, **openSUSE** | Download the official ARM64 UEFI `.qcow2`/`.img` on your iPhone, import it directly into a new VM, and tap **Generate Cloud-Init Seed (`CIDATA`)...**. |
-| **Standard ARM64 Live / Netinstall ISOs** | **NixOS**, **Gentoo**, **Kali**, **Rocky / AlmaLinux**, **Void**, **Archboot** | Create a **Blank Disk + ARM64 Live ISO** VM, attach any ARM64 `.iso` as secondary media, install onto `/dev/nvme0n1`, and eject. |
+| **In-App Distro Gallery (Fastest)** | **Arch Linux**, **Debian 13**, **Ubuntu 24.04 / 26.04 LTS**, **Fedora 43**, **Alpine 3.23**, **openSUSE** | Open **Machines → Download Distros & Firmware** to stream EDK2 UEFI + your distro directly on-device with automatic `CIDATA` provisioning. |
+| **Official Cloud Images (`.qcow2` / `.img`)** | Debian, Ubuntu, Fedora, Alpine, openSUSE, or custom URLs | Create a VM in **Machines → New ARM64 Linux VM**, import via **Images & Disks → Import Disk, ISO, or Firmware**, and tap **Generate Cloud-Init CIDATA Seed**. |
+| **ARM64 Live / Netinstall ISOs** | **NixOS**, **Gentoo**, **Kali**, **Rocky / AlmaLinux**, **Void**, **Archboot** | Create a **Blank Disk + ARM64 Live ISO** VM, import any ARM64 `.iso`, install onto `/dev/nvme0n1`, and tap **Eject** on Secondary Media. |
 
 ---
 
-## Quick Sideload & Setup (No Mac Required)
+## Quick Start (4 Steps — No Mac Required)
 
-Download a tagged [Release](https://github.com/venim1103/henge-linux/releases) (recommended) or the rolling [Nightly (`latest-ipa`)](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) build (see [`docs/SETUP.md`](docs/SETUP.md) for the full walkthrough):
+See [`docs/SETUP.md`](docs/SETUP.md) for the complete guide, desktop instructions, and troubleshooting.
 
-1. **Install `HengeLinux-unsigned.ipa` with SideStore or AltStore:**
-   - Download `HengeLinux-unsigned.ipa` on your iPhone or iPad (iOS 18.0 – iOS 27+), sign/install with **SideStore** or **AltStore**, and launch it once.
-2. **Import Shared UEFI Firmware & a Linux Image:**
-   - Download `code.fd` and `vars.fd` from [Releases](https://github.com/venim1103/henge-linux/releases) (or [Nightly](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa)), plus either `archlinux.hvsparse` or any official ARM64 `.qcow2` / `.iso`.
-   - Inside **HengeLinux**, select a VM (or tap **New ARM64 Linux VM...**), tap **Import Guest Files...**, and for cloud images tap **Generate Cloud-Init Seed (`CIDATA`)...**.
+1. **Sideload `HengeLinux-unsigned.ipa`:**
+   - Download `HengeLinux-unsigned.ipa` from [Releases](https://github.com/venim1103/henge-linux/releases) (recommended) or [Nightly (`latest-ipa`)](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa), then sign and install via **SideStore** or **AltStore** on iOS `18.0` – `27+`.
+2. **Download UEFI Firmware & a Linux Distro:**
+   - Open the **Machines** tab → tap **Download Distros & Firmware** → download **UEFI Firmware** once (`code.fd` + `vars.fd`), then download **Arch Linux** or any supported ARM64 cloud distro (or import local `.hvsparse` / `.qcow2` / `.img` / `.iso` files in **Images & Disks**).
 3. **Enable JIT with StikDebug + LocalDevVPN:**
-   - Turn on **LocalDevVPN** and tap **Enable JIT via StikDebug** inside HengeLinux (`stikdebug://enable-jit`).
+   - Turn on **LocalDevVPN** and tap **Enable JIT via StikDebug** in the **Machines** tab.
    - **iOS 18:** Activates `Classic Dual-Map` JIT directly (no script needed).
-   - **iOS 26/27+ (TXM):** Works with stock StikDebug `universal.js` out of the box, or assign [`ios/Resources/henge-jit.js`](https://raw.githubusercontent.com/venim1103/henge-linux/main/ios/Resources/henge-jit.js) via **Long-Press `HengeLinux` → Assign Script**.
-4. **Boot Linux:**
-   - Adjust **Guest RAM (MiB)** (`512`–`10,240 MiB` with live Jetsam advisories), pick **2D UEFI GOP (Metal)** or **2D VirtIO-GPU KMS (EDID + Metal)**, and tap **Boot**.
-   - Switch between the **Metal Display** and **Serial Terminal (`ttyAMA0`)** tabs anytime, or install optional offline guest integrations (`xdg-open`, clipboard, WebDAV) with:
+   - **iOS 26/27+ (TXM):** Works out of the box with stock `universal.js`, or assign [`ios/Resources/henge-jit.js`](https://raw.githubusercontent.com/venim1103/henge-linux/main/ios/Resources/henge-jit.js) via **Long-Press `HengeLinux` → Assign Script**.
+4. **Configure Hardware & Boot:**
+   - Open the **Hardware** tab to set **RAM / vCPUs** (with live Jetsam breakdown) and pick **3D VirtIO-GPU VirGL (ANGLE Metal)**, **2D VirtIO-GPU KMS**, or **2D UEFI GOP**.
+   - Return to **Machines** and tap **Boot**. Install optional offline guest tools and a graphical desktop anytime inside Linux:
      ```sh
      curl -fsSL http://10.0.2.4/.henge/guest-tools/install.sh | sudo sh
+     sudo henge-install-desktop --wayland   # or --x11 for Xorg + LXQt
      ```
 
 ---
 
-## Why `henge-linux`?
+## Target Devices & Recommended Memory
 
-Stock iOS 16.4+ restricts `com.apple.developer.kernel.hypervisor` on non-jailbroken devices, forcing App Store emulators (such as UTM SE) onto QEMU's slow threaded interpreter (`TCI`) while subjecting sideloaded VMs to ~3 GB Jetsam terminations and iOS 26/27 Trusted Execution Monitor (`TXM`) `PROT_EXEC` blocks.
-
-`henge-linux` avoids cross-architecture IR translation entirely:
-
-- **Same-Architecture ARM64-to-ARM64 Block Translation (`core/translate.c`):** Executes unprivileged user-mode ARM64 instructions directly on host silicon with hot/cold block splitting, inline ARMv8.1 LSE atomics, PAC stripping, and host scratch register allocation (`x6`, `x7`, `x15` free; guest `x6`, `x7`, `x15`, `x18`, `x28` stored in `HvCpu`).
-- **Dual-Mode 16 KiB / 4 KiB Stage-1 Software MMU (`core/mmu.c`):** Emulates VMSAv8-64 `EL1&0` translation across 4 KiB, 16 KiB, and 64 KiB granules (`granule_bits()`), supporting both `HV_TLB_PAGE_BITS=12` (universal compatibility for 4 KiB and 64 KiB Linux kernels) and `HV_TLB_PAGE_BITS=14` (4x TLB reach for `CONFIG_ARM64_16K_PAGES=y` kernels).
-- **Zero-Driver-Injection Virtual Motherboard (`devices/` & `host/`):** UEFI (EDK2 `ArmVirtQemu`) + ACPI 6.3 + PCIe GPEX with NVMe 1.4, `virtio-gpu` 2D KMS + EDID 1.4, `virtio-input` keyboard/tablet, `virtio-blk`, `virtio-net` (`libslirp`), toggleable `xhci`, and ICH6 HD Audio (`CoreAudio`).
-- **Unified iOS 18.0 – iOS 27+ JIT & Live Jetsam Budgeting (`host/henge_txm_jit.c`):** Automatically selects `CLASSIC` dual-map JIT (iOS 18) or `TXM_BROKER` (iOS 26/27+), scales the JIT pool (`192`/`256`/`384 MiB`), and computes live available memory via `os_proc_available_memory()`.
+| Device Class | Example Hardware | Recommended Guest RAM | Notes |
+| :--- | :--- | :--- | :--- |
+| **iPhone (4–6 GB RAM)** | iPhone 13 / 14 / 15 (`iOS 18+`) | **1,024 – 1,536 MiB** *(192–256 MiB JIT)* | Best with **2D VirtIO-GPU KMS** or **2D GOP** + `ttyAMA0` terminal |
+| **iPhone Pro (8 GB RAM)** | iPhone 15 Pro / 16 Pro (`A18 Pro`) | **1,664 – 2,048 MiB** *(standard)* / **2,560 MiB** *(entitled)* | Full **VirGL 3D Metal** LXQt/Wayland desktop + Split Deck / external monitor |
+| **12 GB+ Pro / Foldable iPhone** | iPhone 17 Pro / iPhone Duo (`UIHingeInteraction`) | **1,664 – 2,048 MiB** *(standard)* / **4,608 MiB** *(entitled)* | Heavy multi-process desktops, clamshell deck, and dual-scanout |
+| **M-Series iPad Pro (8–16 GB)** | iPad Pro M1–M4 (`iPadOS 18–27+`) | **2,560 – 6,144 MiB** *(entitled)* | `4`–`6` vCPU, USB-C `4K UHD` external display, hardware keyboard & mouse |
 
 ---
 
-## Target Devices & Memory Sizing
+## Architecture & Why HengeLinux Is Fast
 
-| Device Class | Example Hardware | Recommended Guest RAM | UI & Input Mode |
-| :--- | :--- | :--- | :--- |
-| **iPhone (4–6 GB RAM, iOS 18+)** | iPhone 13 / 14 / 15 (4–6 GB RAM, iOS 18.0+) | **1,024–1,536 MiB** *(192–256 MiB JIT pool)* | Direct `SessionView` canvas + interactive `ttyAMA0` terminal + Split Deck |
-| **Standard Single-Screen iPhone (8 GB+)** | iPhone 16 Pro (A18 Pro, 8 GB RAM, iOS 18–27) | **1,664–2,560 MiB** *(editable 512–10,240 MiB)* | Direct `SessionView` canvas + Split Deck trackpad + full special-key strip / Bluetooth HID |
-| **Foldable Dual-Screen iPhone** | iPhone Duo (`iPhone19,4`, A20 Pro, iOS 27) | **1,664 MiB** *(standard ledger)* / **4,608 MiB** *(ledger-exempt)* | `UIHingeInteraction` clamshell laptop deck + 7.6" Open Studio canvas |
-| **12 GB+ Pro iPhone / M-Series iPad** | iPhone 17 Pro / M-series iPad Pro | **1,664–2,048 MiB** *(standard ledger)* / **4,096–6,144 MiB** *(ledger-exempt)* | Full-screen canvas + USB-C external display output |
+Stock iOS `16.4+` restricts `com.apple.developer.kernel.hypervisor` on non-jailbroken devices, forcing App Store emulators onto QEMU's threaded interpreter (`TCI`) while iOS `26+` Trusted Execution Monitor (`TXM`) blocks arbitrary `PROT_EXEC` pages.
+
+HengeLinux eliminates cross-architecture IR overhead completely:
+
+- **Direct ARM64-to-ARM64 Block Translation (`core/translate.c`):** Translates unprivileged guest `aarch64` code straight to host Apple Silicon instructions with inline LSE atomics and scratch register allocation.
+- **Dual-Mode Stage-1 Software MMU (`core/mmu.c`):** Emulates VMSAv8-64 `EL1&0` translation across `4 KiB`, `16 KiB`, and `64 KiB` guest granules (`HV_TLB_PAGE_BITS=12|14`).
+- **Async Zero-Copy VirGL 3D Pipeline (`host/henge_virgl_worker.c`, `host/henge_gpu_surface.c`):** Offloads VirtIO-GPU 3D commands to a dedicated `8 MiB`-stack `virgl_thread` (`libvirglrenderer` → `libepoxy` → Metal-only `ANGLE`) and presents `IOSurfaceRef` swapchains with `MTLSharedEvent` synchronization directly onto `CAMetalLayer`.
+- **Zero-Driver-Injection Virtual Motherboard (`devices/` & `host/`):** Boots stock Linux kernels using mainline inbox drivers (EDK2 UEFI, ACPI 6.3, PCIe GPEX, NVMe, VirtIO-GPU/Input/Blk/Net, ICH6 HDA).
 
 ---
 
-## Build Environments
+## Build Environments & Documentation
 
-| Task | Apple Silicon Mac | Intel (`x86_64`) MacBook | Linux PC (Bare Metal) |
+| Task | Apple Silicon Mac | Intel (`x86_64`) Mac | Linux PC |
 | :--- | :--- | :--- | :--- |
-| **Build iOS App (`.ipa`)** | **Yes** (Xcode 26 / 27) | **Yes** (up to macOS 26 / Xcode 26; use `/usr/local` Homebrew prefix) | **No natively** (use GitHub Actions `macos-latest` + SideStore/AltStore, or a macOS 26 KVM VM) |
-| **Run Local macOS VM (`winvm`)** | **Yes** (ARM64-to-ARM64 host) | **No** (requires host ARM64 CPU) | **No** (requires macOS + ARM64 CPU) |
-| **Build `hvsparse` & Guest Disk Images** | **Yes** (`provision_archlinux_arm64.sh`) | **Yes** (`provision_archlinux_arm64.sh`) | **Yes** (`make prebuilt-guest-image` or `scripts/build_guest_image.sh`) |
+| **Build iOS App (`.ipa`)** | **Yes** (`Xcode 26 / 27`) | **Yes** (up to Xcode 26) | **Via GitHub Actions** (`macos-latest` CI) |
+| **Run Core Unit Tests (`make test-core`)** | **Yes** | **Yes** | **Yes** (4 KiB & 16 KiB TLB + QCOW2/VirGL) |
+| **Build `hvsparse` & Guest Images** | **Yes** (`provision_archlinux_arm64.sh`) | **Yes** | **Yes** (`make prebuilt-guest-image`) |
+
+### Documentation Index
+- **[`docs/SETUP.md`](docs/SETUP.md)** — Full iOS 18–27+ sideloading, StikDebug JIT, VirGL 3D, desktop setup, and troubleshooting guide.
+- **[`PLAN.md`](PLAN.md)** — Engineering architecture, module map, platform invariants, and Phase 1–7 milestones.
+- **[`HANDOVER.md`](HANDOVER.md)** — Detailed commit history, file inventory, and CI build/debugging reference.
+- **[`docs/RESEARCH.md`](docs/RESEARCH.md)** — Technical comparison of `WindowsiOS`/`HengeVM` and Linux-on-iOS virtualization approaches.
+- **[`docs/HengeLinux v3.0 GPU Architecture.pdf`](docs/HengeLinux%20v3.0%20GPU%20Architecture.pdf)** — Deep-dive blueprint for the `v0.3.0` Two-Tier Metal GPU & VirGL stack.
+- **[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)** — GPLv3 §5a / §6(d) attribution and pinned source provenance.
 
 ---
 
 ## Roadmap
 
-1. **Phase 1 — Documentation & Architecture Baseline:** Complete technical specification, gap analysis, and architectural trade-off review ([`docs/RESEARCH.md`](docs/RESEARCH.md)).
-2. **Phase 2 — Core Engine, Host Layer & Single/Dual-Screen iOS Shell:** Port `HengeVM` / `WindowsiOS` `core/`, `devices/`, `host/`, `tests/`, and `ios/` targets—unit tests (`make test-core`), `< 104`-byte `AF_UNIX` `sun_path` enforcement, `willResignActive` Metal render fence, and `UIHingeInteraction` support.
-3. **Phase 3 — Arch Linux AArch64 Guest & Dual-Stack Native Bridge:** `"HVSPARSE"` streaming-extent disk tools, Archboot provisioning, `http://10.0.2.4/` WebDAV sharing, and dual-stack `henge-xdg-open` OAuth bridge.
-4. **Phase 4 — In-App Self-Debugging & VirtIO-GPU 3D Foundation:** Embedded `HengeLinuxJITExtension` (`com.apple.ar.viewer`), VirtIO-GPU 1.0 control-queue state machine, and atomic FNV-1a background VM state snapshots.
-5. **Phase 5 — Upstream Engine Linkage, Live Arch Linux & LXQt Desktop (*`v0.1.0`*):** Upstream `WindowsiOS` patcher (`scripts/apply_upstream_patches.py`), cached `libffi`/`glib`/`libslirp` static deps, editable Guest RAM, native `/dev/uinput` HID bridge, full special-key strip, and automated Arch Linux ARM64 + LXQt guest image CI.
-6. **Phase 6 — Multi-Distro ARM64 Linux & iOS 18.0–27+ Generalization (*`v0.2.0`–`v0.2.5`*):** iOS `18.0` deployment floor with unified `CLASSIC`/`TXM_BROKER` JIT, `stikdebug://enable-jit` deep-linking, selftest crash sentinel, Darwin commpage timebase (`type=1/2/3`) validation, `LC_HOME_PATH` LiveContainer detection, full VM memory/thread teardown on stop, and accurate `os_proc_available_memory()` Jetsam sizing; Multi-VM `VMStore` (`vm.json` + shared `Documents/Firmware/`), in-app ARM64 Distro & Firmware Downloader (`DistroCatalog.swift`), APFS sparse disk expansion + `henge-grow-root`, PCIe `virtio-input` (`EV_REP` + direct tablet routing) + secondary `virtio-blk` (`512B`/`2048B` El Torito ISO) + toggleable `xhci`/`SPCR`, native VT100/xterm-256color `ttyAMA0` terminal emulator (`SerialTerminalEmulator.swift`), native External Display Metal scene + OLED burn-in Screen Saver (`ExternalDisplayManager.swift`), `GCKeyboard`/`GCMouse` hardware input (`HardwareInputManager.swift`), `AVAudioSession` speaker/Bluetooth audio (`AudioSessionManager.swift`), 6×3 square-trackpad Split Deck, streaming C QCOW2 unpacker (`zlib` + `libzstd`), distro-aware FAT16 `CIDATA` cloud-init seeder, and bundled static `aarch64-linux-musl` guest agent.
-7. **Phase 7 — Two-Tier Metal GPU Acceleration & iOS UI Overhaul (*`v0.3.0`*):** Enhanced 2D VirtIO-GPU KMS (native alpha-blended Metal hardware cursor, `TRANSFER_TO_HOST_2D` dirty-rect partial uploads, 60 Hz hash bypass, local OLED Screen Saver presentation pause); dedicated async `virgl_thread` worker (`host/henge_virgl_worker.{h,c}`) with statically linked `arm64-apple-ios18.0` Metal-only Google **ANGLE** (`chromium/7578`), **libepoxy** `1.5.10`, and **libvirglrenderer** `1.2.0` (`scripts/build_ios_gpu_deps.sh`, `scripts/patch_gpu_deps.py`); zero-copy double-buffered `IOSurfaceRef` + `MTLSharedEvent` swapchains, explicit sRGB encoding, 64 MiB LRU disk shader cache (`host/henge_gpu_surface.{h,c}`), Jetsam VRAM budget + `320 MiB` floor, thermal step-down pacing (`.serious` → `40 Hz`, `.critical` → `30 Hz`), opt-in `120 Hz` ProMotion EDID, `4K UHD` external monitor preset, and `num_scanouts = 2`; Wayland GLES2 `labwc` + LXQt desktop support + 3-state `henge-xorg-autodetect` (`guest/install.sh`); and SwiftUI UI overhaul (`ios/Sources/GraphicsAndTelemetryUI.swift`: Unified Jetsam Memory Bar, Graphics & Display Sheet, Live Performance HUD Pill, and 5-frame 3D Crash-Sentinel Recovery Banner).
+1. **Phase 1–4 — Architecture, Core Engine, Arch Bridge & TXM JIT Substrate:** Technical specification, `HengeVM`/`WindowsiOS` host substrate, `"HVSPARSE"` disk tools, dual-stack Safari OAuth/WebDAV bridge, embedded `HengeLinuxJITExtension`, and VirtIO-GPU state machine.
+2. **Phase 5 (`v0.1.0`) — Live Arch Linux & LXQt Desktop on iOS:** Upstream patcher (`scripts/apply_upstream_patches.py`), cached iOS static deps, editable Guest RAM, native `/dev/uinput` HID bridge, and automated Arch Linux ARM64 guest image CI.
+3. **Phase 6 (`v0.2.0` – `v0.2.5`) — Multi-Distro ARM64 Linux & iOS 18–27+ Generalization:** iOS `18.0` floor (`CLASSIC`/`TXM_BROKER` JIT), Multi-VM `VMStore`, in-app Distro & Firmware Gallery, streaming QCOW2 (`zlib`+`zstd`), `CIDATA` seeder, APFS sparse disk expansion, `virtio-input`/`virtio-blk`/`virtio-gpu` 2D KMS, native VT100 `ttyAMA0` terminal, USB-C/HDMI External Display + OLED Screen Saver, `GCKeyboard`/`GCMouse`, `AVAudioSession`, and static `musl` guest agent.
+4. **Phase 7 (`v0.3.0`) — Two-Tier Metal GPU Acceleration & 4-Tab iOS UI Overhaul:** Enhanced 2D KMS (native Metal hardware cursor + dirty-rect uploads), async zero-copy **VirGL 3D via ANGLE Metal** (`libvirglrenderer 1.2.0` + `libepoxy 1.5.10` + `ANGLE chromium/7578`, `IOSurfaceRef` + `MTLSharedEvent` swapchains, `64 MiB` shader cache, ES 3.0 wrap-mode sanitization, Jetsam VRAM budgets, thermal/ProMotion pacing), Wayland GLES2 + X11 desktop installer, **4-tab SwiftUI launcher** (`Machines`, `Hardware`, `Images & Disks`, `Information`), overflow-safe session top bar, unified semantic status indicators, Live Performance HUD, and dark-grey native app icon.
 
 ---
 
 ## License
 
-This repository is licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)** — see [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+Licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)** — see [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 - Upstream `WindowsiOS` and `HengeVM` components (`GPL-2.0-or-later`) upgrade cleanly into `GPL-3.0-or-later`.
-- `StikJIT` (`MPL-2.0`), `idevice` (`MIT`), and `LinuxRunner` (`GPL-3.0`) components are compatible with `GPL-3.0-or-later`.
-- Under `GPL-3.0-or-later`, `Apache-2.0` dependencies remain license-compatible.
+- `StikJIT` (`MPL-2.0`), `idevice` (`MIT`), `ANGLE` (`BSD-3-Clause`), `libepoxy` (`MIT`), `libvirglrenderer` (`MIT`), and `zstd` (`BSD-3-Clause / GPL-2.0`) are license-compatible under `GPL-3.0-or-later`.

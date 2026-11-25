@@ -170,6 +170,18 @@ final class VMStore: ObservableObject {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    func isPrimaryDiskReady(for vm: VMConfig) -> Bool {
+        let fm = FileManager.default
+        let dir = machineDirectoryURL(for: vm.id)
+        if fm.fileExists(atPath: dir.appendingPathComponent(vm.primaryDiskFileName).path) {
+            return true
+        }
+        if vm.id == "ArchLinux", fm.fileExists(atPath: dir.appendingPathComponent("archlinux.img").path) {
+            return true
+        }
+        return fm.fileExists(atPath: dir.appendingPathComponent("disk0.img").path)
+    }
+
     func diskStatusText(for vm: VMConfig) -> String {
         let fm = FileManager.default
         let dir = machineDirectoryURL(for: vm.id)
@@ -186,6 +198,13 @@ final class VMStore: ObservableObject {
             return "disk0.img (Ready\(Self.formattedSize(at: genericRaw)))"
         }
         return "Missing (Import .hvsparse / .qcow2 / .img / .raw)"
+    }
+
+    func isUefiReady(for vm: VMConfig) -> Bool {
+        let fm = FileManager.default
+        let codeURL = resolvedCodeFirmwareURL(for: vm)
+        let varsURL = resolvedVarsFirmwareURL(for: vm)
+        return fm.fileExists(atPath: codeURL.path) && fm.fileExists(atPath: varsURL.path)
     }
 
     func uefiStatusText(for vm: VMConfig) -> String {
