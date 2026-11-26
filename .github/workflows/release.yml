@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.3.0)'
+        description: 'Version tag to publish as a GitHub Pre-Release (e.g. v0.3.1)'
         required: true
-        default: 'v0.3.0'
+        default: 'v0.3.1'
         type: string
 
 concurrency:
@@ -244,14 +244,18 @@ jobs:
           Built from commit \`${SHORT_SHA}\` on ${BUILD_DATE}. Full-system ARM64 (\`aarch64\`) multi-distro Linux virtualization on non-jailbroken iOS 18.0 – iOS 27+ devices without \`Hypervisor.framework\`.
 
           ### Highlights
-          - **Two-Tier Metal GPU Acceleration (Enhanced 2D VirtIO-GPU KMS + Live Async Zero-Copy VirGL 3D via ANGLE Metal):**
-            - **Enhanced 2D KMS:** Unified \`HengeVirtioGpuDevice\` ownership, native alpha-blended Metal hardware cursor quad, \`TRANSFER_TO_HOST_2D\` dirty-rect partial uploads, 60 Hz frame-hash bypass, and OLED Screen Saver local Metal presentation pause.
-            - **Live Async VirGL 3D Metal Stack:** Cross-compiled static \`arm64-apple-ios18.0\` archives for Metal-only Google **ANGLE** (\`chromium/7578\`), **libepoxy** \`1.5.10\`, and **libvirglrenderer** \`1.2.0\` on a dedicated \`8 MiB\`-stack \`virgl_thread\` (\`host/henge_virgl_worker.{h,c}\`) with zero-copy \`IOSurfaceRef\` + \`MTLSharedEvent\` swapchains, explicit sRGB encoding, \`64 MiB\` LRU disk shader cache, \`4096\` resource slots + 1D \`PIPE_BUFFER\` support, and empirical ES 3.0 \`GL_CLAMP_TO_BORDER\` / \`GL_MIRROR_CLAMP_TO_EDGE\` wrap-mode sanitization — verified running hardware-accelerated LXQt desktops on Apple Silicon iPhone hardware.
-            - **Jetsam VRAM Governance, Thermal Step-Down & Dual-Scanout:** GPU-aware RAM reserves, per-VM VRAM ceilings (\`Auto / 256 / 512 / 1,024 MiB\`) + \`320 MiB\` Jetsam floor, thermal step-down pacing (\`.serious\` -> \`40 Hz\`, \`.critical\` -> \`30 Hz\`), opt-in \`120 Hz\` ProMotion EDID, \`4K UHD\` external monitor preset, and \`num_scanouts = 2\` dual-display support.
-          - **4-Tab iOS Launcher Overhaul, Unified Status Indicators & Wayland GLES2 Desktop:**
-            - Redesigned the pre-boot app into four focused tabs (**Machines**, **Hardware**, **Images & Disks**, **Information**) with unified semantic status colors, press-and-hold APFS VM cloning, auto-selected **Custom** CPU/RAM profile + single-line \`1G\`–\`4G\` RAM pills, inline **Graphics & Display** settings, stacked **Jetsam Memory Breakdown Bar**, **Saved Log** tail viewer, overflow-safe active-session top bar, opt-in **Live Performance HUD Pill**, 5-frame **3D Crash-Sentinel Auto-Recovery Banner**, and a native dark-grey iOS app icon.
-            - Upgraded \`guest/install.sh\` (\`henge-install-desktop [--wayland|--x11]\` + 3-state \`henge-xorg-autodetect\`) for \`labwc\` + LXQt Wayland (\`WLR_RENDERER=gles2\`) and Openbox/Xorg + SDDM.
-          - **All v0.2.5 Features Preserved:** External USB-C/HDMI Metal scene, OLED Screen Saver, \`GCKeyboard\`/\`GCMouse\` hardware input, \`AVAudioSession\` stereo speaker routing, native VT100 \`ttyAMA0\` terminal, 6×3 split trackpad deck, unified special-keys bar, and adaptive landscape layout.
+          - **VirGL 3D Metal Stability & Browser / Desktop Fixes (\`v0.3.1\`):**
+            - **Dedicated Shared Blit Context (\`egl_blit_ctx\`):** Isolated \`angle_blit_scanout_to_iosurface()\` onto its own shared ANGLE \`EGLContext\` with explicit \`glFlush()\` + \`glDisable(GL_SCISSOR_TEST)\`, eliminating background smearing and white/black corruption when moving windows or cursors on Ubuntu/Arch Xorg.
+            - **ANGLE ES 3.0 Dual-Source Blend Fix:** Disabled \`max_dual_source_render_targets\` on \`GET_CAPSET\` and added defense-in-depth \`VIRGL_OBJECT_BLEND\` dual-source factor remapping, preventing \`GL_INVALID_OPERATION (1282)\` context freezes on Ubuntu subpixel-antialiased text draws.
+            - **Tiered Jetsam VRAM Floor & Large Transfer Support:** Kept the \`320 MiB\` Jetsam floor for large allocations (\`> 16 MiB\`) while applying a \`64 MiB\` critical floor for normal desktop/video textures (\`<= 16 MiB\`), lifted \`ATTACH_BACKING\` to \`16,384\` scatter-gather entries, and exempted guest-backed 1D \`PIPE_BUFFER\` staging uploads from GPU VRAM cap double-counting so Firefox video playback no longer poisons Xorg's VirGL context.
+          - **Multi-Boot, Dual-Scanout & Ubuntu 26.04 Guest Fixes (\`v0.3.1\`):**
+            - **Clean In-Session Restarts:** Reset \`stop_requested = 0\` in \`hv_winvm_create()\` / \`hv_winvm_start()\` so restarting or switching VMs without relaunching the app no longer stalls \`kicker_thread\` or secondary vCPUs.
+            - **Opt-In Dual-Scanout (\`num_scanouts = 1\` Default):** Only advertises a second virtual connector when **Dual Scanout** is explicitly enabled, preventing Ubuntu \`lxqt-config-monitor\` from splitting the desktop on rotation.
+            - **Ubuntu / Debian LXQt & Modern \`CIDATA\`:** Added \`lxqt-menu-data\`/\`lxmenu-data\`, \`lxqt-config\`, \`lxqt-runner\`, \`lxqt-notificationd\`, \`hicolor-icon-theme\`, \`fonts-dejavu-core\`, \`desktop-file-utils\`, \`shared-mime-info\`, and \`featherpad\` to \`guest/install.sh\`, and removed deprecated \`chpasswd.list\` from non-Alpine \`CIDATA\` seeds.
+          - **Safer Device RAM/CPU Presets & Input Bar Ergonomics (\`v0.3.1\`):**
+            - Tuned default device presets to stay cleanly inside Jetsam budgets (\`1.0 GiB / 2 vCPU\` on 4–6 GB iPhones, \`1.5 GiB / 4 vCPU\` on 8 GB Pro iPhones, \`3.0 GiB / 4 vCPU\` on entitled 12 GB iPhones, \`4.0 GiB / 6 vCPU\` on entitled M-Series iPads) with hardware-aware first-launch selection.
+            - Grouped the Mousepad / Split Deck toggle right beside Keyboard and Special Keys in the active-session top bar.
+          - **All \`v0.3.0\` Capabilities Included:** Two-Tier Metal GPU (Enhanced 2D VirtIO-GPU KMS + Async Zero-Copy VirGL 3D via ANGLE Metal + \`64 MiB\` LRU shader cache + \`120 Hz\` ProMotion / thermal pacing), 4-tab SwiftUI launcher with unified semantic status colors, Live Performance HUD, 3D Crash-Sentinel Recovery Banner, Wayland/X11 desktop installer, External USB-C/HDMI Metal scene, OLED Screen Saver, \`GCKeyboard\`/\`GCMouse\`, \`AVAudioSession\`, and native VT100 \`ttyAMA0\` terminal.
 
           ### Quick Setup (iOS 18.0+)
           1. Download and sign **\`HengeLinux-unsigned.ipa\`** with **SideStore** or **AltStore**.

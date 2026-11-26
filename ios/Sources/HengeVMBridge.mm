@@ -103,7 +103,7 @@ static void henge_on_vm_exit(int reason) {
                                                                 inDomains:NSUserDomainMask].firstObject;
         if (cachesURL != nil) {
             NSURL *shaderDir = [cachesURL URLByAppendingPathComponent:@"HengeShaders" isDirectory:YES];
-            NSString *appVer = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.3.0";
+            NSString *appVer = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.3.1";
             NSString *osVer = NSProcessInfo.processInfo.operatingSystemVersionString ?: @"ios";
             NSString *nsTag = [NSString stringWithFormat:@"henge-%@-%@", appVer, osVer];
             henge_shader_cache_init(shaderDir.path.fileSystemRepresentation,
