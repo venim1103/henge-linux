@@ -1,6 +1,6 @@
-# HengeLinux (`v0.3.0`) Setup & Sideloading Guide
+# HengeLinux (`v0.3.1`) Setup & Sideloading Guide
 
-This guide walks through installing **`HengeLinux` `v0.3.0`** on a non-jailbroken iPhone or iPad (**iOS 18.0 – iOS 27+**), downloading or importing ARM64 Linux distributions, enabling JIT with **StikDebug** + **LocalDevVPN**, configuring **VirGL 3D Metal (ANGLE)** or **2D VirtIO-GPU KMS**, installing an **LXQt Wayland or X11** graphical desktop, and using **USB-C / HDMI External Displays**, hardware keyboards/mice, and the **Safari OAuth / WebDAV** guest bridge.
+This guide walks through installing **`HengeLinux` `v0.3.1`** on a non-jailbroken iPhone or iPad (**iOS 18.0 – iOS 27+**), downloading or importing ARM64 Linux distributions, enabling JIT with **StikDebug** + **LocalDevVPN**, configuring **VirGL 3D Metal (ANGLE)** or **2D VirtIO-GPU KMS**, installing an **LXQt Wayland or X11** graphical desktop, and using **USB-C / HDMI External Displays**, hardware keyboards/mice, and the **Safari OAuth / WebDAV** guest bridge.
 
 ---
 
@@ -8,7 +8,7 @@ This guide walks through installing **`HengeLinux` `v0.3.0`** on a non-jailbroke
 
 | File | Required | Where to Download | Purpose |
 | :--- | :--- | :--- | :--- |
-| **`HengeLinux-unsigned.ipa`** | **Yes** | [Releases (`v0.3.0`)](https://github.com/venim1103/henge-linux/releases) *(or [Nightly (`latest-ipa`)](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa))* | iOS `18.0+` app (`HengeLinux.app`) + embedded JIT helper extension (`HengeLinuxJITExtension.appex`) + static `ANGLE` / `libepoxy` / `libvirglrenderer` 3D GPU stack |
+| **`HengeLinux-unsigned.ipa`** | **Yes** | [Releases (`v0.3.1`)](https://github.com/venim1103/henge-linux/releases) *(or [Nightly (`latest-ipa`)](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/HengeLinux-unsigned.ipa))* | iOS `18.0+` app (`HengeLinux.app`) + embedded JIT helper extension (`HengeLinuxJITExtension.appex`) + static `ANGLE` / `libepoxy` / `libvirglrenderer` 3D GPU stack |
 | **`code.fd` & `vars.fd`** | **Yes** *(One-Time)* | In-app (**Machines → Download Distros & Firmware**) or [Releases](https://github.com/venim1103/henge-linux/releases) | 64 MiB TianoCore EDK2 AArch64 UEFI firmware + NVRAM template (automatically shared in `Documents/Firmware/` across all VMs) |
 | **Linux Disk / Cloud / ISO Image** | **Yes** | In-app **Distro & Firmware Gallery**, [`archlinux.hvsparse`](https://github.com/venim1103/henge-linux/releases/download/latest-ipa/archlinux.hvsparse), or any official ARM64 `.qcow2` / `.img` / `.iso` | Pre-built Arch Linux image (~294 MiB) or any unmodified official ARM64 Linux cloud image or Live/Netinstall ISO |
 | **`henge-jit.js`** | **Optional** *(iOS 26+ TXM)* | [`ios/Resources/henge-jit.js`](https://raw.githubusercontent.com/venim1103/henge-linux/main/ios/Resources/henge-jit.js) | Optional custom GDB RSP script for iOS 26/27+ TXM (stock StikDebug `universal.js` works out of the box; iOS 18 needs no script) |

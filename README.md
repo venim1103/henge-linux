@@ -13,7 +13,7 @@
 [![iOS](https://img.shields.io/badge/iOS-18.0%20--%2027%2B%20(arm64)-222327)](docs/SETUP.md)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPLv3-10B981.svg)](LICENSE)
 
-[**Download v0.3.0 Release**](https://github.com/venim1103/henge-linux/releases) · [**Nightly IPA (`latest-ipa`)**](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) · [**Setup Guide (`docs/SETUP.md`)**](docs/SETUP.md) · [**Architecture (`PLAN.md`)**](PLAN.md) · [**Research (`docs/RESEARCH.md`)**](docs/RESEARCH.md)
+[**Download v0.3.1 Release**](https://github.com/venim1103/henge-linux/releases) · [**Nightly IPA (`latest-ipa`)**](https://github.com/venim1103/henge-linux/releases/tag/latest-ipa) · [**Setup Guide (`docs/SETUP.md`)**](docs/SETUP.md) · [**Architecture (`PLAN.md`)**](PLAN.md) · [**Research (`docs/RESEARCH.md`)**](docs/RESEARCH.md)
 
 </div>
 
@@ -23,12 +23,12 @@
 
 ---
 
-## What's New in `v0.3.0`
+## What's New in `v0.3.1`
 
-- **Hardware-Accelerated VirGL 3D on Apple Silicon Metal:** Dedicated asynchronous `virgl_thread` running statically linked `libvirglrenderer 1.2.0` + `libepoxy 1.5.10` + Metal-only Google **ANGLE** (`OpenGL ES 3.0`), presenting zero-copy double-buffered `IOSurfaceRef` + `MTLSharedEvent` frames directly to `CAMetalLayer`, complete with a `64 MiB` persistent LRU Metal shader cache, ES 3.0 sampler wrap-mode sanitization, Jetsam VRAM budgets, thermal step-down pacing, and a 5-frame auto-recovery crash sentinel.
-- **Enhanced 2D VirtIO-GPU KMS:** Native alpha-blended Metal hardware cursor (`cursorq`), `TRANSFER_TO_HOST_2D` dirty-rect partial uploads, 60 Hz frame-hash bypass, dynamic VESA EDID 1.4 (`30 / 60 / 120 Hz` ProMotion), and dual-scanout (`num_scanouts = 2`) support.
-- **Redesigned 4-Tab iOS Launcher & Overflow-Safe Session Bar:** Clean separation across **Machines**, **Hardware**, **Images & Disks**, and **Information** tabs with unified semantic status colors, press-and-hold APFS VM cloning, an auto-detected **Custom** CPU/RAM profile, inline Graphics & Display controls, a live **Jetsam Memory Breakdown Bar**, an opt-in **Live Performance HUD Pill** (FPS / backend / VRAM / thermal state), and a native dark-grey iOS app icon.
-- **Wayland GLES2 & X11 Linux Desktops:** One-command `sudo henge-install-desktop [--wayland|--x11]` supporting `labwc` + LXQt Wayland (`WLR_RENDERER=gles2`) or Openbox/Xorg + SDDM with automatic display-adapter switching (`henge-xorg-autodetect`).
+- **VirGL 3D Stability for Ubuntu 26.04 & Firefox Video Playback:** Isolated `IOSurface` scanout blits onto a dedicated shared ANGLE `EGLContext` (`egl_blit_ctx`) so `RESOURCE_FLUSH` never clobbers guest GL state, disabled unsupported ES 3.0 dual-source blending (`max_dual_source_render_targets = 0` + blend sanitizer), introduced a tiered Jetsam VRAM floor (`320 MiB` for `> 16 MiB` allocations / `64 MiB` critical floor for normal textures), lifted `ATTACH_BACKING` to `16,384` SG entries, and exempted 1D `PIPE_BUFFER` staging uploads from GPU VRAM cap accounting.
+- **Clean VM Restarts, Opt-In Dual-Scanout & Ubuntu Desktop Fixes:** Fixed in-session VM restart stalls (`stop_requested` reset), defaulted PCIe `virtio-gpu` to `num_scanouts = 1` unless **Dual Scanout** is enabled (preventing Ubuntu `lxqt-config-monitor` screen splitting on rotation), added missing LXQt menu/theme packages (`lxqt-menu-data`, `lxqt-config`, `lxqt-runner`, `lxqt-notificationd`, `featherpad`) to `guest/install.sh`, and removed deprecated `chpasswd.list` from non-Alpine `CIDATA` seeds.
+- **Safer Jetsam Device Presets & Top-Bar Input Grouping:** Tuned first-launch and device presets (`1.0 GiB / 2 vCPU`, `1.5 GiB / 4 vCPU`, `3.0 GiB / 4 vCPU`, `4.0 GiB / 6 vCPU`) for reliable VirGL 3D headroom, and grouped the Mousepad / Split Deck button right beside Keyboard and Special Keys.
+- **Built on the `v0.3.0` Two-Tier Metal GPU & 4-Tab Launcher:** Dedicated `virgl_thread` (`libvirglrenderer 1.2.0` + `libepoxy 1.5.10` + Metal-only Google **ANGLE**), zero-copy `IOSurfaceRef` swapchains, `64 MiB` LRU shader cache, Enhanced 2D KMS with native Metal hardware cursor, Wayland GLES2 / X11 desktops, 4-tab launcher with unified semantic status colors, Live Performance HUD, and dark-grey app icon.
 
 ---
 
@@ -124,7 +124,7 @@ HengeLinux eliminates cross-architecture IR overhead completely:
 1. **Phase 1–4 — Architecture, Core Engine, Arch Bridge & TXM JIT Substrate:** Technical specification, `HengeVM`/`WindowsiOS` host substrate, `"HVSPARSE"` disk tools, dual-stack Safari OAuth/WebDAV bridge, embedded `HengeLinuxJITExtension`, and VirtIO-GPU state machine.
 2. **Phase 5 (`v0.1.0`) — Live Arch Linux & LXQt Desktop on iOS:** Upstream patcher (`scripts/apply_upstream_patches.py`), cached iOS static deps, editable Guest RAM, native `/dev/uinput` HID bridge, and automated Arch Linux ARM64 guest image CI.
 3. **Phase 6 (`v0.2.0` – `v0.2.5`) — Multi-Distro ARM64 Linux & iOS 18–27+ Generalization:** iOS `18.0` floor (`CLASSIC`/`TXM_BROKER` JIT), Multi-VM `VMStore`, in-app Distro & Firmware Gallery, streaming QCOW2 (`zlib`+`zstd`), `CIDATA` seeder, APFS sparse disk expansion, `virtio-input`/`virtio-blk`/`virtio-gpu` 2D KMS, native VT100 `ttyAMA0` terminal, USB-C/HDMI External Display + OLED Screen Saver, `GCKeyboard`/`GCMouse`, `AVAudioSession`, and static `musl` guest agent.
-4. **Phase 7 (`v0.3.0`) — Two-Tier Metal GPU Acceleration & 4-Tab iOS UI Overhaul:** Enhanced 2D KMS (native Metal hardware cursor + dirty-rect uploads), async zero-copy **VirGL 3D via ANGLE Metal** (`libvirglrenderer 1.2.0` + `libepoxy 1.5.10` + `ANGLE chromium/7578`, `IOSurfaceRef` + `MTLSharedEvent` swapchains, `64 MiB` shader cache, ES 3.0 wrap-mode sanitization, Jetsam VRAM budgets, thermal/ProMotion pacing), Wayland GLES2 + X11 desktop installer, **4-tab SwiftUI launcher** (`Machines`, `Hardware`, `Images & Disks`, `Information`), overflow-safe session top bar, unified semantic status indicators, Live Performance HUD, and dark-grey native app icon.
+4. **Phase 7 (`v0.3.0` – `v0.3.1`) — Two-Tier Metal GPU Acceleration, Stability Hardening & 4-Tab iOS UI Overhaul:** Enhanced 2D KMS (native Metal hardware cursor + dirty-rect uploads), async zero-copy **VirGL 3D via ANGLE Metal** (`libvirglrenderer 1.2.0` + `libepoxy 1.5.10` + `ANGLE chromium/7578`, isolated shared `egl_blit_ctx` + `IOSurfaceRef` swapchains, `64 MiB` shader cache, ES 3.0 sampler-wrap & dual-source blend sanitization, tiered Jetsam VRAM floor, `16,384`-entry `ATTACH_BACKING`, opt-in dual-scanout, thermal/ProMotion pacing), clean multi-boot restarts, Wayland GLES2 + X11 desktop installer (with full Ubuntu/Debian LXQt menus), **4-tab SwiftUI launcher** (`Machines`, `Hardware`, `Images & Disks`, `Information`), safe Jetsam device presets, grouped session top-bar inputs, unified semantic status indicators, Live Performance HUD, and dark-grey native app icon.
 
 ---
 

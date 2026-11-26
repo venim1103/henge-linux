@@ -42,7 +42,7 @@ henge-linux/
 ├── tools/
 │   └── hvsparse.c                  # Upstream-compatible "HVSPARSE" streaming [offset, len] extent packer/unpacker
 ├── ios/                            # XcodeGen iOS 18.0–27+ SwiftUI app + embedded JIT helper extension (links libhengelinux.a + ANGLE/epoxy/virglrenderer)
-│   ├── project.yml                 # Generates HengeLinux.xcodeproj (v0.3.0, iOS 18.0+, multi-scene External Display, indirect input, 3D GPU static libs)
+│   ├── project.yml                 # Generates HengeLinux.xcodeproj (v0.3.1, iOS 18.0+, multi-scene External Display, indirect input, 3D GPU static libs)
 │   ├── HengeLinux.entitlements     # increased-memory-limit, extended-virtual-addressing & group.io.hengelinux.shared
 │   ├── Resources/
 │   │   └── henge-jit.js            # StikDebug / LLDB GDB RSP brk #0x69 / #0xf00d TXM page-blessing script (CI also stages static aarch64 henge-guest-agent)
@@ -88,7 +88,7 @@ henge-linux/
 │   ├── icon.svg                    # Vector HengeLinux dark-grey app icon
 │   ├── HengeLinux v3.0 GPU Architecture.pdf # Phase 7 / v0.3.0 GPU architecture blueprint
 │   ├── RESEARCH.md                 # Deep technical review of WindowsiOS and 6 Linux-on-iOS architectures
-│   └── SETUP.md                    # Step-by-step v0.3.0 SideStore/AltStore, StikDebug, VirGL 3D, multi-distro & troubleshooting guide
+│   └── SETUP.md                    # Step-by-step v0.3.1 SideStore/AltStore, StikDebug, VirGL 3D, multi-distro & troubleshooting guide
 └── .github/workflows/
     ├── ci.yml                      # Linux unit tests (zstd+musl), static aarch64 guest agent build, macOS iOS 18.0 .ipa build & Nightly release
     ├── prebuilt-guest-image.yml    # Parameterized ubuntu-24.04-arm guest builder (arch/debian/alpine/void) publishing to Nightly (latest-ipa)
@@ -351,3 +351,4 @@ Phase 7 (`v0.3.0`) implements the full blueprint in [`docs/HengeLinux v3.0 GPU A
 - **Phase 0.3.0-B1 & B2 (Async VirGL 3D Metal Stack):** Dedicated `8 MiB`-stack `virgl_thread` (`host/henge_virgl_worker.{h,c}`), heap-owned `virgl_renderer_callbacks`, cross-compiled static `arm64-apple-ios18.0` **ANGLE** (`chromium/7578`), **libepoxy** `1.5.10`, and **libvirglrenderer** `1.2.0` (`scripts/build_ios_gpu_deps.sh`, `scripts/patch_gpu_deps.py`), `SUBMIT_3D` 32B virtqueue payload alignment, `4096` resources + 1D `PIPE_BUFFER` support, and empirical ES 3.0 `GL_CLAMP_TO_BORDER` / `GL_MIRROR_CLAMP_TO_EDGE` probe + in-place `henge_virgl_sanitize_cmd_stream()` wrap-mode sanitizer.
 - **Phase 0.3.0-C (Zero-Copy Surfaces, Shader Cache & Governance):** 2-slot RAII `IOSurfaceRef` + `MTLSharedEvent` swapchains (`host/henge_gpu_surface.{h,c}`), explicit sRGB encoding, bounded `64 MiB` LRU disk shader cache, Jetsam VRAM budgets (`256 / 512 / 1,024 MiB` + `320 MiB` floor), thermal step-down pacing (`.serious` → `40 Hz`, `.critical` → `30 Hz`), `120 Hz` ProMotion EDID, `4K UHD` external preset, and `num_scanouts = 2`.
 - **Phase 0.3.0-D (4-Tab iOS UI Overhaul & Wayland Desktop):** Four-tab SwiftUI launcher (**Machines**, **Hardware**, **Images & Disks**, **Information**), unified `HengeStatusTone` semantic colors, overflow-safe `SessionView` top bar, Live Performance HUD Pill, 5-frame 3D Crash-Sentinel Recovery Banner, Saved Log tail viewer, dark-grey native app icon (`scripts/make_icon.swift`), and `henge-install-desktop [--wayland|--x11]` (`labwc` + LXQt Wayland GLES2 or Openbox/Xorg + SDDM).
+- **`v0.3.1` Stability & Usability Hardening:** Isolated shared `egl_blit_ctx` for `IOSurface` blits, disabled ANGLE ES 3.0 dual-source blending (`max_dual_source_render_targets = 0` + `VIRGL_OBJECT_BLEND` sanitizer), tiered Jetsam VRAM floor (`320 MiB` large / `64 MiB` critical), `16,384`-entry `ATTACH_BACKING` + 1D staging buffer VRAM exemption, opt-in `num_scanouts = 2`, `stop_requested = 0` multi-boot reset, full Ubuntu/Debian LXQt menu packages, non-deprecated `CIDATA` user passwords, hardware-aware safe RAM/CPU presets, and grouped session top-bar input icons.
